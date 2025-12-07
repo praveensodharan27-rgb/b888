@@ -1,0 +1,650 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String             @id @default(cuid())
+  email             String?            @unique
+  phone             String?            @unique
+  password          String?
+  name              String
+  avatar            String?
+  bio               String?
+  tags              String[]           @default([])
+  showPhone         Boolean            @default(true)
+  isVerified        Boolean            @default(false)
+  role              UserRole           @default(USER)
+  freeAdsUsed       Int                @default(0)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  provider          String?
+  providerId        String?
+  referralCode      String?
+  referredBy        String?
+  isDeactivated     Boolean            @default(false)
+  deactivatedAt     DateTime?
+  tokenInvalidatedAt DateTime?
+  locationId        String?
+  location          Location?          @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  ads               Ad[]
+  adPostingOrders   AdPostingOrder[]
+  receivedMessages  ChatMessage[]      @relation("ReceiverMessages")
+  sentMessages      ChatMessage[]      @relation("SenderMessages")
+  chatRooms         ChatRoom[]         @relation("User1Rooms")
+  chatRooms2        ChatRoom[]         @relation("User2Rooms")
+  favorites         Favorite[]
+  notifications     Notification[]
+  otpCodes          OTP[]
+  premiumOrders     PremiumOrder[]
+  pushSubscriptions PushSubscription[]
+  referrals         Referral[]         @relation("Referrer")
+  referredByUser    User?              @relation("ReferredBy", fields: [referredBy], references: [id])
+  referredUsers     User[]             @relation("ReferredBy")
+  wallet            Wallet?
+  businessPackages  BusinessPackage[]
+  extraAdSlots      ExtraAdSlot[]
+  followers         Follow[]           @relation("Following")
+  following         Follow[]           @relation("Follower")
+  contactRequestsSent     ContactRequest[] @relation("ContactRequester")
+  contactRequestsReceived ContactRequest[] @relation("ContactSeller")
+  blockedUsers      Block[]            @relation("Blocker")
+  blockedBy         Block[]            @relation("Blocked")
+  auditLogsAsActor  AuditLog[]         @relation("AuditActor")
+  auditLogsAsTarget AuditLog[]         @relation("AuditTarget")
+  refreshTokens     RefreshToken[]
+
+  @@index([email])
+  @@index([phone])
+  @@index([locationId])
+  @@index([provider, providerId])
+  @@index([referralCode])
+  @@index([referredBy])
+}
+
+model OTP {
+  id        String   @id @default(cuid())
+  email     String?
+  phone     String?
+  code      String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([email, code])
+  @@index([phone, code])
+}
+
+model Category {
+  id             String        @id @default(cuid())
+  name           String
+  slug           String        @unique
+  icon           String?
+  image          String?
+  description    String?
+  order          Int           @default(0)
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  adPostingPrice Float?
+  ads            Ad[]
+  banners        Banner[]
+  subcategories  Subcategory[]
+
+  @@index([slug])
+}
+
+model Subcategory {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  categoryId  String
+  ads         Ad[]
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, slug])
+  @@index([categoryId])
+}
+
+model Location {
+  id            String   @id @default(cuid())
+  name          String
+  slug          String   @unique
+  state         String?
+  city          String?
+  pincode       String?
+  latitude      Float?
+  longitude     Float?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  neighbourhood String?
+  ads           Ad[]
+  banners       Banner[]
+  users         User[]
+
+  @@index([slug])
+  @@index([state, city])
+}
+
+model Ad {
+  id               String           @id @default(cuid())
+  title            String
+  description      String
+  price            Float
+  originalPrice    Float?
+  discount         Float?
+  condition        String?
+  images           String[]
+  status           AdStatus         @default(PENDING)
+  isPremium        Boolean          @default(false)
+  premiumType      PremiumType?
+  premiumExpiresAt DateTime?
+  views            Int              @default(0)
+  featuredAt       DateTime?
+  bumpedAt         DateTime?
+  expiresAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  userId           String
+  categoryId       String
+  subcategoryId    String?
+  locationId       String?
+  isUrgent         Boolean          @default(false)
+  attributes       Json?
+  state            String?
+  city             String?
+  neighbourhood    String?
+  exactLocation    String?
+  moderationStatus String?          @default("pending")
+  moderationFlags  Json?
+  rejectionReason  String?
+  autoRejected     Boolean          @default(false)
+  category         Category         @relation(fields: [categoryId], references: [id])
+  location         Location?        @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  subcategory      Subcategory?     @relation(fields: [subcategoryId], references: [id])
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adPostingOrders  AdPostingOrder[]
+  chatRooms        ChatRoom[]
+  favorites        Favorite[]
+  premiumOrders    PremiumOrder[]
+  contactRequests  ContactRequest[]
+
+  @@index([userId])
+  @@index([categoryId])
+  @@index([subcategoryId])
+  @@index([locationId])
+  @@index([status])
+  @@index([isPremium])
+  @@index([createdAt])
+  @@index([featuredAt])
+  @@index([bumpedAt])
+  @@index([expiresAt])
+  @@index([status, createdAt])
+  @@index([status, isPremium, createdAt])
+  @@index([categoryId, status, createdAt])
+  @@index([locationId, status, createdAt])
+  @@index([status, expiresAt, createdAt])
+  @@index([isPremium, premiumType, createdAt])
+  @@index([city])
+  @@index([state, city])
+  @@index([state])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  userId    String
+  adId      String
+  ad        Ad       @relation(fields: [adId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, adId])
+  @@index([userId])
+}
+
+model PremiumOrder {
+  id                String      @id @default(cuid())
+  type              PremiumType
+  amount            Float
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  status            String      @default("pending")
+  expiresAt         DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  userId            String
+  adId              String
+  ad                Ad          @relation(fields: [adId], references: [id], onDelete: Cascade)
+  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([razorpayOrderId])
+  @@index([status])
+}
+
+model AdPostingOrder {
+  id                String   @id @default(cuid())
+  amount            Float
+  razorpayOrderId   String?  @unique
+  razorpayPaymentId String?
+  status            String   @default("pending")
+  adData            String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  userId            String
+  adId              String?
+  ad                Ad?      @relation(fields: [adId], references: [id])
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+}
+
+model ChatRoom {
+  id        String        @id @default(cuid())
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  user1Id   String
+  user2Id   String
+  adId      String
+  messages  ChatMessage[]
+  ad        Ad            @relation(fields: [adId], references: [id], onDelete: Cascade)
+  user1     User          @relation("User1Rooms", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2     User          @relation("User2Rooms", fields: [user2Id], references: [id], onDelete: Cascade)
+
+  @@unique([user1Id, user2Id, adId])
+  @@index([user1Id])
+  @@index([user2Id])
+  @@index([adId])
+}
+
+model ChatMessage {
+  id         String          @id @default(cuid())
+  content    String
+  type       ChatMessageType @default(TEXT)
+  imageUrl   String?
+  isRead     Boolean         @default(false)
+  createdAt  DateTime        @default(now())
+  senderId   String
+  receiverId String
+  roomId     String
+  receiver   User            @relation("ReceiverMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+  room       ChatRoom        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender     User            @relation("SenderMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([isRead])
+}
+
+model PremiumSettings {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@index([key])
+}
+
+model Banner {
+  id         String    @id @default(cuid())
+  title      String
+  image      String
+  link       String?
+  position   String
+  categoryId String?
+  locationId String?
+  isActive   Boolean   @default(true)
+  order      Int       @default(0)
+  clicks     Int       @default(0)
+  startDate  DateTime?
+  endDate    DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  category   Category? @relation(fields: [categoryId], references: [id])
+  location   Location? @relation(fields: [locationId], references: [id])
+
+  @@index([position])
+  @@index([isActive])
+  @@index([categoryId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  title     String
+  message   String
+  type      String
+  isRead    Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+}
+
+model InterstitialAd {
+  id        String    @id @default(cuid())
+  title     String
+  image     String
+  link      String?
+  position  String
+  isActive  Boolean   @default(true)
+  frequency Int       @default(1)
+  startDate DateTime?
+  endDate   DateTime?
+  views     Int       @default(0)
+  clicks    Int       @default(0)
+  order     Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  height    Int?
+  width     Int?
+
+  @@index([position])
+  @@index([isActive])
+  @@index([isActive, position])
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  endpoint  String   @unique
+  keys      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([endpoint])
+}
+
+model Wallet {
+  id           String              @id @default(cuid())
+  balance      Float               @default(0)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  userId       String              @unique
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
+
+  @@index([userId])
+}
+
+model WalletTransaction {
+  id          String                  @id @default(cuid())
+  type        WalletTransactionType
+  amount      Float
+  status      WalletTransactionStatus @default(COMPLETED)
+  description String?
+  referenceId String?
+  metadata    String?
+  createdAt   DateTime                @default(now())
+  walletId    String
+  wallet      Wallet                  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Referral {
+  id             String    @id @default(cuid())
+  referralCode   String
+  referredUserId String    @unique
+  rewardAmount   Float     @default(0)
+  status         String    @default("pending")
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+  referrerId     String
+  referrer       User      @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId])
+  @@index([referralCode])
+  @@index([status])
+}
+
+model BusinessPackage {
+  id                String              @id @default(cuid())
+  userId            String
+  packageType       BusinessPackageType
+  amount            Float
+  duration          Int                 @default(30) // Duration in days
+  maxAds            Int                 @default(0) // Maximum ads allowed with this package (deprecated - use totalAdsAllowed)
+  premiumSlotsTotal Int                 @default(0) // Total premium ad slots included in this package (deprecated - use totalAdsAllowed)
+  premiumSlotsUsed  Int                 @default(0) // Number of premium slots used (deprecated - use adsUsed)
+  totalAdsAllowed   Int                 @default(0) // Total ads allowed with this package
+  adsUsed           Int                 @default(0) // Number of ads posted using this package
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  status            String              @default("pending")
+  startDate         DateTime?
+  expiresAt         DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([packageType])
+  @@index([razorpayOrderId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model ExtraAdSlot {
+  id                String              @id @default(cuid())
+  userId            String
+  quantity          Int                 @default(1) // Number of extra ad slots purchased
+  amount            Float               // Price per slot
+  totalAmount       Float               // Total amount paid
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  status            String              @default("pending")
+  expiresAt         DateTime?           // When these extra slots expire (null = permanent)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([razorpayOrderId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum AdStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SOLD
+  EXPIRED
+}
+
+enum PremiumType {
+  TOP
+  FEATURED
+  BUMP_UP
+}
+
+enum BusinessPackageType {
+  MAX_VISIBILITY
+  SELLER_PLUS
+  SELLER_PRIME
+}
+
+enum ChatMessageType {
+  TEXT
+  IMAGE
+  SYSTEM
+}
+
+enum WalletTransactionType {
+  CREDIT
+  DEBIT
+}
+
+enum WalletTransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// Search Alert Models
+model SearchQuery {
+  id        String   @id @default(cuid())
+  query     String
+  userId    String?
+  userEmail String?
+  category  String?
+  location  String?
+  filters   Json?
+  processed Boolean  @default(false)
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([userEmail])
+  @@index([processed])
+  @@index([createdAt])
+}
+
+model SearchAlertSettings {
+  id                 String   @id @default(cuid())
+  enabled            Boolean  @default(true)
+  maxEmailsPerUser   Int      @default(5) // Maximum alerts per user per check
+  checkIntervalHours Int      @default(24) // How often to check for matches
+  emailSubject       String   @default("New products matching your search!")
+  emailBody          String   @default("<p>Hi there!</p><p>We found some products matching your recent search: <strong>{{query}}</strong></p>{{products}}<p>Happy shopping!</p>")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  
+  @@map("search_alert_settings")
+}
+
+model AuthPageSettings {
+  id              String   @id @default(cuid())
+  page            String   @unique // 'login' or 'signup'
+  title           String
+  subtitle        String
+  tagline         String?
+  imageUrl        String?
+  backgroundColor String   @default("#1e293b")
+  stats           Json?
+  features        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String   // User who is following
+  followingId String   // User being followed
+  createdAt   DateTime @default(now())
+
+  follower    User     @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+model ContactRequest {
+  id           String   @id @default(cuid())
+  requesterId  String   // User requesting contact
+  sellerId     String   // User being contacted (ad owner)
+  adId         String?  // Optional: related ad
+  status       ContactRequestStatus @default(PENDING)
+  message      String?  // Optional message from requester
+  consentGiven Boolean  @default(false) // Seller consent checkbox
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  approvedAt   DateTime?
+  rejectedAt   DateTime?
+
+  requester    User     @relation("ContactRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  seller       User     @relation("ContactSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  ad           Ad?      @relation(fields: [adId], references: [id], onDelete: SetNull)
+
+  @@unique([requesterId, sellerId, adId])
+  @@index([requesterId])
+  @@index([sellerId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum ContactRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Block {
+  id         String   @id @default(cuid())
+  blockerId  String   // User who is blocking
+  blockedId  String   // User being blocked
+  reason     String?  // Optional reason
+  createdAt  DateTime @default(now())
+
+  blocker    User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked    User     @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String   // User performing action
+  targetId  String?  // User being acted upon
+  action    String   // Action performed (BLOCK, UNBLOCK, etc.)
+  reason    String?  // Optional reason
+  metadata  Json?    // Additional data
+  createdAt DateTime @default(now())
+
+  actor     User     @relation("AuditActor", fields: [actorId], references: [id], onDelete: Cascade)
+  target    User?    @relation("AuditTarget", fields: [targetId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([targetId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([userId, token])
+  @@index([expiresAt])
+}

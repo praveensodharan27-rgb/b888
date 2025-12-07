@@ -1,0 +1,274 @@
+/**
+ * EXAMPLE: How to create a custom category page
+ * 
+ * This is an example file showing different ways to use the category system.
+ * You don't need to use this - your existing /category/[slug]/page.tsx already works!
+ * 
+ * This is just for reference if you want to create custom category pages.
+ */
+
+'use client';
+
+import { useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { useCategoryAds, useCategory, useSubcategories } from '@/hooks/useCategoryAds';
+import AdCard from '@/components/AdCard';
+
+// Example 1: Simple Category Page
+export function SimpleCategoryPage() {
+  const params = useParams();
+  const categorySlug = params.slug as string;
+
+  // Fetch category details
+  const { data: category, isLoading: categoryLoading } = useCategory(categorySlug);
+
+  // Fetch ads for this category
+  const { data: ads, isLoading: adsLoading, refetch } = useCategoryAds({
+    category: categorySlug,
+    sort: 'newest',
+    limit: 20,
+  });
+
+  if (categoryLoading) return <div>Loading category...</div>;
+  if (!category) return <div>Category not found</div>;
+
+  return (
+    <div className="container mx-auto px-4 py-8">
+      {/* Category Header */}
+      <div className="mb-8">
+        <h1 className="text-4xl font-bold mb-2">
+          {category.icon} {category.name}
+        </h1>
+        <p className="text-gray-600">{category.description}</p>
+        <p className="text-sm text-gray-500 mt-2">
+          {category._count?.ads || 0} ads available
+        </p>
+      </div>
+
+      {/* Manual Refresh Button */}
+      <button
+        onClick={() => refetch()}
+        className="mb-4 px-4 py-2 bg-primary-600 text-white rounded-lg"
+      >
+        Refresh Ads
+      </button>
+
+      {/* Ads Grid */}
+      {adsLoading ? (
+        <div>Loading ads...</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {ads?.map((ad) => (
+            <AdCard key={ad.id} ad={ad} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Example 2: Category Page with Filters
+export function CategoryPageWithFilters() {
+  const params = useParams();
+  const router = useRouter();
+  const categorySlug = params.slug as string;
+
+  // State for filters
+  const [selectedSubcategory, setSelectedSubcategory] = useState('');
+  const [sortBy, setSortBy] = useState('newest');
+  const [priceRange, setPriceRange] = useState({ min: '', max: '' });
+
+  // Fetch category and subcategories
+  const { data: category } = useCategory(categorySlug);
+  const { data: subcategories } = useSubcategories(category?.id || '');
+
+  // Fetch ads with filters
+  const { data: ads, isLoading } = useCategoryAds({
+    category: categorySlug,
+    subcategory: selectedSubcategory,
+    sort: sortBy,
+    minPrice: priceRange.min,
+    maxPrice: priceRange.max,
+  });
+
+  const handleSubcategoryClick = (subcategorySlug: string) => {
+    setSelectedSubcategory(subcategorySlug);
+    // Update URL without reload
+    router.push(`/category/${categorySlug}?subcategory=${subcategorySlug}`);
+  };
+
+  return (
+    <div className="container mx-auto px-4 py-8">
+      <h1 className="text-3xl font-bold mb-6">{category?.name}</h1>
+
+      {/* Subcategory Tabs */}
+      <div className="flex gap-2 mb-6 overflow-x-auto">
+        <button
+          onClick={() => {
+            setSelectedSubcategory('');
+            router.push(`/category/${categorySlug}`);
+          }}
+          className={`px-4 py-2 rounded-full ${
+            !selectedSubcategory
+              ? 'bg-primary-600 text-white'
+              : 'bg-gray-100 text-gray-700'
+          }`}
+        >
+          All
+        </button>
+        {subcategories?.map((sub: any) => (
+          <button
+            key={sub.id}
+            onClick={() => handleSubcategoryClick(sub.slug)}
+            className={`px-4 py-2 rounded-full whitespace-nowrap ${
+              selectedSubcategory === sub.slug
+                ? 'bg-primary-600 text-white'
+                : 'bg-gray-100 text-gray-700'
+            }`}
+          >
+            {sub.name}
+          </button>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="bg-white p-4 rounded-lg shadow mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Sort */}
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="px-3 py-2 border rounded-lg"
+          >
+            <option value="newest">Latest First</option>
+            <option value="oldest">Oldest First</option>
+            <option value="price_low">Price: Low to High</option>
+            <option value="price_high">Price: High to Low</option>
+          </select>
+
+          {/* Min Price */}
+          <input
+            type="number"
+            placeholder="Min Price"
+            value={priceRange.min}
+            onChange={(e) =>
+              setPriceRange({ ...priceRange, min: e.target.value })
+            }
+            className="px-3 py-2 border rounded-lg"
+          />
+
+          {/* Max Price */}
+          <input
+            type="number"
+            placeholder="Max Price"
+            value={priceRange.max}
+            onChange={(e) =>
+              setPriceRange({ ...priceRange, max: e.target.value })
+            }
+            className="px-3 py-2 border rounded-lg"
+          />
+        </div>
+      </div>
+
+      {/* Ads Grid */}
+      {isLoading ? (
+        <div className="text-center py-12">Loading ads...</div>
+      ) : ads && ads.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {ads.map((ad) => (
+            <AdCard key={ad.id} ad={ad} />
+          ))}
+        </div>
+      ) : (
+        <div className="text-center py-12">
+          <p className="text-gray-500">No ads found</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Example 3: Real-time Category Navigation Component
+export function CategoryQuickNav() {
+  const router = useRouter();
+
+  const categories = [
+    { slug: 'electronics', name: 'Electronics', icon: '📱' },
+    { slug: 'vehicles', name: 'Vehicles', icon: '🚗' },
+    { slug: 'property', name: 'Property', icon: '🏠' },
+    { slug: 'fashion', name: 'Fashion', icon: '👕' },
+  ];
+
+  const handleCategoryClick = (slug: string) => {
+    // Navigate without page reload
+    router.push(`/category/${slug}`);
+  };
+
+  return (
+    <div className="flex gap-3 overflow-x-auto py-4">
+      {categories.map((cat) => (
+        <button
+          key={cat.slug}
+          onClick={() => handleCategoryClick(cat.slug)}
+          className="flex items-center gap-2 px-6 py-3 bg-white rounded-lg shadow hover:shadow-lg transition-all"
+        >
+          <span className="text-2xl">{cat.icon}</span>
+          <span className="font-semibold">{cat.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Example 4: Category Page with Real-time Updates
+export function RealtimeCategoryPage() {
+  const params = useParams();
+  const categorySlug = params.slug as string;
+
+  // This will auto-refresh every 60 seconds (based on staleTime)
+  const { data: ads, isLoading, isFetching } = useCategoryAds({
+    category: categorySlug,
+    sort: 'newest',
+  });
+
+  return (
+    <div className="container mx-auto px-4 py-8">
+      {/* Show fetching indicator */}
+      {isFetching && !isLoading && (
+        <div className="fixed top-4 right-4 bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg">
+          Updating ads...
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {isLoading ? (
+          // Loading skeleton
+          Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="animate-pulse">
+              <div className="h-48 bg-gray-200 rounded-t-lg"></div>
+              <div className="bg-white p-4 rounded-b-lg">
+                <div className="h-4 bg-gray-200 rounded mb-2"></div>
+                <div className="h-3 bg-gray-200 rounded w-2/3"></div>
+              </div>
+            </div>
+          ))
+        ) : (
+          ads?.map((ad) => <AdCard key={ad.id} ad={ad} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * HOW TO USE THESE EXAMPLES:
+ * 
+ * 1. Copy the code you need
+ * 2. Create a new page file (e.g., app/my-category/page.tsx)
+ * 3. Import and use the component
+ * 4. Customize as needed
+ * 
+ * Remember: Your existing /category/[slug]/page.tsx already works perfectly!
+ * These are just additional examples for custom implementations.
+ */
+

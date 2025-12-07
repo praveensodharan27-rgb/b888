@@ -1,0 +1,28 @@
+{
+  "restartable": "rs",
+  "ignore": [
+    ".git",
+    "node_modules/**/node_modules",
+    "uploads/",
+    "*.log"
+  ],
+  "verbose": false,
+  "execMap": {
+    "js": "node"
+  },
+  "watch": [
+    "*.js",
+    "routes/",
+    "middleware/",
+    "services/",
+    "utils/",
+    "db/",
+    "socket/"
+  ],
+  "ext": "js,json",
+  "delay": 1000,
+  "signal": "SIGUSR2",
+  "env": {
+    "NODE_ENV": "development"
+  }
+}

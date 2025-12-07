@@ -1,0 +1,69 @@
+const cron = require('node-cron');
+const { deleteDeactivatedAccounts } = require('../scripts/delete-deactivated-accounts');
+const { processSearchAlerts } = require('../services/searchAlerts');
+const { autoApprovePendingAds } = require('../services/autoApproval');
+
+/**
+ * Setup cron jobs for scheduled tasks
+ */
+function setupCronJobs() {
+  // Run daily at 2 AM to delete deactivated accounts
+  cron.schedule('0 2 * * *', async () => {
+    console.log('⏰ Running scheduled task: Delete deactivated accounts');
+    try {
+      await deleteDeactivatedAccounts();
+    } catch (error) {
+      console.error('❌ Error in scheduled task:', error);
+    }
+  });
+  
+  // Run search alerts processing every hour
+  cron.schedule('0 * * * *', async () => {
+    console.log('⏰ Running scheduled task: Process search alerts');
+    try {
+      await processSearchAlerts();
+    } catch (error) {
+      console.error('❌ Error in search alerts task:', error);
+    }
+  });
+  
+  // Process pending moderation after 5 minutes (runs every 5 minutes)
+  cron.schedule('*/5 * * * *', async () => {
+    console.log('⏰ Running scheduled task: Process pending moderation');
+    try {
+      await autoApprovePendingAds(5); // Process ads after 5 minutes
+    } catch (error) {
+      console.error('❌ Error in moderation processing task:', error);
+    }
+  });
+  
+  // Run search alerts on startup (after 30 seconds delay to allow server to fully initialize)
+  setTimeout(async () => {
+    console.log('⏰ Running initial search alerts check on startup...');
+    try {
+      await processSearchAlerts();
+    } catch (error) {
+      console.error('❌ Error in initial search alerts check:', error);
+    }
+  }, 30000);
+  
+  // Run moderation processing on startup (after 1 minute to allow server to fully initialize)
+  setTimeout(async () => {
+    console.log('⏰ Running initial moderation processing check on startup...');
+    try {
+      await autoApprovePendingAds(5);
+    } catch (error) {
+      console.error('❌ Error in initial moderation processing check:', error);
+    }
+  }, 60000);
+  
+  console.log('✅ Cron jobs scheduled:');
+  console.log('   - Delete deactivated accounts: Daily at 2 AM');
+  console.log('   - Process search alerts: Every hour');
+  console.log('   - Process pending moderation: Every 5 minutes (approve/reject after review)');
+  console.log('   - Initial search alerts check: 30 seconds after startup');
+  console.log('   - Initial moderation check: 1 minute after startup');
+}
+
+module.exports = { setupCronJobs };
+
