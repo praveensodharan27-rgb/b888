@@ -2,6 +2,7 @@ const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
 const { authenticate, authorize } = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/admin');
 const { uploadImages } = require('../middleware/upload');
 
 const router = express.Router();
@@ -361,6 +362,10 @@ router.put('/ads/:id/status',
       if (status === 'APPROVED') {
         updateData.autoRejected = false;
         updateData.moderationStatus = 'manually_approved';
+        // Set postedAt when ad is approved (goes live)
+        if (!ad.postedAt) {
+          updateData.postedAt = new Date();
+        }
       } else if (reason) {
         updateData.rejectionReason = reason;
         updateData.moderationStatus = 'manually_rejected';
@@ -502,6 +507,188 @@ router.get('/users', async (req, res) => {
   } catch (error) {
     console.error('Get admin users error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch users' });
+  }
+});
+
+// Get analytics
+router.get('/analytics', async (req, res) => {
+  try {
+    const { period = '7d' } = req.query; // 7d, 30d, 90d, 1y
+    
+    let startDate = new Date();
+    switch (period) {
+      case '7d':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case '30d':
+        startDate.setDate(startDate.getDate() - 30);
+        break;
+      case '90d':
+        startDate.setDate(startDate.getDate() - 90);
+        break;
+      case '1y':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+      default:
+        startDate.setDate(startDate.getDate() - 7);
+    }
+
+    const [
+      newUsers,
+      newAds,
+      revenue,
+      activeUsers,
+      topCategories,
+      topLocations
+    ] = await Promise.all([
+      prisma.user.count({ where: { createdAt: { gte: startDate } } }),
+      prisma.ad.count({ where: { createdAt: { gte: startDate } } }),
+      prisma.paymentOrder.aggregate({
+        where: { 
+          status: 'paid',
+          createdAt: { gte: startDate }
+        },
+        _sum: { amount: true }
+      }),
+      prisma.user.count({
+        where: {
+          ads: {
+            some: {
+              createdAt: { gte: startDate }
+            }
+          }
+        }
+      }),
+      prisma.category.findMany({
+        take: 10,
+        include: {
+          _count: {
+            select: { ads: true }
+          }
+        },
+        orderBy: {
+          ads: { _count: 'desc' }
+        }
+      }),
+      prisma.location.findMany({
+        take: 10,
+        include: {
+          _count: {
+            select: { ads: true }
+          }
+        },
+        orderBy: {
+          ads: { _count: 'desc' }
+        }
+      })
+    ]);
+
+    res.json({
+      success: true,
+      analytics: {
+        period,
+        startDate,
+        newUsers,
+        newAds,
+        revenue: revenue._sum.amount || 0,
+        activeUsers,
+        topCategories: topCategories.map(cat => ({
+          id: cat.id,
+          name: cat.name,
+          adCount: cat._count.ads
+        })),
+        topLocations: topLocations.map(loc => ({
+          id: loc.id,
+          name: loc.name,
+          adCount: loc._count.ads
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Get analytics error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch analytics' });
+  }
+});
+
+// Get audit logs
+router.get('/audit-logs', async (req, res) => {
+  try {
+    const { page = 1, limit = 50, type, userId, action } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const where = {};
+    if (type) where.type = type;
+    if (userId) where.userId = userId;
+    if (action) where.action = action;
+
+    const [logs, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        skip,
+        take: parseInt(limit),
+        orderBy: { createdAt: 'desc' },
+        include: {
+          actor: {
+            select: { id: true, name: true, email: true }
+          },
+          target: {
+            select: { id: true, name: true, email: true }
+          }
+        }
+      }),
+      prisma.auditLog.count({ where })
+    ]);
+
+    res.json({
+      success: true,
+      logs,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Get audit logs error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch audit logs' });
+  }
+});
+
+// Get roles
+router.get('/roles', async (req, res) => {
+  try {
+    const roles = [
+      { value: 'USER', label: 'User', description: 'Regular user with standard permissions' },
+      { value: 'ADMIN', label: 'Admin', description: 'Administrator with full access' },
+      { value: 'MODERATOR', label: 'Moderator', description: 'Moderator with content moderation permissions' }
+    ];
+
+    res.json({
+      success: true,
+      roles
+    });
+  } catch (error) {
+    console.error('Get roles error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch roles' });
+  }
+});
+
+// Create/Update role (for future role management)
+router.post('/roles', async (req, res) => {
+  try {
+    const { name, permissions, description } = req.body;
+
+    // For now, roles are hardcoded in User model
+    // In future, you can create a Role model
+    res.json({
+      success: true,
+      message: 'Role management coming soon',
+      note: 'Currently roles are USER and ADMIN only'
+    });
+  } catch (error) {
+    console.error('Create role error:', error);
+    res.status(500).json({ success: false, message: 'Failed to create role' });
   }
 });
 
@@ -1987,6 +2174,268 @@ router.get('/orders', async (req, res) => {
   } catch (error) {
     console.error('Get admin orders error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch orders' });
+  }
+});
+
+// ========== ADMIN FEATURE FLAGS ==========
+
+// Get all feature flags
+router.get('/feature-flags', authenticate, requireAdmin, async (req, res) => {
+  try {
+    // Use PremiumSettings model to store feature flags
+    const featureFlags = await prisma.premiumSettings.findMany({
+      where: {
+        key: { startsWith: 'feature_' }
+      },
+      orderBy: { key: 'asc' }
+    });
+
+    const flags = featureFlags.reduce((acc, flag) => {
+      const flagName = flag.key.replace('feature_', '');
+      acc[flagName] = {
+        enabled: flag.value === 'true' || flag.value === '1',
+        value: flag.value,
+        updatedAt: flag.updatedAt,
+        updatedBy: flag.updatedBy
+      };
+      return acc;
+    }, {});
+
+    res.json({
+      success: true,
+      featureFlags: flags,
+      count: featureFlags.length
+    });
+  } catch (error) {
+    console.error('Get feature flags error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch feature flags' });
+  }
+});
+
+// Get a specific feature flag
+router.get('/feature-flags/:flagName', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { flagName } = req.params;
+    const flagKey = `feature_${flagName}`;
+
+    const flag = await prisma.premiumSettings.findUnique({
+      where: { key: flagKey }
+    });
+
+    if (!flag) {
+      return res.status(404).json({ success: false, message: 'Feature flag not found' });
+    }
+
+    res.json({
+      success: true,
+      flag: {
+        name: flagName,
+        enabled: flag.value === 'true' || flag.value === '1',
+        value: flag.value,
+        updatedAt: flag.updatedAt,
+        updatedBy: flag.updatedBy
+      }
+    });
+  } catch (error) {
+    console.error('Get feature flag error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch feature flag' });
+  }
+});
+
+// Create or update a feature flag
+router.post('/feature-flags/:flagName', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { flagName } = req.params;
+    const { enabled, value, description } = req.body;
+    const flagKey = `feature_${flagName}`;
+
+    if (enabled === undefined && value === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Either "enabled" (boolean) or "value" (string) must be provided'
+      });
+    }
+
+    const flagValue = enabled !== undefined ? (enabled ? 'true' : 'false') : value;
+
+    const flag = await prisma.premiumSettings.upsert({
+      where: { key: flagKey },
+      update: {
+        value: flagValue,
+        updatedBy: req.user.id
+      },
+      create: {
+        key: flagKey,
+        value: flagValue,
+        updatedBy: req.user.id
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Feature flag updated successfully',
+      flag: {
+        name: flagName,
+        enabled: flag.value === 'true' || flag.value === '1',
+        value: flag.value,
+        updatedAt: flag.updatedAt,
+        updatedBy: flag.updatedBy
+      }
+    });
+  } catch (error) {
+    console.error('Update feature flag error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update feature flag' });
+  }
+});
+
+// Toggle a feature flag
+router.patch('/feature-flags/:flagName/toggle', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { flagName } = req.params;
+    const flagKey = `feature_${flagName}`;
+
+    const existingFlag = await prisma.premiumSettings.findUnique({
+      where: { key: flagKey }
+    });
+
+    const newValue = existingFlag
+      ? (existingFlag.value === 'true' || existingFlag.value === '1' ? 'false' : 'true')
+      : 'true';
+
+    const flag = await prisma.premiumSettings.upsert({
+      where: { key: flagKey },
+      update: {
+        value: newValue,
+        updatedBy: req.user.id
+      },
+      create: {
+        key: flagKey,
+        value: newValue,
+        updatedBy: req.user.id
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Feature flag ${newValue === 'true' ? 'enabled' : 'disabled'}`,
+      flag: {
+        name: flagName,
+        enabled: flag.value === 'true' || flag.value === '1',
+        value: flag.value,
+        updatedAt: flag.updatedAt,
+        updatedBy: flag.updatedBy
+      }
+    });
+  } catch (error) {
+    console.error('Toggle feature flag error:', error);
+    res.status(500).json({ success: false, message: 'Failed to toggle feature flag' });
+  }
+});
+
+// Delete a feature flag
+router.delete('/feature-flags/:flagName', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { flagName } = req.params;
+    const flagKey = `feature_${flagName}`;
+
+    const flag = await prisma.premiumSettings.findUnique({
+      where: { key: flagKey }
+    });
+
+    if (!flag) {
+      return res.status(404).json({ success: false, message: 'Feature flag not found' });
+    }
+
+    await prisma.premiumSettings.delete({
+      where: { key: flagKey }
+    });
+
+    res.json({
+      success: true,
+      message: 'Feature flag deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete feature flag error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete feature flag' });
+  }
+});
+
+// Bulk update feature flags
+router.post('/feature-flags/bulk', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { flags } = req.body;
+
+    if (!flags || typeof flags !== 'object') {
+      return res.status(400).json({
+        success: false,
+        message: 'Flags object required. Format: { "flagName": { "enabled": true } }'
+      });
+    }
+
+    const updates = Object.entries(flags).map(([flagName, config]) => {
+      const flagKey = `feature_${flagName}`;
+      const flagValue = config.enabled !== undefined
+        ? (config.enabled ? 'true' : 'false')
+        : config.value || 'false';
+
+      return prisma.premiumSettings.upsert({
+        where: { key: flagKey },
+        update: {
+          value: flagValue,
+          updatedBy: req.user.id
+        },
+        create: {
+          key: flagKey,
+          value: flagValue,
+          updatedBy: req.user.id
+        }
+      });
+    });
+
+    await Promise.all(updates);
+
+    res.json({
+      success: true,
+      message: `Updated ${updates.length} feature flag(s)`,
+      updatedCount: updates.length
+    });
+  } catch (error) {
+    console.error('Bulk update feature flags error:', error);
+    res.status(500).json({ success: false, message: 'Failed to bulk update feature flags' });
+  }
+});
+
+// Get feature flag usage statistics
+router.get('/feature-flags/:flagName/stats', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { flagName } = req.params;
+    const flagKey = `feature_${flagName}`;
+
+    const flag = await prisma.premiumSettings.findUnique({
+      where: { key: flagKey }
+    });
+
+    if (!flag) {
+      return res.status(404).json({ success: false, message: 'Feature flag not found' });
+    }
+
+    // Return basic stats (can be enhanced with actual usage tracking)
+    res.json({
+      success: true,
+      stats: {
+        flagName,
+        enabled: flag.value === 'true' || flag.value === '1',
+        createdAt: flag.createdAt || null,
+        updatedAt: flag.updatedAt,
+        updatedBy: flag.updatedBy,
+        // Placeholder for future usage tracking
+        usageCount: 0,
+        lastUsedAt: null
+      }
+    });
+  } catch (error) {
+    console.error('Get feature flag stats error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch feature flag statistics' });
   }
 });
 

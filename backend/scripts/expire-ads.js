@@ -92,14 +92,30 @@ async function expireAds() {
 
     console.log(`✅ Marked ${expiredAds.length} ad(s) as EXPIRED and sent notifications`);
     console.log(`\n✨ Expiration check complete!\n`);
+    
+    return {
+      success: true,
+      expired: expiredAds.length,
+      message: `Expired ${expiredAds.length} ad(s)`
+    };
   } catch (error) {
     console.error('❌ Error expiring ads:', error);
-    process.exit(1);
-  } finally {
-    await prisma.$disconnect();
+    throw error; // Re-throw for cron to handle
   }
 }
 
-// Run the script
-expireAds();
+// Export function for use in cron jobs
+module.exports = { expireAds };
+
+// Run the script if called directly
+if (require.main === module) {
+  expireAds().then(() => {
+    prisma.$disconnect();
+    process.exit(0);
+  }).catch((error) => {
+    console.error('❌ Error:', error);
+    prisma.$disconnect();
+    process.exit(1);
+  });
+}
 

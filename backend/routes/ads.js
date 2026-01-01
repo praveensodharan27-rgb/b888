@@ -6,6 +6,7 @@ const { uploadImages } = require('../middleware/upload');
 const { cacheMiddleware, clearCache } = require('../middleware/cache');
 const { indexAd, deleteAd } = require('../services/meilisearch');
 const { moderateAd, getModerationStatus } = require('../services/contentModeration');
+const { generateUniqueAdSlug } = require('../utils/slug');
 const Razorpay = require('razorpay');
 
 // Ensure dotenv is loaded
@@ -177,6 +178,7 @@ router.get('/',
             premiumType: true,
             isUrgent: true,
             views: true,
+            postedAt: true, // Include postedAt for sorting
             expiresAt: true,
             createdAt: true,
             updatedAt: true,
@@ -252,31 +254,46 @@ router.get('/',
         images: Array.isArray(ad.images) ? ad.images.filter(img => img && (typeof img === 'string' ? img.trim() !== '' : true)) : (ad.images && typeof ad.images === 'string' && ad.images.trim() !== '' ? [ad.images] : [])
       }));
 
-      // Sort ads to prioritize premium types: TOP > FEATURED > BUMP_UP > regular
-      // Within each tier, sort by newest first (createdAt desc)
+      // Sort ads with priority: Paid/Business/Premium ads first, then free ads
+      // Priority order: 1. Premium (TOP > FEATURED > BUMP_UP) 2. Business Package 3. Free
+      // Within same priority: newest first (postedAt DESC, fallback to createdAt DESC)
       const sortedAds = adsWithImages.sort((a, b) => {
-        // 1. Premium ads first
-        if (a.isPremium && !b.isPremium) return -1;
-        if (!a.isPremium && b.isPremium) return 1;
-        
-        // 2. If both are premium, sort by premium type priority
+        // Determine ad type priority: 1 = premium (paid), 2 = business package, 3 = free
+        const getAdTypePriority = (ad) => {
+          // Premium ads (paid) - highest priority
+          if (ad.isPremium) return 1;
+          // Business package ads (check if ad has business package characteristics)
+          // Heuristic: if expiresAt > 7 days, likely business package
+          if (ad.expiresAt) {
+            const expiryDate = new Date(ad.expiresAt);
+            const daysUntilExpiry = (expiryDate - new Date()) / (1000 * 60 * 60 * 24);
+            if (daysUntilExpiry > 7) return 2; // Business package ad
+          }
+          // Free ads (default) - lowest priority
+          return 3;
+        };
+
+        const aTypePriority = getAdTypePriority(a);
+        const bTypePriority = getAdTypePriority(b);
+
+        // 1. Priority: Premium (1) > Business Package (2) > Free (3)
+        if (aTypePriority !== bTypePriority) {
+          return aTypePriority - bTypePriority;
+        }
+
+        // 2. Within premium ads, sort by premium type: TOP > FEATURED > BUMP_UP
         if (a.isPremium && b.isPremium) {
           const premiumPriority = { 'TOP': 1, 'FEATURED': 2, 'BUMP_UP': 3 };
           const aPriority = premiumPriority[a.premiumType] || 4;
           const bPriority = premiumPriority[b.premiumType] || 4;
           
-          // If different premium types, sort by priority
           if (aPriority !== bPriority) return aPriority - bPriority;
-          
-          // 3. If same premium type (e.g., both TOP), sort by newest first (createdAt desc)
-          const aDate = new Date(a.createdAt).getTime();
-          const bDate = new Date(b.createdAt).getTime();
-          return bDate - aDate; // Descending order (newest first)
         }
-        
-        // 4. For non-premium ads, maintain original order (already sorted by orderBy)
-        // This preserves the selected sort option (newest, price, etc.)
-        return 0;
+
+        // 3. Within same priority/type, sort by newest first (postedAt DESC, fallback to createdAt DESC)
+        const aDate = a.postedAt ? new Date(a.postedAt).getTime() : new Date(a.createdAt).getTime();
+        const bDate = b.postedAt ? new Date(b.postedAt).getTime() : new Date(b.createdAt).getTime();
+        return bDate - aDate; // Descending order (newest first)
       });
 
       // Filter phone numbers based on privacy settings
@@ -294,6 +311,54 @@ router.get('/',
         'Vary': 'Accept-Encoding'
       });
 
+      // Include quota information if user is authenticated
+      let quota = null;
+      if (req.user) {
+        try {
+          const FREE_ADS_LIMIT = 2;
+          const now = new Date();
+          
+          // Get user quota
+          const user = await prisma.user.findUnique({
+            where: { id: req.user.id },
+            select: {
+              freeAdsRemaining: true,
+              freeAdsUsed: true
+            }
+          });
+          
+          const freeAdsRemaining = user?.freeAdsRemaining ?? FREE_ADS_LIMIT;
+          const freeAdsUsed = user?.freeAdsUsed || 0;
+          
+          // Get business package quota (accept both 'paid' and 'verified' status)
+          const activeBusinessPackages = await prisma.businessPackage.findMany({
+            where: {
+              userId: req.user.id,
+              status: { in: ['paid', 'verified'] },
+              expiresAt: { gt: now }
+            },
+            select: {
+              totalAdsAllowed: true,
+              adsUsed: true
+            }
+          });
+          
+          const businessAdsRemaining = activeBusinessPackages.reduce((sum, pkg) => {
+            const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+            return sum + remaining;
+          }, 0);
+          
+          quota = {
+            freeAdsRemaining,
+            businessAdsRemaining,
+            totalRemaining: freeAdsRemaining + businessAdsRemaining
+          };
+        } catch (error) {
+          console.error('Error fetching quota for ads list:', error);
+          // Don't fail the request if quota fetch fails
+        }
+      }
+
       res.json({
         success: true,
         ads: adsWithPrivacy,
@@ -302,7 +367,8 @@ router.get('/',
           limit: parseInt(limit),
           total,
           pages: Math.ceil(total / parseInt(limit))
-        }
+        },
+        ...(quota && { quota })
       });
     } catch (error) {
       console.error('Get ads error:', error);
@@ -319,73 +385,252 @@ router.get('/check-limit',
       const now = new Date();
       const FREE_ADS_LIMIT = 2;
 
-      // Get user's free ads usage
-      const user = await prisma.user.findUnique({
-        where: { id: req.user.id },
-        select: { freeAdsUsed: true }
+          // Check and reset monthly quota if needed
+          const { checkAndResetUserQuota } = require('../services/monthlyQuotaReset');
+          await checkAndResetUserQuota(req.user.id);
+
+          // Get user's free ads quota (monthly)
+          const user = await prisma.user.findUnique({
+            where: { id: req.user.id },
+            select: { 
+              freeAdsRemaining: true,
+              freeAdsUsed: true,
+              freeAdsUsedThisMonth: true,
+              lastFreeAdsResetDate: true
+            }
+          });
+
+          const freeAdsRemaining = user?.freeAdsRemaining ?? FREE_ADS_LIMIT;
+          const freeAdsUsed = user?.freeAdsUsedThisMonth || 0; // Use monthly counter
+
+      // Get ALL UserBusinessPackages (including exhausted and expired) - IMPORTANT: Always show purchased packages
+      const allUserBusinessPackages = await prisma.userBusinessPackage.findMany({
+        where: {
+          userId: req.user.id
+        },
+        orderBy: {
+          purchaseTime: 'asc' // Oldest purchased first
+        }
       });
 
-      const freeAdsUsed = user?.freeAdsUsed || 0;
-
-      // Check if user has any active business packages
-      const activeBusinessPackages = await prisma.businessPackage.findMany({
+      // Also get BusinessPackage for backward compatibility
+      const allBusinessPackages = await prisma.businessPackage.findMany({
         where: {
           userId: req.user.id,
-          status: 'paid',
-          expiresAt: {
-            gt: now
-          }
+          status: { in: ['paid', 'verified'] },
+          expiresAt: { gt: now }
         },
         select: {
           id: true,
           packageType: true,
           totalAdsAllowed: true,
           adsUsed: true,
+          status: true,
           premiumSlotsTotal: true,
           premiumSlotsUsed: true,
           expiresAt: true,
           createdAt: true
         },
         orderBy: {
-          expiresAt: 'asc' // Oldest expiry first
+          createdAt: 'asc'
         }
       });
 
+      // Use UserBusinessPackage if available, otherwise fallback to BusinessPackage
+      const packagesToUse = allUserBusinessPackages.length > 0 ? allUserBusinessPackages : allBusinessPackages;
+
+      // Separate active packages (with remaining ads) and exhausted packages
+      // Handle both UserBusinessPackage and BusinessPackage formats
+      const activeBusinessPackages = packagesToUse.filter(pkg => {
+        if ('totalAds' in pkg) {
+          // UserBusinessPackage format
+          const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+          const now = new Date();
+          return remaining > 0 && pkg.status === 'active' && (!pkg.expiresAt || new Date(pkg.expiresAt) > now);
+        } else {
+          // BusinessPackage format (backward compatibility)
+          const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+          return remaining > 0;
+        }
+      });
+
+      const exhaustedBusinessPackages = packagesToUse.filter(pkg => {
+        if ('totalAds' in pkg) {
+          // UserBusinessPackage format
+          return pkg.status === 'exhausted' || ((pkg.totalAds || 0) - (pkg.usedAds || 0) === 0 && pkg.status !== 'expired');
+        } else {
+          // BusinessPackage format
+          const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+          return remaining === 0;
+        }
+      });
+
+      console.log('📦 /api/ads/check-limit - Business packages:', {
+        userId: req.user.id,
+        totalPackages: allBusinessPackages.length,
+        activeCount: activeBusinessPackages.length,
+        exhaustedCount: exhaustedBusinessPackages.length,
+        activePackages: activeBusinessPackages.map(pkg => ({
+          id: pkg.id,
+          type: pkg.packageType,
+          totalAdsAllowed: pkg.totalAdsAllowed,
+          adsUsed: pkg.adsUsed,
+          remaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0)
+        })),
+        exhaustedPackages: exhaustedBusinessPackages.map(pkg => ({
+          id: pkg.id,
+          type: pkg.packageType,
+          totalAdsAllowed: pkg.totalAdsAllowed,
+          adsUsed: pkg.adsUsed,
+          remaining: 0,
+          status: 'EXHAUSTED'
+        }))
+      });
+
       // Calculate total ads remaining from business packages
-      const totalAdsRemaining = activeBusinessPackages.reduce((sum, pkg) => {
-        const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
-        return sum + remaining;
+      const businessAdsRemaining = activeBusinessPackages.reduce((sum, pkg) => {
+        if ('totalAds' in pkg) {
+          // UserBusinessPackage format
+          return sum + ((pkg.totalAds || 0) - (pkg.usedAds || 0));
+        } else {
+          // BusinessPackage format
+          return sum + ((pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0));
+        }
       }, 0);
 
-      // Check if user can post ads
-      const hasFreeAdsRemaining = freeAdsUsed < FREE_ADS_LIMIT;
-      const canPost = hasFreeAdsRemaining || totalAdsRemaining > 0;
+      console.log('📊 /api/ads/check-limit - Quota calculation:', {
+        businessAdsRemaining,
+        freeAdsRemaining,
+        totalRemaining: businessAdsRemaining + freeAdsRemaining
+      });
+
+      // CORE BUSINESS RULES (UPDATED):
+      // 1. FREE ADS (monthly) are used FIRST
+      // 2. Business package ads are used SECOND (after free ads exhausted)
+      // 3. Payment required when BOTH are exhausted
+      // 4. Total remaining = free ads + business ads (both count)
+      
+      const totalRemaining = freeAdsRemaining + businessAdsRemaining; // Sum of both
+
+      const canPost = totalRemaining > 0;
       const hasLimit = !canPost;
 
-      // Format packages for response
-      const packages = activeBusinessPackages.map(pkg => ({
-        id: pkg.id,
-        packageType: pkg.packageType,
-        totalAdsAllowed: pkg.totalAdsAllowed || 0,
-        adsUsed: pkg.adsUsed || 0,
-        adsRemaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0),
-        premiumSlotsTotal: pkg.premiumSlotsTotal || 0,
-        premiumSlotsUsed: pkg.premiumSlotsUsed || 0,
-        premiumSlotsAvailable: (pkg.premiumSlotsTotal || 0) - (pkg.premiumSlotsUsed || 0),
-        expiresAt: pkg.expiresAt,
-        createdAt: pkg.createdAt
-      }));
+      // Get total purchased packages count (all time) from UserBusinessPackage
+      const totalPurchased = allUserBusinessPackages.length || allBusinessPackages.length;
+
+      // Format packages for response - Include ALL packages (active + exhausted + expired)
+      // Use UserBusinessPackage if available, otherwise BusinessPackage
+      const packageNames = {
+        MAX_VISIBILITY: 'Max Visibility',
+        SELLER_PLUS: 'Seller Plus',
+        SELLER_PRIME: 'Seller Prime'
+      };
+
+      const packages = packagesToUse.map(pkg => {
+        if ('totalAds' in pkg) {
+          // UserBusinessPackage format
+          const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+          const now = new Date();
+          const isExpired = pkg.expiresAt && new Date(pkg.expiresAt) <= now;
+          const isExhausted = remaining === 0 && !isExpired;
+          
+          return {
+            packageId: pkg.id,
+            packageName: `${packageNames[pkg.packageType] || pkg.packageType} Package`,
+            packageType: pkg.packageType,
+            totalAds: pkg.totalAds || 0,
+            usedAds: pkg.usedAds || 0,
+            adsRemaining: remaining,
+            isExhausted: isExhausted,
+            isExpired: isExpired,
+            status: isExpired ? 'EXPIRED' : (isExhausted ? 'EXHAUSTED' : 'ACTIVE'),
+            purchasedAt: pkg.purchaseTime,
+            expiresAt: pkg.expiresAt,
+            amount: pkg.amount,
+            allowedCategories: pkg.allowedCategories || []
+          };
+        } else {
+          // BusinessPackage format (backward compatibility)
+          const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+          const isExhausted = remaining === 0;
+          
+          return {
+            packageId: pkg.id,
+            packageName: `${packageNames[pkg.packageType] || pkg.packageType} Package`,
+            packageType: pkg.packageType,
+            totalAds: pkg.totalAdsAllowed || 0,
+            usedAds: pkg.adsUsed || 0,
+            adsRemaining: remaining,
+            isExhausted: isExhausted,
+            status: isExhausted ? 'EXHAUSTED' : 'ACTIVE',
+            purchasedAt: pkg.createdAt,
+            expiresAt: pkg.expiresAt,
+            premiumSlotsTotal: pkg.premiumSlotsTotal || 0,
+            premiumSlotsUsed: pkg.premiumSlotsUsed || 0,
+            premiumSlotsAvailable: (pkg.premiumSlotsTotal || 0) - (pkg.premiumSlotsUsed || 0)
+          };
+        }
+      });
+
+      // Calculate next reset date for free ads
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      nextMonth.setHours(0, 0, 0, 0);
+
+      // Structured quota response
+      const userAdQuota = {
+        monthlyFreeAds: {
+          total: FREE_ADS_LIMIT,
+          used: freeAdsUsed,
+          remaining: freeAdsRemaining,
+          resetAt: nextMonth.toISOString()
+        },
+        packages: packages
+      };
 
       res.json({
         success: true,
         hasLimit,
         canPost,
+        // NEW: Structured quota data
+        userAdQuota,
+        // Quota information (backward compatibility)
+        freeAdsRemaining: freeAdsRemaining,
         freeAdsUsed,
+        freeAdsUsedThisMonth: freeAdsUsed,
         freeAdsLimit: FREE_ADS_LIMIT,
-        freeAdsRemaining: Math.max(0, FREE_ADS_LIMIT - freeAdsUsed),
+        businessAdsRemaining,
+        totalRemaining,
+        hasFreeAdsRemaining: freeAdsRemaining > 0,
+        hasBusinessAdsRemaining: businessAdsRemaining > 0,
+        // Package information
         activePackagesCount: activeBusinessPackages.length,
-        totalAdsRemaining,
-        packages,
+        exhaustedPackagesCount: exhaustedBusinessPackages.length,
+        totalPackages: allBusinessPackages.length, // Total active packages (including exhausted)
+        totalPurchased: totalPurchased, // Total packages purchased (all time, including expired)
+        packages, // All packages (active + exhausted)
+        activePackages: activeBusinessPackages.map(pkg => ({
+          id: pkg.id,
+          packageType: pkg.packageType,
+          totalAdsAllowed: pkg.totalAdsAllowed || 0,
+          adsUsed: pkg.adsUsed || 0,
+          adsRemaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0)
+        })),
+        exhaustedPackages: exhaustedBusinessPackages.map(pkg => ({
+          id: pkg.id,
+          packageType: pkg.packageType,
+          totalAdsAllowed: pkg.totalAdsAllowed || 0,
+          adsUsed: pkg.adsUsed || 0,
+          adsRemaining: 0,
+          status: 'EXHAUSTED'
+        })),
+        // Monthly quota info
+        isMonthlyQuota: true,
+        nextResetDate: (() => {
+          const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+          nextMonth.setHours(0, 0, 0, 0);
+          return nextMonth.toISOString();
+        })(),
+        lastResetDate: user?.lastFreeAdsResetDate?.toISOString() || null,
         // Legacy fields for backward compatibility
         premiumSlotsTotal: activeBusinessPackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsTotal || 0), 0),
         premiumSlotsUsed: activeBusinessPackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsUsed || 0), 0),
@@ -409,6 +654,97 @@ router.get('/check-limit',
     }
   }
 );
+
+// Get ad posting eligibility (NEW - CORE BUSINESS RULES)
+router.get('/eligibility', authenticate, async (req, res) => {
+  try {
+    const FREE_ADS_LIMIT = 2;
+    const now = new Date();
+
+    // Get user with freeAdsRemaining
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        freeAdsRemaining: true,
+        freeAdsUsed: true
+      }
+    });
+
+    const freeAdsRemaining = user?.freeAdsRemaining ?? FREE_ADS_LIMIT;
+    const freeAdsUsed = user?.freeAdsUsed || 0;
+
+    // Check active business packages (accept both 'paid' and 'verified' status)
+    const activeBusinessPackages = await prisma.businessPackage.findMany({
+      where: {
+        userId: req.user.id,
+        status: { in: ['paid', 'verified'] },
+        expiresAt: { gt: now }
+      },
+      select: {
+        id: true,
+        packageType: true,
+        totalAdsAllowed: true,
+        adsUsed: true,
+        expiresAt: true
+      }
+    });
+
+    // Calculate business ads remaining (sum of all packages)
+    const businessAdsRemaining = activeBusinessPackages.reduce((sum, pkg) => {
+      const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+      return sum + remaining;
+    }, 0);
+
+    const businessPackageActive = activeBusinessPackages.length > 0;
+    const totalRemaining = freeAdsRemaining + businessAdsRemaining;
+
+    // Eligibility rules:
+    // 1. Free ads: available if freeAdsRemaining > 0
+    // 2. Normal ads: available if freeAdsRemaining > 0 OR businessAdsRemaining > 0
+    // 3. Premium ads: ALWAYS require payment (ignore free/business quota)
+    const canPostFreeAd = freeAdsRemaining > 0;
+    const canPostNormalAd = freeAdsRemaining > 0 || businessAdsRemaining > 0;
+    const canPostPremiumAd = true; // Always allowed (but requires payment)
+    const premiumRequiresPayment = true; // Premium ads ALWAYS paid
+
+    res.json({
+      success: true,
+      freeAdsRemaining,
+      businessAdsRemaining,
+      businessPackageActive,
+      totalRemaining,
+      canPostFreeAd,
+      canPostNormalAd,
+      canPostPremiumAd,
+      premiumRequiresPayment,
+      // Additional info
+      freeAdsLimit: FREE_ADS_LIMIT,
+      freeAdsUsed,
+      activePackages: activeBusinessPackages.map(pkg => ({
+        id: pkg.id,
+        packageType: pkg.packageType,
+        totalAdsAllowed: pkg.totalAdsAllowed || 0,
+        adsUsed: pkg.adsUsed || 0,
+        adsRemaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0),
+        expiresAt: pkg.expiresAt
+      }))
+    });
+  } catch (error) {
+    console.error('Get eligibility error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch eligibility',
+      freeAdsRemaining: 0,
+      businessAdsRemaining: 0,
+      businessPackageActive: false,
+      totalRemaining: 0,
+      canPostFreeAd: false,
+      canPostNormalAd: false,
+      canPostPremiumAd: true,
+      premiumRequiresPayment: true
+    });
+  }
+});
 
 // Get price suggestion based on similar ads
 router.get('/price-suggestion',
@@ -988,9 +1324,9 @@ router.post('/',
       // Ensure images is an array
       const imagesArray = Array.isArray(req.uploadedImages) ? req.uploadedImages : [];
       
-      // Set expiration date to 7 days from now
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
+      // Expiry will be calculated based on ad type (free vs business/premium)
+      // Will be set after determining quota usage
+      let expiresAt = null;
       
       // Get premium options from payment order OR request body (for business package slots)
       let premiumType = null;
@@ -1099,11 +1435,11 @@ router.post('/',
         hasPaymentOrder: !!paymentOrderId
       });
 
-      // Check if user has any active business packages
+      // Check if user has any active business packages (accept both 'paid' and 'verified' status)
       const activeBusinessPackages = await prisma.businessPackage.findMany({
         where: {
           userId: req.user.id,
-          status: 'paid',
+          status: { in: ['paid', 'verified'] },
           expiresAt: {
             gt: now
           }
@@ -1113,6 +1449,7 @@ router.post('/',
           packageType: true,
           totalAdsAllowed: true,
           adsUsed: true,
+          expiresAt: true,
           premiumSlotsTotal: true, // Keep for backward compatibility
           premiumSlotsUsed: true // Keep for backward compatibility
         }
@@ -1122,7 +1459,10 @@ router.post('/',
       activeBusinessPackages.forEach((pkg, index) => {
         const adsRemaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
         const premiumSlotsAvailable = (pkg.premiumSlotsTotal || 0) - (pkg.premiumSlotsUsed || 0);
-        console.log(`   Package ${index + 1}: ${pkg.packageType} - ${pkg.adsUsed}/${pkg.totalAdsAllowed} ads used, ${adsRemaining} remaining`);
+        console.log(`   Package ${index + 1}: ${pkg.packageType} - ${pkg.adsUsed}/${pkg.totalAdsAllowed || 0} ads used, ${adsRemaining} remaining`);
+        if (pkg.totalAdsAllowed === 0 || pkg.totalAdsAllowed === null) {
+          console.warn(`   ⚠️  WARNING: Package ${pkg.id} has totalAdsAllowed: ${pkg.totalAdsAllowed} - Run: npm run fix-business-package-quota`);
+        }
         console.log(`      (Premium slots: ${pkg.premiumSlotsUsed}/${pkg.premiumSlotsTotal} used, ${premiumSlotsAvailable} available - deprecated)`);
       });
 
@@ -1134,87 +1474,239 @@ router.post('/',
       }, 0);
       
       console.log('📊 Total ads remaining from business packages:', totalAdsRemaining);
-
-      // Check free ads limit (always fetch freeAdsUsed for logging, but only check limit if no business package ads available)
-      let hasFreeAdsRemaining = false;
-      let freeAdsUsed = 0;
       
-      // Always fetch freeAdsUsed for logging purposes
-      const user = await prisma.user.findUnique({
-        where: { id: req.user.id },
-        select: { freeAdsUsed: true }
-      });
-      
-      freeAdsUsed = user?.freeAdsUsed || 0;
-      
-      // Only check if free ads are remaining if no business package ads are available
-      if (totalAdsRemaining <= 0 && !paymentOrderId) {
-        hasFreeAdsRemaining = freeAdsUsed < FREE_ADS_LIMIT;
+      // Check if any packages have totalAdsAllowed: 0 (needs fix)
+      const packagesWithZeroQuota = activeBusinessPackages.filter(pkg => (pkg.totalAdsAllowed || 0) === 0);
+      if (packagesWithZeroQuota.length > 0) {
+        console.warn('⚠️  WARNING: Found packages with totalAdsAllowed: 0. Run: npm run fix-business-package-quota');
+        packagesWithZeroQuota.forEach(pkg => {
+          console.warn(`   Package ${pkg.id} (${pkg.packageType}): totalAdsAllowed = ${pkg.totalAdsAllowed}`);
+        });
       }
 
-      // If user has no free ads remaining AND no business package ads remaining AND no payment order, require payment
-      if (!hasFreeAdsRemaining && totalAdsRemaining <= 0 && !paymentOrderId) {
-        // Check if this is a premium ad - if so, they can still purchase premium options
-        if (isPremiumAd) {
-          console.log('❌ No business package ads remaining - premium ad requires payment');
+      // CORE BUSINESS RULES:
+      // 1. Premium ads (TOP/FEATURED/BUMP_UP) ALWAYS require payment (ignore free/business quota)
+      // 2. Business package = normal ads free (quota based)
+      // 3. Free ads = fallback for normal ads only
+
+      // Check and reset monthly quota if needed (before checking quota)
+      const { checkAndResetUserQuota } = require('../services/monthlyQuotaReset');
+      await checkAndResetUserQuota(req.user.id);
+
+      // Get user quota (monthly)
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: {
+          freeAdsRemaining: true,
+          freeAdsUsed: true,
+          freeAdsUsedThisMonth: true,
+          lastFreeAdsResetDate: true
+        }
+      });
+
+      const freeAdsRemaining = user?.freeAdsRemaining ?? FREE_ADS_LIMIT;
+      const freeAdsUsed = user?.freeAdsUsedThisMonth || 0; // Use monthly counter instead of lifetime
+      const businessAdsRemaining = totalAdsRemaining;
+
+      // RULE 1: Premium ads ALWAYS require payment
+      if (isPremiumAd && !paymentOrderId) {
+        console.log('❌ Premium ad requires payment (ALWAYS PAID)');
+        return res.status(402).json({
+          success: false,
+          message: 'Premium ads (TOP/FEATURED/BUMP_UP) always require payment. Please purchase premium options.',
+          requiresPayment: true,
+          isPremiumAd: true,
+          premiumRequiresPayment: true,
+          options: {
+            premiumOptions: 'Purchase Premium Options for this ad'
+          }
+        });
+      }
+
+      // RULE 2 & 3: Normal ads - check quota (business package first, then free ads)
+      if (!isPremiumAd && !paymentOrderId) {
+        // Check if user has quota for normal ads
+        const hasQuota = businessAdsRemaining > 0 || freeAdsRemaining > 0;
+        
+        console.log('📊 Quota check for normal ad:', {
+          businessAdsRemaining,
+          freeAdsRemaining,
+          totalRemaining: businessAdsRemaining + freeAdsRemaining,
+          hasQuota,
+          activePackagesCount: activeBusinessPackages.length,
+          packages: activeBusinessPackages.map(pkg => ({
+            id: pkg.id,
+            packageType: pkg.packageType,
+            totalAdsAllowed: pkg.totalAdsAllowed,
+            adsUsed: pkg.adsUsed,
+            remaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0)
+          }))
+        });
+        
+        if (!hasQuota) {
+          console.log('❌ No quota remaining for normal ad:', {
+            businessAdsRemaining,
+            freeAdsRemaining,
+            activePackagesCount: activeBusinessPackages.length,
+            packages: activeBusinessPackages.map(pkg => ({
+              id: pkg.id,
+              packageType: pkg.packageType,
+              totalAdsAllowed: pkg.totalAdsAllowed,
+              adsUsed: pkg.adsUsed,
+              remaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0)
+            }))
+          });
+          
+          // Build error message with actual counts (Priority: Free ads first, then business package)
+          const freeAdsText = freeAdsRemaining === 0 
+            ? `all ${FREE_ADS_LIMIT} free ads (monthly)` 
+            : `${FREE_ADS_LIMIT - freeAdsRemaining}/${FREE_ADS_LIMIT} free ads`;
+          const businessAdsText = businessAdsRemaining === 0 && activeBusinessPackages.length > 0
+            ? `all business package ads`
+            : businessAdsRemaining === 0 && activeBusinessPackages.length === 0
+              ? `all 0 business package ads`
+              : `${businessAdsRemaining} business package ads remaining`;
+          
           return res.status(402).json({
             success: false,
-            message: 'No business package ads left. Please use premium options to post this ad.',
+            message: `You have used ${freeAdsText} and ${businessAdsText}. Free ads are used first, then business package ads. To post more ads, please select premium options below or purchase a new business package.`,
             requiresPayment: true,
-            adsRemaining: 0,
+            freeAdsRemaining,
+            freeAdsUsed,
+            freeAdsLimit: FREE_ADS_LIMIT,
+            businessAdsRemaining,
+            totalRemaining: businessAdsRemaining + freeAdsRemaining,
+            diagnostic: {
+              activePackagesCount: activeBusinessPackages.length,
+              packages: activeBusinessPackages.map(pkg => ({
+                id: pkg.id,
+                packageType: pkg.packageType,
+                totalAdsAllowed: pkg.totalAdsAllowed,
+                adsUsed: pkg.adsUsed,
+                remaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0),
+                expiresAt: pkg.expiresAt
+              })),
+              userFreeAdsRemaining: freeAdsRemaining,
+              userFreeAdsUsed: freeAdsUsed
+            },
             options: {
-              premiumOptions: 'Purchase Premium Options for this ad',
+              premiumOptions: 'Select premium features to boost your ad visibility',
               businessPackage: 'Purchase a Business Package for more ads'
             }
           });
-        } else {
-          // Regular ad - require payment or business package
-          console.log('❌ No free ads and no business package ads remaining - requiring payment');
-          return res.status(402).json({
-            success: false,
-            message: `You have used all ${FREE_ADS_LIMIT} free ads and all business package ads. Please purchase a Business Package or Premium Options to post more ads.`,
-            requiresPayment: true,
-            freeAdsUsed: freeAdsUsed,
-            freeAdsLimit: FREE_ADS_LIMIT,
-            adsRemaining: 0,
-            options: {
-              businessPackage: 'Purchase a Business Package for more ads',
-              premiumOptions: 'Purchase Premium Options for this ad'
-            }
-          });
         }
       }
 
-      // Find a package with available ads to use (for tracking which package to increment)
-      // IMPORTANT: This applies to ALL ads posted using business package slots (regular OR premium)
-      // Premium features don't require payment when using business package slots
+      // CORE BUSINESS RULES - Quota Management:
+      // 1. Premium ads: ALWAYS paid (paymentOrderId required) - NO quota decrement
+      // 2. Normal ads with business package: Use business package quota (decrement businessAdsRemaining)
+      // 3. Normal ads without business package: Use free ads quota (decrement freeAdsRemaining)
+
       let packageToUse = null;
-      if (totalAdsRemaining > 0 && !paymentOrderId) {
-        for (const pkg of activeBusinessPackages) {
-          const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
-          if (remaining > 0) {
-            packageToUse = pkg;
-            console.log(`✅ Found package to use: ${pkg.id} (${pkg.packageType}) with ${remaining} ads remaining`);
-            break;
+      let useBusinessPackageQuota = false;
+      let useFreeAdsQuota = false;
+
+      if (isPremiumAd) {
+        // Premium ads: ALWAYS paid, no quota decrement
+        console.log('⭐ Premium ad - using payment order, no quota decrement');
+      } else if (!paymentOrderId) {
+        // Normal ad: Check quota priority (FREE ADS FIRST, then business package ads)
+        // PRIORITY: 1. Free ads (monthly) 2. Business package ads 3. Payment required
+        if (freeAdsRemaining > 0) {
+          // Use free ads quota FIRST
+          useFreeAdsQuota = true;
+          console.log(`✅ Using free ads quota FIRST: ${freeAdsRemaining} remaining`);
+        } else if (businessAdsRemaining > 0) {
+          // Use business package quota SECOND (only if free ads exhausted)
+          // PRIORITY: Use UserBusinessPackage table and consume from OLDEST active package first
+          // Reuse existing 'now' variable from outer scope
+          const userBusinessPackages = await prisma.userBusinessPackage.findMany({
+            where: {
+              userId: req.user.id,
+              status: 'active',
+              expiresAt: { gt: now } // Not expired
+            },
+            orderBy: { purchaseTime: 'asc' } // OLDEST FIRST
+          });
+
+          // OLX-LIKE LOGIC: Find oldest active package with remaining ads
+          // Auto-switch: When one package is exhausted, system automatically uses next oldest package
+          for (const pkg of userBusinessPackages) {
+            const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+            // Reuse existing 'now' variable from outer scope
+            const isExpired = pkg.expiresAt && new Date(pkg.expiresAt) <= now;
+            const isActive = !isExpired && pkg.status === 'active';
+            
+            // Only use active packages with remaining ads
+            if (isActive && remaining > 0) {
+              packageToUse = pkg;
+              useBusinessPackageQuota = true;
+              console.log(`✅ Using OLDEST business package (OLX-like logic): ${pkg.id} (${pkg.packageType}) purchased at ${pkg.purchaseTime}, ${remaining} ads remaining`);
+              console.log(`   Package will auto-switch to next oldest when exhausted`);
+              break;
+            }
+          }
+
+          // Fallback to BusinessPackage table if UserBusinessPackage not found (backward compatibility)
+          if (!packageToUse) {
+            for (const pkg of activeBusinessPackages) {
+              const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+              if (remaining > 0) {
+                packageToUse = pkg;
+                useBusinessPackageQuota = true;
+                console.log(`✅ Using business package quota (fallback): ${pkg.id} (${pkg.packageType}) with ${remaining} ads remaining`);
+                break;
+              }
+            }
           }
         }
-        // Store package ID to increment adsUsed after ad creation
-        req.businessPackageId = packageToUse?.id;
-        console.log('📝 Stored businessPackageId for adsUsed increment:', req.businessPackageId);
-        console.log('📝 Ad details:', {
-          isPremiumAd,
-          premiumType,
-          isUrgent,
-          willUseBusinessPackage: !!req.businessPackageId
-        });
-      } else {
-        console.log('⚠️ Package selection skipped:', {
-          totalAdsRemaining,
-          hasPaymentOrder: !!paymentOrderId,
-          reason: paymentOrderId ? 'Has payment order' : totalAdsRemaining <= 0 ? 'No ads remaining' : 'Unknown'
-        });
       }
 
+      // Store quota info for post-creation decrement
+      req.businessPackageId = packageToUse?.id;
+      req.userBusinessPackageId = packageToUse?.id; // Store UserBusinessPackage ID if using it
+      req.isUserBusinessPackage = packageToUse && 'totalAds' in packageToUse; // Check if it's UserBusinessPackage
+      req.useBusinessPackageQuota = useBusinessPackageQuota;
+      req.useFreeAdsQuota = useFreeAdsQuota;
+
+      console.log('📝 Quota allocation:', {
+        isPremiumAd,
+        hasPaymentOrder: !!paymentOrderId,
+        useBusinessPackageQuota,
+        useFreeAdsQuota,
+        businessPackageId: req.businessPackageId
+      });
+
+      // Calculate expiry based on ad type
+      // Free ads: shorter expiry (7 days)
+      // Business/premium ads: based on package validity
+      // Reuse existing 'now' variable declared earlier
+      if (isPremiumAd || useBusinessPackageQuota) {
+        // Business/premium ads: expiry based on package validity
+        if (packageToUse && packageToUse.expiresAt) {
+          // Use package expiry date, but not more than 90 days from now
+          const packageExpiry = new Date(packageToUse.expiresAt);
+          const maxExpiry = new Date();
+          maxExpiry.setDate(maxExpiry.getDate() + 90);
+          expiresAt = packageExpiry < maxExpiry ? packageExpiry : maxExpiry;
+          console.log(`⏰ Business/premium ad expiry: ${expiresAt.toISOString()} (based on package validity)`);
+        } else {
+          // Default: 30 days for business/premium ads
+          expiresAt = new Date();
+          expiresAt.setDate(expiresAt.getDate() + 30);
+          console.log(`⏰ Business/premium ad expiry: ${expiresAt.toISOString()} (default 30 days)`);
+        }
+      } else if (useFreeAdsQuota) {
+        // Free ads: shorter expiry (7 days)
+        expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 7);
+        console.log(`⏰ Free ad expiry: ${expiresAt.toISOString()} (7 days)`);
+      } else {
+        // Fallback: 7 days
+        expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 7);
+        console.log(`⏰ Ad expiry (fallback): ${expiresAt.toISOString()} (7 days)`);
+      }
 
       // Note: Users can ALWAYS purchase individual premium ads via paymentOrderId
       // This check only applies when trying to use business package premium slots
@@ -1261,6 +1753,7 @@ router.post('/',
         isUrgent: isUrgent,
         featuredAt: premiumType === 'FEATURED' ? new Date() : null,
         bumpedAt: premiumType === 'BUMP_UP' ? new Date() : null,
+        // Slug will be generated after ad creation
       };
       
       // Only include subcategoryId if provided
@@ -1326,6 +1819,17 @@ router.post('/',
           include: includeObj
         });
         console.log('✅ Ad created successfully:', ad.id);
+        
+        // Generate unique slug for the ad
+        const slug = await generateUniqueAdSlug(title, ad.id, prisma, categoryId, subcategoryId);
+        if (slug) {
+          ad = await prisma.ad.update({
+            where: { id: ad.id },
+            data: { slug },
+            include: includeObj
+          });
+          console.log('✅ Ad slug generated:', slug);
+        }
       } catch (createError) {
         console.error('❌ Prisma create error details:');
         console.error('   Code:', createError.code);
@@ -1335,36 +1839,71 @@ router.post('/',
         throw createError; // Re-throw to be caught by outer catch
       }
 
-      // NEW SYSTEM: Increment adsUsed when ad is posted using business package (for ALL ads, not just premium)
-      console.log('🔍 Checking if adsUsed should be incremented:', {
-        hasPaymentOrder: !!paymentOrderId,
-        hasPackageId: !!req.businessPackageId,
-        adId: ad.id,
-        isPremiumAd
-      });
-      
-      if (!paymentOrderId && req.businessPackageId) {
+      // CORE BUSINESS RULES - Quota Decrement:
+      // 1. Premium ads: NO quota decrement (always paid)
+      // 2. Business package quota: Decrement businessAdsRemaining (adsUsed++)
+      // 3. Free ads quota: Decrement freeAdsRemaining
+
+      // Decrement business package quota
+      if (req.useBusinessPackageQuota && req.businessPackageId) {
         try {
-          // Get current package state before increment
-          const packageBefore = await prisma.businessPackage.findUnique({
-            where: { id: req.businessPackageId },
-            select: {
-              id: true,
-              totalAdsAllowed: true,
-              adsUsed: true,
-              packageType: true
-            }
-          });
-          
-          if (!packageBefore) {
-            console.error(`❌ Package ${req.businessPackageId} not found!`);
-          } else {
-            console.log(`🔄 Attempting to increment adsUsed for package ${req.businessPackageId}`);
-            console.log(`   Before: ${packageBefore.adsUsed}/${packageBefore.totalAdsAllowed} ads used`);
-            
-            const updatedPackage = await prisma.businessPackage.update({
+          if (req.isUserBusinessPackage) {
+            // Use UserBusinessPackage table
+            const packageBefore = await prisma.userBusinessPackage.findUnique({
               where: { id: req.businessPackageId },
-              data: { adsUsed: { increment: 1 } },
+              select: {
+                id: true,
+                totalAds: true,
+                usedAds: true,
+                packageType: true,
+                status: true,
+                expiresAt: true
+              }
+            });
+            
+            if (!packageBefore) {
+              console.error(`❌ UserBusinessPackage ${req.businessPackageId} not found!`);
+            } else {
+              console.log(`🔄 Decrementing UserBusinessPackage quota: ${req.businessPackageId}`);
+              console.log(`   Before: ${packageBefore.usedAds}/${packageBefore.totalAds} ads used`);
+              
+              const newUsedAds = (packageBefore.usedAds || 0) + 1;
+              const remaining = (packageBefore.totalAds || 0) - newUsedAds;
+              const now = new Date();
+              
+              // Update status: exhausted if no ads remaining, expired if past expiry
+              let newStatus = packageBefore.status;
+              if (packageBefore.expiresAt && packageBefore.expiresAt <= now) {
+                newStatus = 'expired';
+              } else if (remaining <= 0) {
+                newStatus = 'exhausted';
+              }
+              
+              const updatedPackage = await prisma.userBusinessPackage.update({
+                where: { id: req.businessPackageId },
+                data: { 
+                  usedAds: newUsedAds,
+                  status: newStatus
+                },
+                select: {
+                  id: true,
+                  totalAds: true,
+                  usedAds: true,
+                  packageType: true,
+                  status: true
+                }
+              });
+              
+              console.log(`✅ UserBusinessPackage quota decremented`);
+              console.log(`   After: ${updatedPackage.usedAds}/${updatedPackage.totalAds} ads used`);
+              console.log(`   Remaining: ${remaining} ads remaining`);
+              console.log(`   Status: ${updatedPackage.status}`);
+              console.log(`   Package Type: ${updatedPackage.packageType}`);
+            }
+          } else {
+            // Fallback to BusinessPackage table (backward compatibility)
+            const packageBefore = await prisma.businessPackage.findUnique({
+              where: { id: req.businessPackageId },
               select: {
                 id: true,
                 totalAdsAllowed: true,
@@ -1373,40 +1912,179 @@ router.post('/',
               }
             });
             
-            console.log(`✅ Incremented adsUsed for package ${req.businessPackageId}`);
-            console.log(`   After: ${updatedPackage.adsUsed}/${updatedPackage.totalAdsAllowed} ads used`);
-            console.log(`   Remaining: ${updatedPackage.totalAdsAllowed - updatedPackage.adsUsed} ads remaining`);
-            console.log(`   Package Type: ${updatedPackage.packageType}`);
-            
-            // Verify the increment actually happened
-            if (updatedPackage.adsUsed === packageBefore.adsUsed + 1) {
-              console.log(`✅ AdsUsed increment verified: ${packageBefore.adsUsed} → ${updatedPackage.adsUsed}`);
+            if (!packageBefore) {
+              console.error(`❌ Package ${req.businessPackageId} not found!`);
             } else {
-              console.error(`⚠️ WARNING: Increment mismatch! Expected ${packageBefore.adsUsed + 1}, got ${updatedPackage.adsUsed}`);
-            }
-            
-            if (updatedPackage.adsUsed <= updatedPackage.totalAdsAllowed) {
-              console.log(`✅ Ads count verified: ${updatedPackage.adsUsed} used out of ${updatedPackage.totalAdsAllowed} total`);
-            } else {
-              console.error(`⚠️ WARNING: Ads used (${updatedPackage.adsUsed}) exceeds total (${updatedPackage.totalAdsAllowed})!`);
+              console.log(`🔄 Decrementing business package quota (fallback): ${req.businessPackageId}`);
+              console.log(`   Before: ${packageBefore.adsUsed}/${packageBefore.totalAdsAllowed} ads used`);
+              
+              const updatedPackage = await prisma.businessPackage.update({
+                where: { id: req.businessPackageId },
+                data: { adsUsed: { increment: 1 } },
+                select: {
+                  id: true,
+                  totalAdsAllowed: true,
+                  adsUsed: true,
+                  packageType: true
+                }
+              });
+              
+              console.log(`✅ Business package quota decremented`);
+              console.log(`   After: ${updatedPackage.adsUsed}/${updatedPackage.totalAdsAllowed} ads used`);
+              console.log(`   Remaining: ${updatedPackage.totalAdsAllowed - updatedPackage.adsUsed} ads remaining`);
+              console.log(`   Package Type: ${updatedPackage.packageType}`);
             }
           }
-        } catch (adsError) {
-          console.error('❌ Error incrementing adsUsed:', adsError);
+        } catch (error) {
+          console.error('❌ Error decrementing business package quota:', error);
           console.error('   Error details:', {
-            code: adsError.code,
-            message: adsError.message,
-            meta: adsError.meta,
-            stack: adsError.stack
+            code: error.code,
+            message: error.message,
+            meta: error.meta
           });
           // Don't fail ad creation if increment fails - log it for manual fix
         }
-      } else {
-        console.log('ℹ️ AdsUsed increment skipped:', {
-          hasPaymentOrder: !!paymentOrderId,
-          hasPackageId: !!req.businessPackageId,
-          reason: paymentOrderId ? 'Paid via payment order' : !req.businessPackageId ? 'No package ID found' : 'Unknown'
+      }
+
+      // Decrement free ads quota
+      if (req.useFreeAdsQuota) {
+        try {
+          // Get current user state before decrement
+          const userBefore = await prisma.user.findUnique({
+            where: { id: req.user.id },
+            select: {
+              id: true,
+              freeAdsRemaining: true,
+              freeAdsUsed: true,
+              freeAdsUsedThisMonth: true
+            }
+          });
+          
+          if (!userBefore) {
+            console.error(`❌ User ${req.user.id} not found!`);
+          } else {
+            console.log(`🔄 Decrementing free ads quota`);
+            console.log(`   Before: ${userBefore.freeAdsRemaining} remaining, ${userBefore.freeAdsUsedThisMonth} used this month`);
+            
+            const updatedUser = await prisma.user.update({
+              where: { id: req.user.id },
+              data: { 
+                freeAdsRemaining: { decrement: 1 },
+                freeAdsUsed: { increment: 1 }, // Track for history (lifetime)
+                freeAdsUsedThisMonth: { increment: 1 } // Track monthly usage
+              },
+              select: {
+                id: true,
+                freeAdsRemaining: true,
+                freeAdsUsed: true,
+                freeAdsUsedThisMonth: true
+              }
+            });
+            
+            console.log(`✅ Free ads quota decremented`);
+            console.log(`   After: ${updatedUser.freeAdsRemaining} remaining, ${updatedUser.freeAdsUsedThisMonth} used this month`);
+            console.log(`   Lifetime used: ${updatedUser.freeAdsUsed}`);
+            
+            // Verify the decrement actually happened
+            if (updatedUser.freeAdsRemaining === userBefore.freeAdsRemaining - 1) {
+              console.log(`✅ FreeAdsRemaining decrement verified: ${userBefore.freeAdsRemaining} → ${updatedUser.freeAdsRemaining}`);
+            } else {
+              console.error(`⚠️ WARNING: Decrement mismatch! Expected ${userBefore.freeAdsRemaining - 1}, got ${updatedUser.freeAdsRemaining}`);
+            }
+            
+            if (updatedUser.freeAdsUsedThisMonth === userBefore.freeAdsUsedThisMonth + 1) {
+              console.log(`✅ FreeAdsUsedThisMonth increment verified: ${userBefore.freeAdsUsedThisMonth} → ${updatedUser.freeAdsUsedThisMonth}`);
+            } else {
+              console.error(`⚠️ WARNING: Increment mismatch! Expected ${userBefore.freeAdsUsedThisMonth + 1}, got ${updatedUser.freeAdsUsedThisMonth}`);
+            }
+          }
+        } catch (error) {
+          console.error('❌ Error decrementing free ads quota:', error);
+          console.error('   Error details:', {
+            code: error.code,
+            message: error.message,
+            meta: error.meta
+          });
+          // Don't fail ad creation if increment fails - log it for manual fix
+        }
+      }
+
+      // Log quota usage
+      if (isPremiumAd) {
+        console.log('ℹ️ Premium ad - no quota decrement (always paid)');
+      } else if (req.useBusinessPackageQuota) {
+        console.log('ℹ️ Normal ad - used business package quota');
+      } else if (req.useFreeAdsQuota) {
+        console.log('ℹ️ Normal ad - used free ads quota');
+      }
+
+      // Emit real-time quota update via socket
+      try {
+        const { emitAdQuotaUpdate } = require('../socket/socket');
+        const { checkAndResetUserQuota } = require('../services/monthlyQuotaReset');
+        await checkAndResetUserQuota(req.user.id);
+        
+        // Get updated quota
+        const updatedUser = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          select: {
+            freeAdsRemaining: true,
+            freeAdsUsedThisMonth: true,
+            lastFreeAdsResetDate: true
+          }
         });
+
+        const now = new Date();
+        const activeBusinessPackages = await prisma.businessPackage.findMany({
+          where: {
+            userId: req.user.id,
+            status: { in: ['paid', 'verified'] },
+            expiresAt: { gt: now }
+          },
+          select: {
+            id: true,
+            packageType: true,
+            totalAdsAllowed: true,
+            adsUsed: true,
+            createdAt: true,
+            expiresAt: true
+          },
+          orderBy: { createdAt: 'asc' }
+        });
+
+        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        nextMonth.setHours(0, 0, 0, 0);
+
+        const packageNames = {
+          MAX_VISIBILITY: 'Max Visibility',
+          SELLER_PLUS: 'Seller Plus',
+          SELLER_PRIME: 'Seller Prime'
+        };
+
+        const quotaData = {
+          monthlyFreeAds: {
+            total: 2,
+            used: updatedUser?.freeAdsUsedThisMonth || 0,
+            remaining: updatedUser?.freeAdsRemaining || 0,
+            resetAt: nextMonth.toISOString()
+          },
+          packages: activeBusinessPackages.map(pkg => ({
+            packageId: pkg.id,
+            packageName: `${packageNames[pkg.packageType] || pkg.packageType} Package`,
+            packageType: pkg.packageType,
+            totalAds: pkg.totalAdsAllowed || 0,
+            usedAds: pkg.adsUsed || 0,
+            adsRemaining: (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0),
+            purchasedAt: pkg.createdAt,
+            expiresAt: pkg.expiresAt
+          }))
+        };
+
+        emitAdQuotaUpdate(req.user.id, quotaData);
+        console.log('✅ Emitted real-time quota update to user');
+      } catch (socketError) {
+        console.error('⚠️ Error emitting quota update:', socketError);
+        // Don't fail ad creation if socket emit fails
       }
 
       // Create premium order record if premium was purchased
@@ -1616,6 +2294,17 @@ router.put('/:id',
       if (req.body.city !== undefined) updateData.city = req.body.city || null;
       if (req.body.neighbourhood !== undefined) updateData.neighbourhood = req.body.neighbourhood || null;
       if (req.body.exactLocation !== undefined) updateData.exactLocation = req.body.exactLocation || null;
+      
+      // Regenerate slug if title changed
+      if (req.body.title && req.body.title !== ad.title) {
+        const newTitle = req.body.title;
+        const categoryIdForSlug = updateData.categoryId || ad.categoryId;
+        const subcategoryIdForSlug = updateData.subcategoryId !== undefined ? updateData.subcategoryId : ad.subcategoryId;
+        const slug = await generateUniqueAdSlug(newTitle, ad.id, prisma, categoryIdForSlug, subcategoryIdForSlug);
+        if (slug) {
+          updateData.slug = slug;
+        }
+      }
       // Handle attributes update
       if (req.body.attributes !== undefined) {
         try {
@@ -1778,6 +2467,504 @@ router.get('/:id/favorite', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Check favorite error:', error);
     res.status(500).json({ success: false, message: 'Failed to check favorite' });
+  }
+});
+
+// Mark ad as sold
+router.post('/:id/mark-sold', authenticate, async (req, res) => {
+  try {
+    const ad = await prisma.ad.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+
+    if (ad.userId !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    await prisma.ad.update({
+      where: { id: req.params.id },
+      data: { status: 'SOLD' }
+    });
+
+    res.json({ success: true, message: 'Ad marked as sold' });
+  } catch (error) {
+    console.error('Mark sold error:', error);
+    res.status(500).json({ success: false, message: 'Failed to mark ad as sold' });
+  }
+});
+
+// Mark ad as expired
+router.post('/:id/mark-expired', authenticate, async (req, res) => {
+  try {
+    const ad = await prisma.ad.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+
+    if (ad.userId !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    await prisma.ad.update({
+      where: { id: req.params.id },
+      data: { status: 'EXPIRED' }
+    });
+
+    res.json({ success: true, message: 'Ad marked as expired' });
+  } catch (error) {
+    console.error('Mark expired error:', error);
+    res.status(500).json({ success: false, message: 'Failed to mark ad as expired' });
+  }
+});
+
+// Report ad
+router.post('/:id/report', authenticate, async (req, res) => {
+  try {
+    const { reason, description } = req.body;
+
+    if (!reason) {
+      return res.status(400).json({ success: false, message: 'Reason is required' });
+    }
+
+    const ad = await prisma.ad.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+
+    // Create report (you may need to add a Report model)
+    // For now, creating a notification for admins
+    await prisma.notification.create({
+      data: {
+        userId: ad.userId,
+        type: 'AD_REPORTED',
+        title: 'Ad Reported',
+        message: `Your ad "${ad.title}" has been reported: ${reason}`,
+        metadata: JSON.stringify({
+          adId: ad.id,
+          reportedBy: req.user.id,
+          reason,
+          description
+        })
+      }
+    });
+
+    res.json({ success: true, message: 'Ad reported successfully' });
+  } catch (error) {
+    console.error('Report ad error:', error);
+    res.status(500).json({ success: false, message: 'Failed to report ad' });
+  }
+});
+
+// ========== AD DRAFTS ==========
+
+// Save ad as draft
+router.post('/draft', authenticate, async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      price,
+      originalPrice,
+      discount,
+      condition,
+      images,
+      categoryId,
+      subcategoryId,
+      locationId,
+      state,
+      city,
+      neighbourhood,
+      exactLocation,
+      attributes,
+      isUrgent
+    } = req.body;
+
+    // Validate required fields
+    if (!title || !description || !price || !categoryId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title, description, price, and category are required'
+      });
+    }
+
+    // Create draft ad with DRAFT status (we'll use a custom status or store separately)
+    const draft = await prisma.ad.create({
+      data: {
+        title,
+        description,
+        price: parseFloat(price),
+        originalPrice: originalPrice ? parseFloat(originalPrice) : null,
+        discount: discount ? parseFloat(discount) : null,
+        condition: condition || null,
+        images: Array.isArray(images) ? images : [],
+        status: 'PENDING', // Will be changed to APPROVED when published
+        userId: req.user.id,
+        categoryId,
+        subcategoryId: subcategoryId || null,
+        locationId: locationId || null,
+        state: state || null,
+        city: city || null,
+        neighbourhood: neighbourhood || null,
+        exactLocation: exactLocation || null,
+        attributes: attributes ? JSON.stringify(attributes) : null,
+        isUrgent: isUrgent || false,
+        // Mark as draft using moderationStatus
+        moderationStatus: 'draft'
+      }
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Ad draft saved successfully',
+      draft: {
+        id: draft.id,
+        title: draft.title,
+        status: draft.status,
+        moderationStatus: draft.moderationStatus,
+        createdAt: draft.createdAt
+      }
+    });
+  } catch (error) {
+    console.error('Save ad draft error:', error);
+    res.status(500).json({ success: false, message: 'Failed to save ad draft' });
+  }
+});
+
+// Get all drafts for current user
+router.get('/drafts', authenticate, async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [drafts, total] = await Promise.all([
+      prisma.ad.findMany({
+        where: {
+          userId: req.user.id,
+          moderationStatus: 'draft'
+        },
+        include: {
+          category: { select: { id: true, name: true, slug: true } },
+          subcategory: { select: { id: true, name: true, slug: true } },
+          location: { select: { id: true, name: true, slug: true } }
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: parseInt(limit)
+      }),
+      prisma.ad.count({
+        where: {
+          userId: req.user.id,
+          moderationStatus: 'draft'
+        }
+      })
+    ]);
+
+    res.json({
+      success: true,
+      drafts,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Get drafts error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch drafts' });
+  }
+});
+
+// Get a specific draft
+router.get('/draft/:id', authenticate, async (req, res) => {
+  try {
+    const draft = await prisma.ad.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+        moderationStatus: 'draft'
+      },
+      include: {
+        category: { select: { id: true, name: true, slug: true } },
+        subcategory: { select: { id: true, name: true, slug: true } },
+        location: { select: { id: true, name: true, slug: true } }
+      }
+    });
+
+    if (!draft) {
+      return res.status(404).json({ success: false, message: 'Draft not found' });
+    }
+
+    res.json({ success: true, draft });
+  } catch (error) {
+    console.error('Get draft error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch draft' });
+  }
+});
+
+// Update a draft
+router.put('/draft/:id', authenticate, async (req, res) => {
+  try {
+    const draft = await prisma.ad.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+        moderationStatus: 'draft'
+      }
+    });
+
+    if (!draft) {
+      return res.status(404).json({ success: false, message: 'Draft not found' });
+    }
+
+    const updateData = {};
+    if (req.body.title) updateData.title = req.body.title;
+    if (req.body.description) updateData.description = req.body.description;
+    if (req.body.price !== undefined) updateData.price = parseFloat(req.body.price);
+    if (req.body.originalPrice !== undefined) updateData.originalPrice = req.body.originalPrice ? parseFloat(req.body.originalPrice) : null;
+    if (req.body.discount !== undefined) updateData.discount = req.body.discount ? parseFloat(req.body.discount) : null;
+    if (req.body.condition !== undefined) updateData.condition = req.body.condition;
+    if (req.body.images !== undefined) updateData.images = Array.isArray(req.body.images) ? req.body.images : [];
+    if (req.body.categoryId) updateData.categoryId = req.body.categoryId;
+    if (req.body.subcategoryId !== undefined) updateData.subcategoryId = req.body.subcategoryId;
+    if (req.body.locationId !== undefined) updateData.locationId = req.body.locationId;
+    if (req.body.state !== undefined) updateData.state = req.body.state;
+    if (req.body.city !== undefined) updateData.city = req.body.city;
+    if (req.body.neighbourhood !== undefined) updateData.neighbourhood = req.body.neighbourhood;
+    if (req.body.exactLocation !== undefined) updateData.exactLocation = req.body.exactLocation;
+    if (req.body.attributes !== undefined) updateData.attributes = req.body.attributes ? JSON.stringify(req.body.attributes) : null;
+    if (req.body.isUrgent !== undefined) updateData.isUrgent = req.body.isUrgent;
+
+    const updatedDraft = await prisma.ad.update({
+      where: { id: req.params.id },
+      data: updateData,
+      include: {
+        category: { select: { id: true, name: true, slug: true } },
+        subcategory: { select: { id: true, name: true, slug: true } },
+        location: { select: { id: true, name: true, slug: true } }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Draft updated successfully',
+      draft: updatedDraft
+    });
+  } catch (error) {
+    console.error('Update draft error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update draft' });
+  }
+});
+
+// Publish a draft (change moderationStatus from 'draft' to 'pending')
+router.post('/draft/:id/publish', authenticate, async (req, res) => {
+  try {
+    const draft = await prisma.ad.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+        moderationStatus: 'draft'
+      }
+    });
+
+    if (!draft) {
+      return res.status(404).json({ success: false, message: 'Draft not found' });
+    }
+
+    // Validate required fields
+    if (!draft.title || !draft.description || !draft.price || !draft.categoryId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please complete all required fields before publishing'
+      });
+    }
+
+    const publishedAd = await prisma.ad.update({
+      where: { id: req.params.id },
+      data: {
+        moderationStatus: 'pending',
+        status: 'PENDING'
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Draft published successfully',
+      ad: publishedAd
+    });
+  } catch (error) {
+    console.error('Publish draft error:', error);
+    res.status(500).json({ success: false, message: 'Failed to publish draft' });
+  }
+});
+
+// Delete a draft
+router.delete('/draft/:id', authenticate, async (req, res) => {
+  try {
+    const draft = await prisma.ad.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+        moderationStatus: 'draft'
+      }
+    });
+
+    if (!draft) {
+      return res.status(404).json({ success: false, message: 'Draft not found' });
+    }
+
+    await prisma.ad.delete({
+      where: { id: req.params.id }
+    });
+
+    res.json({ success: true, message: 'Draft deleted successfully' });
+  } catch (error) {
+    console.error('Delete draft error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete draft' });
+  }
+});
+
+// ========== AD RENEWAL ==========
+
+// Renew an expired ad
+router.post('/:id/renew', authenticate, async (req, res) => {
+  try {
+    const ad = await prisma.ad.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+
+    if (ad.userId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    if (ad.status !== 'EXPIRED' && ad.status !== 'SOLD') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only expired or sold ads can be renewed'
+      });
+    }
+
+    // Calculate new expiration date (default 30 days from now)
+    const renewalDays = req.body.days || 30;
+    const newExpiresAt = new Date();
+    newExpiresAt.setDate(newExpiresAt.getDate() + renewalDays);
+
+    const renewedAd = await prisma.ad.update({
+      where: { id: req.params.id },
+      data: {
+        status: 'PENDING', // Reset to pending for moderation
+        expiresAt: newExpiresAt,
+        moderationStatus: 'pending',
+        updatedAt: new Date()
+      },
+      include: {
+        category: { select: { id: true, name: true, slug: true } },
+        subcategory: { select: { id: true, name: true, slug: true } },
+        location: { select: { id: true, name: true, slug: true } },
+        user: { select: { id: true, name: true, avatar: true } }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Ad renewed successfully',
+      ad: renewedAd,
+      expiresAt: newExpiresAt
+    });
+  } catch (error) {
+    console.error('Renew ad error:', error);
+    res.status(500).json({ success: false, message: 'Failed to renew ad' });
+  }
+});
+
+// Get renewal history for an ad
+router.get('/:id/renewal-history', authenticate, async (req, res) => {
+  try {
+    const ad = await prisma.ad.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, createdAt: true, updatedAt: true, expiresAt: true }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+
+    if (ad.userId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    // For now, return basic renewal info based on updatedAt vs createdAt
+    // In a full implementation, you'd have a separate RenewalHistory model
+    res.json({
+      success: true,
+      history: [
+        {
+          renewedAt: ad.createdAt,
+          expiresAt: ad.expiresAt,
+          isOriginal: true
+        }
+      ],
+      canRenew: ad.expiresAt ? new Date(ad.expiresAt) < new Date() : false
+    });
+  } catch (error) {
+    console.error('Get renewal history error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch renewal history' });
+  }
+});
+
+// Check if ad can be renewed
+router.get('/:id/renewal-status', authenticate, async (req, res) => {
+  try {
+    const ad = await prisma.ad.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        expiresAt: true,
+        createdAt: true
+      }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+
+    if (ad.userId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    const now = new Date();
+    const isExpired = ad.expiresAt ? new Date(ad.expiresAt) < now : false;
+    const canRenew = (ad.status === 'EXPIRED' || ad.status === 'SOLD') && isExpired;
+
+    res.json({
+      success: true,
+      canRenew,
+      isExpired,
+      status: ad.status,
+      expiresAt: ad.expiresAt,
+      daysUntilExpiry: ad.expiresAt
+        ? Math.ceil((new Date(ad.expiresAt) - now) / (1000 * 60 * 60 * 24))
+        : null
+    });
+  } catch (error) {
+    console.error('Get renewal status error:', error);
+    res.status(500).json({ success: false, message: 'Failed to check renewal status' });
   }
 });
 

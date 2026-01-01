@@ -1,62 +1,77 @@
+// MongoDB Prisma Schema
+// This schema is compatible with MongoDB
+// All models maintain the same field structure as PostgreSQL version
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id                String             @id @default(cuid())
-  email             String?            @unique
-  phone             String?            @unique
-  password          String?
-  name              String
-  avatar            String?
-  bio               String?
-  tags              String[]           @default([])
-  showPhone         Boolean            @default(true)
-  isVerified        Boolean            @default(false)
-  role              UserRole           @default(USER)
-  freeAdsUsed       Int                @default(0)
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  provider          String?
-  providerId        String?
-  referralCode      String?
-  referredBy        String?
-  isDeactivated     Boolean            @default(false)
-  deactivatedAt     DateTime?
-  tokenInvalidatedAt DateTime?
-  locationId        String?
-  location          Location?          @relation(fields: [locationId], references: [id], onDelete: SetNull)
-  ads               Ad[]
-  adPostingOrders   AdPostingOrder[]
-  receivedMessages  ChatMessage[]      @relation("ReceiverMessages")
-  sentMessages      ChatMessage[]      @relation("SenderMessages")
-  chatRooms         ChatRoom[]         @relation("User1Rooms")
-  chatRooms2        ChatRoom[]         @relation("User2Rooms")
-  favorites         Favorite[]
-  notifications     Notification[]
-  otpCodes          OTP[]
-  premiumOrders     PremiumOrder[]
-  pushSubscriptions PushSubscription[]
-  referrals         Referral[]         @relation("Referrer")
-  referredByUser    User?              @relation("ReferredBy", fields: [referredBy], references: [id])
-  referredUsers     User[]             @relation("ReferredBy")
-  wallet            Wallet?
-  businessPackages  BusinessPackage[]
-  extraAdSlots      ExtraAdSlot[]
-  followers         Follow[]           @relation("Following")
-  following         Follow[]           @relation("Follower")
-  contactRequestsSent     ContactRequest[] @relation("ContactRequester")
-  contactRequestsReceived ContactRequest[] @relation("ContactSeller")
-  blockedUsers      Block[]            @relation("Blocker")
-  blockedBy         Block[]            @relation("Blocked")
-  auditLogsAsActor  AuditLog[]         @relation("AuditActor")
-  auditLogsAsTarget AuditLog[]         @relation("AuditTarget")
-  refreshTokens     RefreshToken[]
+  id                      String                @id @default(auto()) @map("_id") @db.ObjectId
+  email                   String?
+  phone                   String?
+  password                String?
+  name                    String
+  avatar                  String?
+  bio                     String?
+  tags                    String[]              @default([])
+  showPhone               Boolean               @default(true)
+  isVerified              Boolean               @default(false)
+  role                    UserRole              @default(USER)
+  freeAdsUsed             Int                   @default(0) // Historical tracking (lifetime)
+  freeAdsRemaining        Int                   @default(2) // Monthly free ads remaining (resets monthly)
+  freeAdsUsedThisMonth    Int                   @default(0) // Free ads used in current month
+  lastFreeAdsResetDate    DateTime? // Last date when free ads were reset
+  membershipActive        Boolean               @default(false)
+  membershipType          String? // PREMIUM, BASIC, etc.
+  membershipExpiresAt     DateTime?
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+  provider                String?
+  providerId              String?
+  referralCode            String?
+  referredBy              String?               @db.ObjectId
+  isDeactivated           Boolean               @default(false)
+  deactivatedAt           DateTime?
+  tokenInvalidatedAt      DateTime?
+  locationId              String?               @db.ObjectId
+  location                Location?             @relation(fields: [locationId], references: [id])
+  ads                     Ad[]
+  adPostingOrders         AdPostingOrder[]
+  receivedMessages        ChatMessage[]         @relation("ReceiverMessages")
+  sentMessages            ChatMessage[]         @relation("SenderMessages")
+  chatRooms               ChatRoom[]            @relation("User1Rooms")
+  chatRooms2              ChatRoom[]            @relation("User2Rooms")
+  favorites               Favorite[]
+  notifications           Notification[]
+  otpCodes                OTP[]
+  premiumOrders           PremiumOrder[]
+  pushSubscriptions       PushSubscription[]
+  referrals               Referral[]            @relation("Referrer")
+  referredByUser          User?                 @relation("ReferredBy", fields: [referredBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  referredUsers           User[]                @relation("ReferredBy")
+  wallet                  Wallet?
+  businessPackages        BusinessPackage[]
+  userBusinessPackages    UserBusinessPackage[]
+  extraAdSlots            ExtraAdSlot[]
+  followers               Follow[]              @relation("Following")
+  following               Follow[]              @relation("Follower")
+  contactRequestsSent     ContactRequest[]      @relation("ContactRequester")
+  contactRequestsReceived ContactRequest[]      @relation("ContactSeller")
+  blockedUsers            Block[]               @relation("Blocker")
+  blockedBy               Block[]               @relation("Blocked")
+  auditLogsAsActor        AuditLog[]            @relation("AuditActor")
+  auditLogsAsTarget       AuditLog[]            @relation("AuditTarget")
+  refreshTokens           RefreshToken[]
+  paymentOrders           PaymentOrder[]
+  paymentRecords          PaymentRecord[]
+  mobileDevices           MobileDevice[]
+  claimedOffers           ClaimedOffer[]
 
   @@index([email])
   @@index([phone])
@@ -64,62 +79,71 @@ model User {
   @@index([provider, providerId])
   @@index([referralCode])
   @@index([referredBy])
+  @@map("users")
 }
 
 model OTP {
-  id        String   @id @default(cuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   email     String?
   phone     String?
   code      String
   expiresAt DateTime
   used      Boolean  @default(false)
   createdAt DateTime @default(now())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String?  @db.ObjectId
+  user      User?    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([email, code])
   @@index([phone, code])
+  @@map("otps")
 }
 
 model Category {
-  id             String        @id @default(cuid())
-  name           String
-  slug           String        @unique
-  icon           String?
-  image          String?
-  description    String?
-  order          Int           @default(0)
-  isActive       Boolean       @default(true)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  adPostingPrice Float?
-  ads            Ad[]
-  banners        Banner[]
-  subcategories  Subcategory[]
+  id              String        @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  slug            String
+  icon            String?
+  image           String?
+  description     String?
+  metaTitle       String?
+  metaDescription String?
+  order           Int           @default(0)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  adPostingPrice  Float?
+  ads             Ad[]
+  banners         Banner[]
+  subcategories   Subcategory[]
+  offers          Offer[]
 
-  @@index([slug])
+  @@unique([slug])
+  @@map("categories")
 }
 
 model Subcategory {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String
-  description String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  categoryId  String
-  ads         Ad[]
-  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  slug            String
+  description     String?
+  metaTitle       String?
+  metaDescription String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  categoryId      String   @db.ObjectId
+  ads             Ad[]
+  category        Category @relation(fields: [categoryId], references: [id])
 
   @@unique([categoryId, slug])
   @@index([categoryId])
+  @@map("subcategories")
 }
 
 model Location {
-  id            String   @id @default(cuid())
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
   name          String
-  slug          String   @unique
+  slug          String
   state         String?
   city          String?
   pincode       String?
@@ -133,13 +157,15 @@ model Location {
   banners       Banner[]
   users         User[]
 
-  @@index([slug])
+  @@unique([slug])
   @@index([state, city])
+  @@map("locations")
 }
 
 model Ad {
-  id               String           @id @default(cuid())
+  id               String           @id @default(auto()) @map("_id") @db.ObjectId
   title            String
+  slug             String?
   description      String
   price            Float
   originalPrice    Float?
@@ -153,13 +179,14 @@ model Ad {
   views            Int              @default(0)
   featuredAt       DateTime?
   bumpedAt         DateTime?
+  postedAt         DateTime? // When ad was actually posted (after approval)
   expiresAt        DateTime?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
-  userId           String
-  categoryId       String
-  subcategoryId    String?
-  locationId       String?
+  userId           String           @db.ObjectId
+  categoryId       String           @db.ObjectId
+  subcategoryId    String?          @db.ObjectId
+  locationId       String?          @db.ObjectId
   isUrgent         Boolean          @default(false)
   attributes       Json?
   state            String?
@@ -171,9 +198,9 @@ model Ad {
   rejectionReason  String?
   autoRejected     Boolean          @default(false)
   category         Category         @relation(fields: [categoryId], references: [id])
-  location         Location?        @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  location         Location?        @relation(fields: [locationId], references: [id])
   subcategory      Subcategory?     @relation(fields: [subcategoryId], references: [id])
-  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User             @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   adPostingOrders  AdPostingOrder[]
   chatRooms        ChatRoom[]
   favorites        Favorite[]
@@ -190,31 +217,38 @@ model Ad {
   @@index([featuredAt])
   @@index([bumpedAt])
   @@index([expiresAt])
+  @@index([slug])
   @@index([status, createdAt])
   @@index([status, isPremium, createdAt])
   @@index([categoryId, status, createdAt])
   @@index([locationId, status, createdAt])
   @@index([status, expiresAt, createdAt])
   @@index([isPremium, premiumType, createdAt])
+  @@index([postedAt])
+  @@index([status, postedAt])
+  @@index([status, expiresAt, postedAt])
   @@index([city])
   @@index([state, city])
   @@index([state])
+  @@index([categoryId, subcategoryId, slug])
+  @@map("ads")
 }
 
 model Favorite {
-  id        String   @id @default(cuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   createdAt DateTime @default(now())
-  userId    String
-  adId      String
-  ad        Ad       @relation(fields: [adId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String   @db.ObjectId
+  adId      String   @db.ObjectId
+  ad        Ad       @relation(fields: [adId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([userId, adId])
   @@index([userId])
+  @@map("favorites")
 }
 
 model PremiumOrder {
-  id                String      @id @default(cuid())
+  id                String      @id @default(auto()) @map("_id") @db.ObjectId
   type              PremiumType
   amount            Float
   razorpayOrderId   String?
@@ -223,90 +257,149 @@ model PremiumOrder {
   expiresAt         DateTime?
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
-  userId            String
-  adId              String
-  ad                Ad          @relation(fields: [adId], references: [id], onDelete: Cascade)
-  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String      @db.ObjectId
+  adId              String      @db.ObjectId
+  ad                Ad          @relation(fields: [adId], references: [id])
+  user              User        @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([userId])
   @@index([razorpayOrderId])
   @@index([status])
+  @@map("premium_orders")
 }
 
 model AdPostingOrder {
-  id                String   @id @default(cuid())
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
   amount            Float
-  razorpayOrderId   String?  @unique
+  razorpayOrderId   String?
   razorpayPaymentId String?
   status            String   @default("pending")
   adData            String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
-  userId            String
-  adId              String?
+  userId            String   @db.ObjectId
+  adId              String?  @db.ObjectId
   ad                Ad?      @relation(fields: [adId], references: [id])
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id])
+
+  @@unique([razorpayOrderId])
+  @@index([userId])
+  @@index([status])
+  @@map("ad_posting_orders")
+}
+
+model PaymentOrder {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  orderId      String    @unique
+  userId       String    @db.ObjectId
+  amount       Int // Amount in paise
+  currency     String    @default("INR")
+  status       String    @default("created") // created, paid, verified, activated, refunded, failed, cancelled
+  paymentId    String?
+  signature    String?
+  refundId     String?
+  refundAmount Int?
+  notes        String? // JSON string for additional notes
+  isTestOrder  Boolean   @default(false)
+  paidAt       DateTime?
+  verifiedAt   DateTime?
+  activatedAt  DateTime?
+  refundedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([userId])
   @@index([status])
+  @@index([createdAt])
+  @@map("payment_orders")
+}
+
+model PaymentRecord {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  paymentId   String    @unique // Razorpay payment ID
+  orderId     String // Razorpay order ID
+  userId      String    @db.ObjectId
+  amount      Int // Amount in paise
+  currency    String    @default("INR")
+  status      String    @default("paid") // paid, refunded, failed
+  purpose     String // ad_promotion, membership, business_package, ad_posting
+  referenceId String? // adId, packageId, etc.
+  metadata    String? // JSON string for additional data
+  paidAt      DateTime  @default(now())
+  refundedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([orderId, paymentId]) // Prevent duplicate payments
+  @@index([userId])
+  @@index([purpose])
+  @@index([referenceId])
+  @@index([status])
+  @@index([paidAt])
+  @@map("payment_records")
 }
 
 model ChatRoom {
-  id        String        @id @default(cuid())
+  id        String        @id @default(auto()) @map("_id") @db.ObjectId
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
-  user1Id   String
-  user2Id   String
-  adId      String
+  user1Id   String        @db.ObjectId
+  user2Id   String        @db.ObjectId
+  adId      String        @db.ObjectId
   messages  ChatMessage[]
-  ad        Ad            @relation(fields: [adId], references: [id], onDelete: Cascade)
-  user1     User          @relation("User1Rooms", fields: [user1Id], references: [id], onDelete: Cascade)
-  user2     User          @relation("User2Rooms", fields: [user2Id], references: [id], onDelete: Cascade)
+  ad        Ad            @relation(fields: [adId], references: [id])
+  user1     User          @relation("User1Rooms", fields: [user1Id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user2     User          @relation("User2Rooms", fields: [user2Id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([user1Id, user2Id, adId])
   @@index([user1Id])
   @@index([user2Id])
   @@index([adId])
+  @@map("chat_rooms")
 }
 
 model ChatMessage {
-  id         String          @id @default(cuid())
+  id         String          @id @default(auto()) @map("_id") @db.ObjectId
   content    String
   type       ChatMessageType @default(TEXT)
   imageUrl   String?
   isRead     Boolean         @default(false)
   createdAt  DateTime        @default(now())
-  senderId   String
-  receiverId String
-  roomId     String
-  receiver   User            @relation("ReceiverMessages", fields: [receiverId], references: [id], onDelete: Cascade)
-  room       ChatRoom        @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  sender     User            @relation("SenderMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  senderId   String          @db.ObjectId
+  receiverId String          @db.ObjectId
+  roomId     String          @db.ObjectId
+  receiver   User            @relation("ReceiverMessages", fields: [receiverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  room       ChatRoom        @relation(fields: [roomId], references: [id])
+  sender     User            @relation("SenderMessages", fields: [senderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([roomId])
   @@index([senderId])
   @@index([receiverId])
   @@index([isRead])
+  @@map("chat_messages")
 }
 
 model PremiumSettings {
-  id        String   @id @default(cuid())
-  key       String   @unique
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  key       String
   value     String
   updatedAt DateTime @updatedAt
   updatedBy String?
 
-  @@index([key])
+  @@unique([key])
+  @@map("premium_settings")
 }
 
 model Banner {
-  id         String    @id @default(cuid())
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
   title      String
   image      String
   link       String?
   position   String
-  categoryId String?
-  locationId String?
+  categoryId String?   @db.ObjectId
+  locationId String?   @db.ObjectId
   isActive   Boolean   @default(true)
   order      Int       @default(0)
   clicks     Int       @default(0)
@@ -320,25 +413,27 @@ model Banner {
   @@index([position])
   @@index([isActive])
   @@index([categoryId])
+  @@map("banners")
 }
 
 model Notification {
-  id        String   @id @default(cuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   title     String
   message   String
   type      String
   isRead    Boolean  @default(false)
   link      String?
   createdAt DateTime @default(now())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([userId])
   @@index([isRead])
+  @@map("notifications")
 }
 
 model InterstitialAd {
-  id        String    @id @default(cuid())
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
   title     String
   image     String
   link      String?
@@ -358,36 +453,39 @@ model InterstitialAd {
   @@index([position])
   @@index([isActive])
   @@index([isActive, position])
+  @@map("interstitial_ads")
 }
 
 model PushSubscription {
-  id        String   @id @default(cuid())
-  endpoint  String   @unique
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  endpoint  String
   keys      String
   userAgent String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([endpoint])
   @@index([userId])
-  @@index([endpoint])
+  @@map("push_subscriptions")
 }
 
 model Wallet {
-  id           String              @id @default(cuid())
+  id           String              @id @default(auto()) @map("_id") @db.ObjectId
   balance      Float               @default(0)
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
-  userId       String              @unique
-  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String              @db.ObjectId
+  user         User                @relation(fields: [userId], references: [id])
   transactions WalletTransaction[]
 
-  @@index([userId])
+  @@unique([userId])
+  @@map("wallets")
 }
 
 model WalletTransaction {
-  id          String                  @id @default(cuid())
+  id          String                  @id @default(auto()) @map("_id") @db.ObjectId
   type        WalletTransactionType
   amount      Float
   status      WalletTransactionStatus @default(COMPLETED)
@@ -395,42 +493,45 @@ model WalletTransaction {
   referenceId String?
   metadata    String?
   createdAt   DateTime                @default(now())
-  walletId    String
-  wallet      Wallet                  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  walletId    String                  @db.ObjectId
+  wallet      Wallet                  @relation(fields: [walletId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([walletId])
   @@index([type])
   @@index([status])
   @@index([createdAt])
+  @@map("wallet_transactions")
 }
 
 model Referral {
-  id             String    @id @default(cuid())
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
   referralCode   String
-  referredUserId String    @unique
+  referredUserId String
   rewardAmount   Float     @default(0)
   status         String    @default("pending")
   createdAt      DateTime  @default(now())
   completedAt    DateTime?
-  referrerId     String
-  referrer       User      @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referrerId     String    @db.ObjectId
+  referrer       User      @relation("Referrer", fields: [referrerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([referredUserId])
   @@index([referrerId])
   @@index([referralCode])
   @@index([status])
+  @@map("referrals")
 }
 
 model BusinessPackage {
-  id                String              @id @default(cuid())
-  userId            String
+  id                String              @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String              @db.ObjectId
   packageType       BusinessPackageType
   amount            Float
-  duration          Int                 @default(30) // Duration in days
-  maxAds            Int                 @default(0) // Maximum ads allowed with this package (deprecated - use totalAdsAllowed)
-  premiumSlotsTotal Int                 @default(0) // Total premium ad slots included in this package (deprecated - use totalAdsAllowed)
-  premiumSlotsUsed  Int                 @default(0) // Number of premium slots used (deprecated - use adsUsed)
-  totalAdsAllowed   Int                 @default(0) // Total ads allowed with this package
-  adsUsed           Int                 @default(0) // Number of ads posted using this package
+  duration          Int                 @default(30)
+  maxAds            Int                 @default(0)
+  premiumSlotsTotal Int                 @default(0)
+  premiumSlotsUsed  Int                 @default(0)
+  totalAdsAllowed   Int                 @default(0)
+  adsUsed           Int                 @default(0)
   razorpayOrderId   String?
   razorpayPaymentId String?
   status            String              @default("pending")
@@ -438,33 +539,62 @@ model BusinessPackage {
   expiresAt         DateTime?
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
-  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              User                @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([packageType])
   @@index([razorpayOrderId])
   @@index([status])
   @@index([expiresAt])
+  @@map("business_packages")
+}
+
+model UserBusinessPackage {
+  id                String              @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String              @db.ObjectId
+  packageType       BusinessPackageType
+  amount            Float
+  purchaseTime      DateTime            @default(now())
+  expiresAt         DateTime?
+  totalAds          Int                 @default(0)
+  usedAds           Int                 @default(0)
+  allowedCategories String[]            @default([]) // Array of category IDs or slugs
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  status            String              @default("active") // active, exhausted, expired
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([packageType])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([purchaseTime])
+  @@index([userId, status])
+  @@index([userId, expiresAt])
+  @@map("user_business_packages")
 }
 
 model ExtraAdSlot {
-  id                String              @id @default(cuid())
-  userId            String
-  quantity          Int                 @default(1) // Number of extra ad slots purchased
-  amount            Float               // Price per slot
-  totalAmount       Float               // Total amount paid
+  id                String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String    @db.ObjectId
+  quantity          Int       @default(1)
+  amount            Float
+  totalAmount       Float
   razorpayOrderId   String?
   razorpayPaymentId String?
-  status            String              @default("pending")
-  expiresAt         DateTime?           // When these extra slots expire (null = permanent)
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status            String    @default("pending")
+  expiresAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  user              User      @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([razorpayOrderId])
   @@index([status])
   @@index([expiresAt])
+  @@map("extra_ad_slots")
 }
 
 enum UserRole {
@@ -510,9 +640,8 @@ enum WalletTransactionStatus {
   CANCELLED
 }
 
-// Search Alert Models
 model SearchQuery {
-  id        String   @id @default(cuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   query     String
   userId    String?
   userEmail String?
@@ -521,29 +650,30 @@ model SearchQuery {
   filters   Json?
   processed Boolean  @default(false)
   createdAt DateTime @default(now())
-  
+
   @@index([userId])
   @@index([userEmail])
   @@index([processed])
   @@index([createdAt])
+  @@map("search_queries")
 }
 
 model SearchAlertSettings {
-  id                 String   @id @default(cuid())
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
   enabled            Boolean  @default(true)
-  maxEmailsPerUser   Int      @default(5) // Maximum alerts per user per check
-  checkIntervalHours Int      @default(24) // How often to check for matches
+  maxEmailsPerUser   Int      @default(5)
+  checkIntervalHours Int      @default(24)
   emailSubject       String   @default("New products matching your search!")
   emailBody          String   @default("<p>Hi there!</p><p>We found some products matching your recent search: <strong>{{query}}</strong></p>{{products}}<p>Happy shopping!</p>")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
-  
+
   @@map("search_alert_settings")
 }
 
 model AuthPageSettings {
-  id              String   @id @default(cuid())
-  page            String   @unique // 'login' or 'signup'
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  page            String
   title           String
   subtitle        String
   tagline         String?
@@ -553,44 +683,49 @@ model AuthPageSettings {
   features        Json?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@unique([page])
+  @@map("auth_page_settings")
 }
 
 model Follow {
-  id          String   @id @default(cuid())
-  followerId  String   // User who is following
-  followingId String   // User being followed
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  followerId  String   @db.ObjectId
+  followingId String   @db.ObjectId
   createdAt   DateTime @default(now())
 
-  follower    User     @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
-  following   User     @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+  follower  User @relation("Follower", fields: [followerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  following User @relation("Following", fields: [followingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([followerId, followingId])
   @@index([followerId])
   @@index([followingId])
+  @@map("follows")
 }
 
 model ContactRequest {
-  id           String   @id @default(cuid())
-  requesterId  String   // User requesting contact
-  sellerId     String   // User being contacted (ad owner)
-  adId         String?  // Optional: related ad
+  id           String               @id @default(auto()) @map("_id") @db.ObjectId
+  requesterId  String               @db.ObjectId
+  sellerId     String               @db.ObjectId
+  adId         String?              @db.ObjectId
   status       ContactRequestStatus @default(PENDING)
-  message      String?  // Optional message from requester
-  consentGiven Boolean  @default(false) // Seller consent checkbox
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  message      String?
+  consentGiven Boolean              @default(false)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
   approvedAt   DateTime?
   rejectedAt   DateTime?
 
-  requester    User     @relation("ContactRequester", fields: [requesterId], references: [id], onDelete: Cascade)
-  seller       User     @relation("ContactSeller", fields: [sellerId], references: [id], onDelete: Cascade)
-  ad           Ad?      @relation(fields: [adId], references: [id], onDelete: SetNull)
+  requester User @relation("ContactRequester", fields: [requesterId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  seller    User @relation("ContactSeller", fields: [sellerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ad        Ad?  @relation(fields: [adId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([requesterId, sellerId, adId])
   @@index([requesterId])
   @@index([sellerId])
   @@index([status])
   @@index([createdAt])
+  @@map("contact_requests")
 }
 
 enum ContactRequestStatus {
@@ -600,51 +735,127 @@ enum ContactRequestStatus {
 }
 
 model Block {
-  id         String   @id @default(cuid())
-  blockerId  String   // User who is blocking
-  blockedId  String   // User being blocked
-  reason     String?  // Optional reason
-  createdAt  DateTime @default(now())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  blockerId String   @db.ObjectId
+  blockedId String   @db.ObjectId
+  reason    String?
+  createdAt DateTime @default(now())
 
-  blocker    User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
-  blocked    User     @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([blockerId, blockedId])
   @@index([blockerId])
   @@index([blockedId])
+  @@map("blocks")
 }
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  actorId   String   // User performing action
-  targetId  String?  // User being acted upon
-  action    String   // Action performed (BLOCK, UNBLOCK, etc.)
-  reason    String?  // Optional reason
-  metadata  Json?    // Additional data
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  actorId   String   @db.ObjectId
+  targetId  String?  @db.ObjectId
+  action    String
+  reason    String?
+  metadata  Json?
   createdAt DateTime @default(now())
 
-  actor     User     @relation("AuditActor", fields: [actorId], references: [id], onDelete: Cascade)
-  target    User?    @relation("AuditTarget", fields: [targetId], references: [id], onDelete: SetNull)
+  actor  User  @relation("AuditActor", fields: [actorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  target User? @relation("AuditTarget", fields: [targetId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([actorId])
   @@index([targetId])
   @@index([action])
   @@index([createdAt])
+  @@map("audit_logs")
 }
 
 model RefreshToken {
-  id        String   @id @default(cuid())
-  userId    String
-  token     String   @unique
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String    @db.ObjectId
+  token     String
   expiresAt DateTime
-  revoked   Boolean  @default(false)
+  revoked   Boolean   @default(false)
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([token])
   @@index([userId])
-  @@index([token])
   @@index([userId, token])
   @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model MobileDevice {
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  deviceId           String    @unique
+  userId             String    @db.ObjectId
+  deviceType         String // 'ios' or 'android'
+  deviceName         String?
+  osVersion          String?
+  appVersion         String?
+  fcmToken           String? // Firebase Cloud Messaging token for Android
+  apnsToken          String? // Apple Push Notification Service token for iOS
+  latitude           Float?
+  longitude          Float?
+  locationAccuracy   Float?
+  locationAddress    String?
+  lastLocationUpdate DateTime?
+  lastActiveAt       DateTime  @default(now())
+  isActive           Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([isActive])
+  @@index([lastActiveAt])
+  @@map("mobile_devices")
+}
+
+model Offer {
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  title              String
+  description        String?
+  type               String // 'premium', 'discount', 'bonus', etc.
+  discountPercent    Float?
+  discountAmount     Float?
+  categoryId         String?   @db.ObjectId
+  imageUrl           String?
+  termsAndConditions String?
+  isActive           Boolean   @default(true)
+  priority           Int       @default(0)
+  maxClaimsPerUser   Int?
+  totalClaims        Int       @default(0)
+  expiresAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  category      Category?      @relation(fields: [categoryId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  claimedOffers ClaimedOffer[]
+
+  @@index([categoryId])
+  @@index([type])
+  @@index([isActive])
+  @@index([expiresAt])
+  @@index([priority])
+  @@map("offers")
+}
+
+model ClaimedOffer {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  offerId   String   @db.ObjectId
+  claimedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([userId, offerId])
+  @@index([userId])
+  @@index([offerId])
+  @@index([claimedAt])
+  @@map("claimed_offers")
 }

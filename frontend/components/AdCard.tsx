@@ -2,37 +2,25 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FiHeart, FiMapPin, FiAlertCircle, FiUser, FiBarChart2, FiCheckCircle } from 'react-icons/fi';
-import { useToggleFavorite, useIsFavorite } from '@/hooks/useAds';
-import { useAuth } from '@/hooks/useAuth';
-import { useComparison } from '@/hooks/useComparison';
-import { useMemo } from 'react';
+import { FiMapPin, FiHeart, FiStar, FiTrendingUp, FiRefreshCw } from 'react-icons/fi';
+import { useMemo, type MouseEvent } from 'react';
 import ImageWithFallback from './ImageWithFallback';
-import toast from 'react-hot-toast';
+import { useIsFavorite, useToggleFavorite } from '@/hooks/useAds';
+import { useAuth } from '@/hooks/useAuth';
 
 interface AdCardProps {
   ad: {
     id: string;
     title: string;
-    description?: string;
     price: number;
-    originalPrice?: number | null;
-    discount?: number | null;
-    condition?: string | null;
     images: string[];
-    location?: { name: string } | null;
-    category?: { name: string; slug?: string } | null;
-    subcategory?: { name: string; slug?: string } | null;
-    createdAt: string;
-    expiresAt?: string | null;
-    status?: string;
-    views?: number;
+    location?: { name?: string; city?: string; state?: string } | null;
+    city?: string | null;
+    state?: string | null;
     isPremium?: boolean;
-    premiumType?: string;
+    premiumType?: 'TOP' | 'FEATURED' | 'BUMP_UP' | 'RENT' | 'ECO' | null;
     isUrgent?: boolean;
-    _count?: { favorites: number };
-    user?: { id: string; name: string; avatar?: string; isVerified?: boolean };
-    attributes?: Record<string, any> | null;
+    postedAt?: string | Date;
   };
   priority?: boolean;
 }
@@ -40,63 +28,88 @@ interface AdCardProps {
 function AdCard({ ad, priority = false }: AdCardProps) {
   const router = useRouter();
   const { isAuthenticated } = useAuth();
-  const { data: isFavorite } = useIsFavorite(ad.id, isAuthenticated);
+  const { data: isFavorite } = useIsFavorite(ad.id, true);
   const toggleFavorite = useToggleFavorite();
-  const { addToComparison, removeFromComparison, isInComparison, canAddMore } = useComparison();
 
-  const handleFavorite = (e: React.MouseEvent) => {
+  const handleWishlist = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (isAuthenticated) {
+
+    if (!isAuthenticated) {
+      router.push('/login');
+      return;
+    }
+
+    if (!toggleFavorite.isPending) {
       toggleFavorite.mutate(ad.id);
-    } else {
-      window.location.href = '/login';
     }
   };
 
-  const handleCompare = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    if (isInComparison(ad.id)) {
-      removeFromComparison(ad.id);
-      toast.success('Removed from comparison');
-    } else {
-      if (!canAddMore) {
-        toast.error(`You can compare up to 4 items. Remove an item first.`);
-        return;
-      }
-      addToComparison(ad as any);
-      toast.success('Added to comparison');
+  const handleCardClick = (e: MouseEvent) => {
+    // Allow Ctrl+Click (Windows/Linux) or Cmd+Click (Mac) to open in new tab
+    // Allow middle-click to open in new tab
+    if (e.ctrlKey || e.metaKey || e.button === 1) {
+      // Let the browser handle it naturally
+      return;
     }
+    // For regular clicks, Next.js Link will handle navigation
   };
 
-
-  // Memoize expensive computations
-  const isPremiumAd = useMemo(() => ad.isPremium === true || !!ad.premiumType, [ad.isPremium, ad.premiumType]);
-  
-  // Get premium type label - memoized
-  const premiumLabel = useMemo(() => {
-    if (ad.premiumType === 'TOP') return 'TOP';
-    if (ad.premiumType === 'FEATURED') return 'FEATURED';
-    if (ad.premiumType === 'BUMP_UP') return 'BUMP UP';
-    return 'PREMIUM';
-  }, [ad.premiumType]);
-
-  // Memoize image URL
   const imageUrl = useMemo(() => {
-    if (ad.images && Array.isArray(ad.images) && ad.images.length > 0 && ad.images[0] && typeof ad.images[0] === 'string' && ad.images[0].trim() !== '') {
+    if (
+      ad.images &&
+      Array.isArray(ad.images) &&
+      ad.images.length > 0 &&
+      typeof ad.images[0] === 'string' &&
+      ad.images[0].trim() !== ''
+    ) {
       return ad.images[0].trim();
     }
-    return null;
+    // Fallback image when missing
+    return 'https://via.placeholder.com/600x400?text=No+Image';
   }, [ad.images]);
 
+  const displayLocation = useMemo(() => {
+    const parts = [
+      ad.location?.name,
+      ad.location?.city || ad.city,
+      ad.location?.state || ad.state,
+    ].filter(Boolean);
+    return parts[0] || 'Location not specified';
+  }, [ad.location, ad.city, ad.state]);
+
+  const timeAgo = useMemo(() => {
+    if (!ad.postedAt) return 'Just now';
+    const posted = new Date(ad.postedAt);
+    const now = new Date();
+    const diffInSeconds = Math.floor((now.getTime() - posted.getTime()) / 1000);
+    
+    if (diffInSeconds < 60) return 'Just now';
+    const minutes = Math.floor(diffInSeconds / 60);
+    if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+    const hours = Math.floor(diffInSeconds / 3600);
+    if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+    const days = Math.floor(diffInSeconds / 86400);
+    if (days < 7) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+    const weeks = Math.floor(diffInSeconds / 604800);
+    if (weeks < 4) return `${weeks} ${weeks === 1 ? 'week' : 'weeks'} ago`;
+    return '1 month ago';
+  }, [ad.postedAt]);
 
   return (
-    <Link href={`/ads/${ad.id}`} className="block group">
-      <div className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden h-full flex flex-col">
-        {/* Large Image */}
-        <div className="relative h-64 bg-gray-200 overflow-hidden">
+    <Link 
+      href={`/ads/${ad.id}`} 
+      className="block group"
+      onClick={handleCardClick}
+      onAuxClick={(e) => {
+        // Handle middle-click (mouse wheel click)
+        if (e.button === 1) {
+          window.open(`/ads/${ad.id}`, '_blank');
+        }
+      }}
+    >
+      <div className="group bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden hover:shadow-xl hover:border-primary/30 transition-all duration-300 cursor-pointer transform hover:-translate-y-1">
+        <div className="relative aspect-[4/3] overflow-hidden">
           {imageUrl ? (
             <ImageWithFallback
               src={imageUrl}
@@ -111,148 +124,61 @@ function AdCard({ ad, priority = false }: AdCardProps) {
               <span className="text-4xl">📷</span>
             </div>
           )}
-          {/* Premium Badge - Always show for premium ads */}
-          {isPremiumAd && (
-            <div className="absolute top-4 left-4 bg-gradient-to-r from-yellow-400 to-yellow-500 text-white px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg flex items-center gap-1 z-10">
-              <span>⭐</span> {premiumLabel}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+          
+          {/* Badges - Bottom Left */}
+          {ad.isPremium && ad.premiumType && (
+            <div className={`absolute bottom-2 left-3 text-xs font-bold px-2 py-1 rounded shadow-sm opacity-90 ${
+              ad.premiumType === 'FEATURED' ? 'bg-yellow-400 text-black' :
+              ad.premiumType === 'RENT' ? 'bg-blue-500 text-white' :
+              ad.premiumType === 'ECO' ? 'bg-green-500 text-white' :
+              ad.premiumType === 'TOP' ? 'bg-orange-500 text-white' :
+              'bg-green-500 text-white'
+            }`}>
+              {ad.premiumType === 'FEATURED' ? 'FEATURED' : 
+               ad.premiumType === 'RENT' ? 'RENT' :
+               ad.premiumType === 'ECO' ? 'ECO' :
+               ad.premiumType === 'TOP' ? 'TOP' : 'BUMP UP'}
             </div>
           )}
+          
           {/* Urgent Badge */}
-          {ad.isUrgent && (
-            <div className={`absolute ${isPremiumAd ? 'top-16' : 'top-4'} left-4 bg-red-600 text-white px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg flex items-center gap-1 z-10`}>
-              <FiAlertCircle className="w-3 h-3" />
+          {ad.isUrgent && !ad.isPremium && (
+            <div className="absolute bottom-2 left-3 bg-red-500 text-white text-xs font-bold px-2 py-1 rounded shadow-sm opacity-90">
               URGENT
             </div>
           )}
-          {/* Discount Badge - Show below premium badge if both exist */}
-          {ad.discount && ad.discount > 0 && (
-            <div className={`absolute ${isPremiumAd ? 'top-16' : 'top-4'} left-4 bg-red-500 text-white px-3 py-1.5 rounded-full text-xs font-semibold shadow-lg z-10`}>
-              {ad.discount}% OFF
-            </div>
-          )}
-          {/* Action Buttons */}
-          <div className="absolute top-4 right-4 flex flex-col gap-2">
-            {/* Favorite Button */}
-            <button
-              onClick={handleFavorite}
-              className={`p-2.5 rounded-full backdrop-blur-sm transition-all shadow-lg ${
-                isFavorite 
-                  ? 'bg-red-500 text-white' 
-                  : 'bg-white/90 text-gray-600 hover:bg-red-500 hover:text-white'
-              }`}
-            >
-              <FiHeart className={`w-5 h-5 ${isFavorite ? 'fill-current' : ''}`} />
-            </button>
-            {/* Compare Button */}
-            <button
-              onClick={handleCompare}
-              className={`p-2.5 rounded-full backdrop-blur-sm transition-all shadow-lg ${
-                isInComparison(ad.id)
-                  ? 'bg-blue-500 text-white' 
-                  : 'bg-white/90 text-gray-600 hover:bg-blue-500 hover:text-white'
-              }`}
-              title={isInComparison(ad.id) ? 'Remove from comparison' : 'Add to comparison'}
-            >
-              <FiBarChart2 className={`w-5 h-5 ${isInComparison(ad.id) ? 'fill-current' : ''}`} />
-            </button>
-          </div>
-        </div>
 
-        {/* Content Section */}
-        <div className="p-6 flex-1 flex flex-col">
-          {/* Title with Premium Label */}
-          <div className="flex items-start justify-between gap-2 mb-2">
-            <h3 className="font-bold text-xl text-gray-900 line-clamp-1 group-hover:text-primary-600 transition-colors flex-1">
-              {ad.title}
-            </h3>
-            {isPremiumAd && (
-              <span className="flex-shrink-0 px-2 py-1 bg-yellow-100 text-yellow-800 text-xs font-semibold rounded-full whitespace-nowrap">
-                Paid
-              </span>
-            )}
-          </div>
-
-          {/* Price */}
-          <div className="mb-3">
-            {ad.originalPrice && ad.originalPrice > ad.price ? (
-              <div className="flex items-center gap-2">
-                <p className="text-2xl font-bold text-gray-900">
-                  ₹{ad.price.toLocaleString('en-IN')}
-                </p>
-                <p className="text-base text-gray-500 line-through">
-                  ₹{ad.originalPrice.toLocaleString('en-IN')}
-                </p>
-              </div>
-            ) : (
-              <p className="text-2xl font-bold text-gray-900">
-                ₹{ad.price.toLocaleString('en-IN')}
-              </p>
-            )}
-          </div>
-
-          {/* Description */}
-          {ad.description && (
-            <p className="text-sm text-gray-600 mb-4 line-clamp-3 leading-relaxed">
-              {ad.description}
-            </p>
-          )}
-
-          {/* Seller Details */}
-          {ad.user && (
-            <div
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                router.push(`/user/${ad.user.id}`);
-              }}
-              className="flex items-center gap-3 mb-4 p-3 bg-gray-50 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
-            >
-              {ad.user.avatar ? (
-                <ImageWithFallback
-                  src={ad.user.avatar}
-                  alt={ad.user.name}
-                  width={40}
-                  height={40}
-                  className="w-10 h-10 rounded-full object-cover"
-                />
-              ) : (
-                <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center">
-                  <FiUser className="w-5 h-5 text-primary-600" />
-                </div>
-              )}
-              <div className="flex-1">
-                <p className="text-xs text-gray-500 mb-0.5">Seller</p>
-                <div className="flex items-center gap-1.5">
-                  <p className="text-sm font-semibold text-gray-900 hover:text-primary-600 transition-colors">
-                    {ad.user.name}
-                  </p>
-                  {ad.user.isVerified && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium" title="Verified Seller">
-                      <FiCheckCircle className="w-3 h-3" />
-                      Verified
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Location */}
-          <div className="flex items-center gap-2 text-sm text-gray-500 mb-4">
-            <FiMapPin className="w-4 h-4" />
-            <span>{ad.location?.name || 'Location N/A'}</span>
-          </div>
-
-          {/* Action Button */}
-          <button className="w-full bg-gray-900 text-white py-3 rounded-xl font-semibold hover:bg-gray-800 transition-colors mt-auto">
-            View Details
+          <button
+            onClick={handleWishlist}
+            className={`absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/80 rounded-full transition-all shadow-sm ${
+              isFavorite
+                ? 'text-red-500'
+                : 'text-slate-400 hover:text-red-500 hover:scale-110'
+            }`}
+            aria-label={isFavorite ? 'Remove from wishlist' : 'Add to wishlist'}
+          >
+            <span className={`material-symbols-outlined text-[20px] ${isFavorite ? 'filled' : ''}`}>favorite</span>
           </button>
+        </div>
+        <div className="p-4">
+          <div className="flex justify-between items-start mb-1">
+            <h3 className="text-xl font-bold text-slate-900 dark:text-white">₹{ad.price.toLocaleString('en-IN')}</h3>
+          </div>
+          <p className="text-sm font-medium text-slate-700 dark:text-slate-300 truncate mb-3 group-hover:text-primary transition-colors">
+            {ad.title}
+          </p>
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+            <div className="flex items-center gap-1">
+              <span className="material-symbols-outlined text-[14px]">location_on</span>
+              <span className="truncate max-w-[100px]">{displayLocation}</span>
+            </div>
+            <span>{timeAgo}</span>
+          </div>
         </div>
       </div>
     </Link>
   );
 }
 
-// Memoize component to prevent unnecessary re-renders
-// Temporarily disabled memo to debug rendering issue
 export default AdCard;

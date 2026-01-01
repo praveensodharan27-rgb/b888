@@ -32,6 +32,7 @@ export default function CategoryNav() {
   const [showMegaMenu, setShowMegaMenu] = useState(false);
   const megaMenuRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [activeCategorySlug, setActiveCategorySlug] = useState<string>('');
 
   // Get current category from URL
   const currentCategory = pathname.startsWith('/category/') 
@@ -65,42 +66,83 @@ export default function CategoryNav() {
     })
     .slice(0, 12);
 
+  // Track active category based on URL or first available category
+  useEffect(() => {
+    if (currentCategory) {
+      setActiveCategorySlug(currentCategory);
+      return;
+    }
+    if (!activeCategorySlug && topCategories.length > 0) {
+      setActiveCategorySlug(topCategories[0].slug);
+    }
+  }, [currentCategory, topCategories, activeCategorySlug]);
+
+  // Fetch subcategories / popular searches for the active category
+  const { data: subcategoriesData, isLoading: isSubLoading } = useQuery({
+    queryKey: ['subcategories', activeCategorySlug],
+    queryFn: async () => {
+      if (!activeCategorySlug) return [];
+      const response = await api.get(`/categories/${activeCategorySlug}/subcategories`);
+      return response.data?.subcategories || [];
+    },
+    enabled: Boolean(activeCategorySlug),
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  const fallbackSubcategories =
+    allCategories.find((cat) => cat.slug === activeCategorySlug)?.subcategories || [];
+
+  const subcategories = (subcategoriesData as Subcategory[] | undefined) ?? fallbackSubcategories;
+
   // Auto-scroll to active category
   useEffect(() => {
-    if (currentCategory && scrollContainerRef.current) {
-      const activeTab = scrollContainerRef.current.querySelector(`[data-slug="${currentCategory}"]`);
+    const targetSlug = activeCategorySlug || currentCategory;
+    if (targetSlug && scrollContainerRef.current) {
+      const activeTab = scrollContainerRef.current.querySelector(`[data-slug="${targetSlug}"]`);
       if (activeTab) {
         activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
       }
     }
-  }, [currentCategory]);
+  }, [activeCategorySlug, currentCategory]);
 
   // Close mega menu when clicking outside
   useEffect(() => {
+    if (!showMegaMenu) return;
+
     const handleClickOutside = (event: MouseEvent) => {
-      if (megaMenuRef.current && !megaMenuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (megaMenuRef.current && !megaMenuRef.current.contains(target)) {
         setShowMegaMenu(false);
       }
     };
 
-    if (showMegaMenu) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
+    // Use setTimeout to avoid immediate closure on button click
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('click', handleClickOutside);
+    }, 0);
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      clearTimeout(timeoutId);
+      document.removeEventListener('click', handleClickOutside);
     };
   }, [showMegaMenu]);
 
-  // Handle category navigation
+  // Handle category navigation - filter on home page
   const handleCategoryClick = (categorySlug: string) => {
-    router.push(`/category/${categorySlug}`);
+    setActiveCategorySlug(categorySlug);
+    // Navigate to home page with category filter (stays on home)
+    router.push(`/?category=${categorySlug}`, { scroll: false });
     setShowMegaMenu(false);
   };
 
   if (isLoading) {
     return (
-      <div className="bg-white border-b border-gray-200">
+      <div 
+        className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-16 z-40 shadow-sm"
+        style={{ position: 'sticky', top: '64px', zIndex: 40 }}
+      >
         <div className="container mx-auto px-4">
           <div className="flex items-center h-14">
             <div className="flex gap-4 animate-pulse">
@@ -126,15 +168,21 @@ export default function CategoryNav() {
         }
       `}</style>
       
-      <div className="bg-white border-b border-gray-200 sticky top-16 z-40">
+      <div 
+        className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-16 z-40 shadow-sm"
+        style={{ position: 'sticky', top: '64px', zIndex: 40 }}
+      >
         <div className="container mx-auto px-4">
           <div className="flex items-center gap-2 py-2">
           {/* All Categories Mega Menu Button */}
           <div className="relative" ref={megaMenuRef}>
             <button
-              onClick={() => setShowMegaMenu(!showMegaMenu)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowMegaMenu(!showMegaMenu);
+              }}
               onMouseEnter={() => setShowMegaMenu(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-primary-600 hover:bg-primary-700 transition-colors"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors"
             >
               <FiGrid className="w-4 h-4" />
               All Categories
@@ -144,17 +192,32 @@ export default function CategoryNav() {
             {/* OLX-Style Mega Menu */}
             {showMegaMenu && (
               <div 
-                className="fixed left-0 right-0 top-[calc(4rem+3.5rem)] bg-white shadow-2xl border-t border-gray-200 z-50"
+                className="fixed left-0 right-0 bg-white dark:bg-slate-800 shadow-2xl border-t border-gray-200 dark:border-slate-700"
+                style={{ top: '120px', zIndex: 60 }}
                 onMouseLeave={() => setShowMegaMenu(false)}
               >
-                <div className="container mx-auto px-4 py-6">
+                <div className="max-w-7xl mx-auto px-4 py-6">
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
                     {allCategories.map((category) => (
                       <div key={category.id} className="space-y-3">
                         {/* Category Title */}
-                        <button
-                          onClick={() => handleCategoryClick(category.slug)}
-                          className="w-full flex items-center gap-2 text-sm font-bold text-gray-900 hover:text-primary-600 transition-colors group pb-2 border-b border-gray-200 text-left"
+                        <Link
+                          href={`/?category=${category.slug}`}
+                          onClick={(e) => {
+                            // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                            if (e.ctrlKey || e.metaKey || e.button === 1) {
+                              return; // Let browser handle it
+                            }
+                            e.preventDefault();
+                            handleCategoryClick(category.slug);
+                          }}
+                          onAuxClick={(e) => {
+                            // Handle middle-click (mouse wheel click)
+                            if (e.button === 1) {
+                              window.open(`/?category=${category.slug}`, '_blank');
+                            }
+                          }}
+                          className="w-full flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white hover:text-blue-600 transition-colors group pb-2 border-b border-gray-200 dark:border-slate-700 text-left"
                         >
                           {category.icon && (
                             <span className="text-xl group-hover:scale-110 transition-transform">
@@ -162,26 +225,50 @@ export default function CategoryNav() {
                             </span>
                           )}
                           <span className="flex-1">{category.name}</span>
-                        </button>
+                        </Link>
 
                         {/* Subcategories List */}
                         {category.subcategories && category.subcategories.length > 0 ? (
                           <div className="space-y-2">
                             {/* View All Link */}
-                            <button
-                              onClick={() => handleCategoryClick(category.slug)}
+                        <Link
+                          href={`/?category=${category.slug}`}
+                          onClick={(e) => {
+                            // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                            if (e.ctrlKey || e.metaKey || e.button === 1) {
+                              return; // Let browser handle it
+                            }
+                            e.preventDefault();
+                            handleCategoryClick(category.slug);
+                          }}
+                          onAuxClick={(e) => {
+                            // Handle middle-click (mouse wheel click)
+                            if (e.button === 1) {
+                              window.open(`/?category=${category.slug}`, '_blank');
+                            }
+                          }}
                               className="block text-xs font-semibold text-primary-600 hover:text-primary-700 hover:translate-x-1 transition-all text-left w-full"
                             >
                               View All
-                            </button>
+                            </Link>
 
                             {/* Subcategories */}
                             {category.subcategories.map((subcategory) => (
-                              <button
+                              <Link
                                 key={subcategory.id}
-                                onClick={() => {
-                                  router.push(`/category/${category.slug}?subcategory=${subcategory.slug}`);
+                                href={`/category/${category.slug}?subcategory=${subcategory.slug}`}
+                                onClick={(e) => {
+                                  // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                                  if (e.ctrlKey || e.metaKey || e.button === 1) {
+                                    return; // Let browser handle it
+                                  }
                                   setShowMegaMenu(false);
+                                }}
+                                onAuxClick={(e) => {
+                                  // Handle middle-click (mouse wheel click)
+                                  if (e.button === 1) {
+                                    window.open(`/category/${category.slug}?subcategory=${subcategory.slug}`, '_blank');
+                                  }
                                 }}
                                 className="block text-xs text-gray-600 hover:text-primary-600 hover:translate-x-1 transition-all text-left w-full"
                               >
@@ -191,16 +278,30 @@ export default function CategoryNav() {
                                     ({subcategory._count.ads})
                                   </span>
                                 )}
-                              </button>
+                              </Link>
                             ))}
                           </div>
                         ) : (
-                          <button
-                            onClick={() => handleCategoryClick(category.slug)}
+                        <Link
+                          href={`/?category=${category.slug}`}
+                          onClick={(e) => {
+                            // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                            if (e.ctrlKey || e.metaKey || e.button === 1) {
+                              return; // Let browser handle it
+                            }
+                            e.preventDefault();
+                            handleCategoryClick(category.slug);
+                          }}
+                          onAuxClick={(e) => {
+                            // Handle middle-click (mouse wheel click)
+                            if (e.button === 1) {
+                              window.open(`/?category=${category.slug}`, '_blank');
+                            }
+                          }}
                             className="block text-xs text-gray-600 hover:text-primary-600 hover:translate-x-1 transition-all text-left w-full"
                           >
                             View All
-                          </button>
+                          </Link>
                         )}
                       </div>
                     ))}
@@ -217,19 +318,34 @@ export default function CategoryNav() {
             style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
           >
             {topCategories.map((category) => {
-              const isActive = currentCategory === category.slug;
+              const isActive = activeCategorySlug === category.slug;
               
               return (
-                <button
+                <Link
                   key={category.id}
+                  href={`/?category=${category.slug}`}
                   data-slug={category.slug}
-                  onClick={() => handleCategoryClick(category.slug)}
+                  onClick={(e) => {
+                    // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                    if (e.ctrlKey || e.metaKey || e.button === 1) {
+                      return; // Let browser handle it
+                    }
+                    e.preventDefault();
+                    // For regular clicks, update active state and filter on home
+                    handleCategoryClick(category.slug);
+                  }}
+                  onAuxClick={(e) => {
+                    // Handle middle-click (mouse wheel click)
+                    if (e.button === 1) {
+                      window.open(`/?category=${category.slug}`, '_blank');
+                    }
+                  }}
                   className={`
                     flex-shrink-0 px-3 py-2 rounded-lg text-sm font-medium
                     transition-all duration-200 whitespace-nowrap
                     ${isActive 
-                      ? 'bg-gradient-to-r from-primary-600 to-primary-700 text-white shadow-lg scale-105' 
-                      : 'text-gray-700 hover:text-primary-600 hover:bg-gray-50 hover:scale-105'
+                      ? 'bg-blue-600 text-white shadow-lg scale-105' 
+                      : 'text-gray-700 hover:text-blue-600 hover:bg-gray-50 hover:scale-105'
                     }
                   `}
                 >
@@ -240,10 +356,61 @@ export default function CategoryNav() {
                       {category._count.ads}
                     </span>
                   ) : null}
-                </button>
+                </Link>
               );
             })}
           </div>
+
+          {/* Subcategory / Popular Searches Row */}
+          {activeCategorySlug && (
+            <div className="pt-2 pb-3">
+              {isSubLoading ? (
+                <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar">
+                  {[...Array(8)].map((_, idx) => (
+                    <div key={idx} className="h-8 w-28 bg-gray-200 rounded animate-pulse"></div>
+                  ))}
+                </div>
+              ) : subcategories && subcategories.length > 0 ? (
+                <div
+                  className="flex items-center gap-2 overflow-x-auto hide-scrollbar"
+                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                >
+                  {subcategories.map((subcat) => (
+                    <Link
+                      key={subcat.id}
+                      href={`/category/${activeCategorySlug}?subcategory=${subcat.slug}`}
+                      onClick={(e) => {
+                        // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                        if (e.ctrlKey || e.metaKey || e.button === 1) {
+                          return; // Let browser handle it
+                        }
+                        // For regular clicks, close mega menu if open
+                        setShowMegaMenu(false);
+                      }}
+                      onAuxClick={(e) => {
+                        // Handle middle-click (mouse wheel click)
+                        if (e.button === 1) {
+                          window.open(`/category/${activeCategorySlug}?subcategory=${subcat.slug}`, '_blank');
+                        }
+                      }}
+                      className="
+                        flex-shrink-0 px-3 py-2 rounded-full text-sm
+                        bg-gray-100 text-gray-800 hover:bg-primary-50 hover:text-primary-700
+                        border border-gray-200 hover:border-primary-300 transition-all
+                      "
+                    >
+                      {subcat.name}
+                      {subcat._count?.ads !== undefined && (
+                        <span className="ml-1 text-xs text-gray-500">({subcat._count.ads})</span>
+                      )}
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">No popular searches found.</div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

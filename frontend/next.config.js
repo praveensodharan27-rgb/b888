@@ -89,6 +89,8 @@ const nextConfig = {
   },
   // Webpack configuration to handle chunk loading errors
   webpack: (config, { isServer }) => {
+    // Fix for "Cannot read properties of undefined (reading 'call')" error
+    // Ensure proper module factory handling
     if (!isServer) {
       // Handle chunk loading errors on client side
       config.optimization = {
@@ -104,6 +106,14 @@ const nextConfig = {
         net: false,
         tls: false,
       };
+    } else {
+      // Handle Firebase modules during SSR
+      config.externals = config.externals || [];
+      config.externals.push({
+        'firebase/app': 'commonjs firebase/app',
+        'firebase/messaging': 'commonjs firebase/messaging',
+        'firebase/analytics': 'commonjs firebase/analytics',
+      });
     }
     return config;
   },

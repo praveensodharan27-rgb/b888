@@ -84,11 +84,14 @@ async function processPendingModeration(minutesThreshold = 5) {
 
         } else {
           // APPROVE ad - moderation passed
+          // Set postedAt when ad is approved (goes live)
+          const now = new Date();
           await prisma.ad.update({
             where: { id: ad.id },
             data: {
               status: 'APPROVED',
-              moderationStatus: 'approved_after_review'
+              moderationStatus: 'approved_after_review',
+              postedAt: now // Set postedAt when ad goes live
             }
           });
 

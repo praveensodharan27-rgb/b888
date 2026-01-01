@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { FiSearch, FiClock, FiTrendingUp, FiX } from 'react-icons/fi';
+import { FiSearch, FiClock, FiTrendingUp, FiX, FiMapPin, FiChevronDown } from 'react-icons/fi';
+import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 
 interface Suggestion {
@@ -26,9 +27,23 @@ export default function Hero() {
   const [isFocused, setIsFocused] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [recentSearchesUpdate, setRecentSearchesUpdate] = useState(0); // Force re-render when recent searches change
+  const [selectedLocation, setSelectedLocation] = useState('');
   const searchRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  // Fetch locations
+  const { data: locationsData } = useQuery({
+    queryKey: ['locations'],
+    queryFn: async () => {
+      const response = await api.get('/locations');
+      return response.data.locations || [];
+    },
+    staleTime: 10 * 60 * 1000,
+  });
+
+  const locations = locationsData || [];
+  const currentLocation = locations.find((loc: any) => loc.slug === selectedLocation) || locations[0] || { name: 'New York' };
 
   // Get recent searches from localStorage
   const getRecentSearches = (): string[] => {
@@ -248,23 +263,35 @@ export default function Hero() {
   }, [selectedIndex, search, trendingItems, suggestions, isFocused]);
 
   return (
-    <div className="bg-gradient-to-r from-primary-600 via-primary-700 to-primary-800 text-white rounded-xl p-8 md:p-12 my-8 shadow-lg">
-      <div className="max-w-4xl mx-auto text-center">
-        <h1 className="text-4xl md:text-6xl font-bold mb-4 drop-shadow-lg">
-          Buy and Sell Anything
+    <div className="relative w-full bg-slate-900 dark:bg-black">
+      {/* Background Image with Overlay */}
+      <div 
+        className="absolute inset-0 opacity-50 bg-cover bg-center"
+        style={{
+          backgroundImage: "url('https://images.unsplash.com/photo-1570126618953-d437176e8c79?q=80&w=2594&auto=format&fit=crop')"
+        }}
+      ></div>
+      
+      {/* Content */}
+      <div className="relative max-w-[960px] mx-auto px-4 py-20 flex flex-col items-center justify-center min-h-[400px] text-center">
+        <h1 className="text-4xl md:text-5xl lg:text-6xl font-black text-white mb-4 tracking-tight drop-shadow-lg">
+          Find anything in <span className="text-blue-300">{currentLocation.name}</span>
         </h1>
-        <p className="text-xl md:text-2xl mb-8 text-primary-100">
-          Find great deals or sell your items locally
-        </p>
-        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3 max-w-2xl mx-auto">
-          <div ref={searchRef} className="flex-1 relative">
+        <h2 className="text-lg md:text-xl text-slate-200 mb-8 max-w-2xl font-medium drop-shadow-md">
+          Buy and sell everything from cars to mobile phones right now!
+        </h2>
+        
+        {/* Search Bar */}
+        <form onSubmit={handleSearch} className="w-full max-w-3xl bg-white dark:bg-slate-800 rounded-lg p-2 shadow-2xl flex flex-col md:flex-row gap-2 backdrop-blur-sm">
+          {/* Search Input */}
+          <div ref={searchRef} className="flex-1 flex items-center h-12 md:h-14 px-4 bg-slate-50 dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
+            <span className="material-symbols-outlined text-slate-400">search</span>
             <input
               ref={inputRef}
               type="text"
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
-                // When user starts typing, show dropdown for suggestions
                 if (e.target.value.trim().length > 0) {
                   setShowDropdown(true);
                 }
@@ -272,13 +299,13 @@ export default function Hero() {
               onFocus={handleInputFocus}
               onBlur={handleInputBlur}
               onKeyDown={handleKeyDown}
-              placeholder="Search for anything... (e.g., iPhone, Car, Furniture)"
-              className="w-full px-6 py-4 rounded-lg text-gray-900 text-lg focus:outline-none focus:ring-4 focus:ring-primary-300 shadow-lg"
+              placeholder="Search for cars, phones..."
+              className="w-full h-full bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white placeholder-slate-400 ml-2"
             />
             {showDropdown && (
               <div 
                 ref={suggestionsRef}
-                className="absolute top-full left-0 right-0 mt-2 bg-white rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto"
+                className="absolute top-full left-0 right-0 mt-2 bg-white rounded-lg shadow-xl z-50 max-h-60 sm:max-h-80 overflow-y-auto"
               >
                 {/* Show trending items when input is empty and focused */}
                 {search.trim().length === 0 && isFocused && trendingItems.length > 0 && (
@@ -403,20 +430,28 @@ export default function Hero() {
               </div>
             )}
           </div>
+          
+          {/* Location Selector */}
+          <div className="flex-[0.5] flex items-center h-12 md:h-14 px-4 bg-slate-50 dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
+            <span className="material-symbols-outlined text-slate-400">location_on</span>
+            <input
+              type="text"
+              value={currentLocation.name}
+              readOnly
+              className="w-full h-full bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white placeholder-slate-400 ml-2"
+            />
+            <span className="material-symbols-outlined text-slate-400 cursor-pointer">expand_more</span>
+          </div>
+          
+          {/* Search Button */}
           <button
             type="submit"
-            className="bg-white text-primary-600 px-8 py-4 rounded-lg font-semibold hover:bg-primary-50 flex items-center justify-center gap-2 shadow-lg transition-transform hover:scale-105"
+            className="h-12 md:h-14 px-8 bg-primary hover:bg-blue-600 text-white font-bold rounded shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2"
           >
-            <FiSearch className="w-5 h-5" />
+            <span className="material-symbols-outlined hidden md:block">search</span>
             Search
           </button>
         </form>
-        <div className="mt-8 flex flex-wrap justify-center gap-4 text-sm">
-          <span className="bg-white/20 px-4 py-2 rounded-full">📱 Electronics</span>
-          <span className="bg-white/20 px-4 py-2 rounded-full">🚗 Vehicles</span>
-          <span className="bg-white/20 px-4 py-2 rounded-full">🪑 Furniture</span>
-          <span className="bg-white/20 px-4 py-2 rounded-full">👕 Fashion</span>
-        </div>
       </div>
     </div>
   );

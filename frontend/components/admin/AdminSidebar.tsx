@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { 
   FiHome, 
@@ -75,11 +76,14 @@ export default function AdminSidebar() {
           {/* Logo/Title */}
           <div className="px-6 mb-8 border-b border-gray-200 pb-6">
             <Link href="/admin" className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center shadow-lg">
-                <span className="text-white font-bold text-xl">S</span>
-              </div>
+              <Image
+                src="/logo.png"
+                alt="SellIt Logo"
+                width={120}
+                height={40}
+                className="h-8 w-auto object-contain"
+              />
               <div>
-                <h2 className="text-xl font-bold text-gray-900">SellIt</h2>
                 <p className="text-xs text-gray-500">Admin Panel</p>
               </div>
             </Link>
@@ -121,42 +125,7 @@ export default function AdminSidebar() {
             })}
           </nav>
 
-          {/* Bottom Section */}
-          <div className="absolute bottom-0 left-0 right-0 px-3 pb-4 bg-white">
-            {/* User Info Card */}
-            <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg p-4 mb-3 text-white shadow-lg">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm">
-                  <span className="text-sm font-bold">AD</span>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-semibold">Admin User</p>
-                  <p className="text-xs text-blue-100">Super Admin</p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-blue-100">Online</span>
-                <div className="flex items-center gap-1">
-                  <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
-                  <span className="text-blue-100">Active</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Help Card */}
-            <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-              <p className="text-xs font-semibold text-gray-900 mb-1">Need Help?</p>
-              <p className="text-xs text-gray-600 mb-2">Contact support or check docs</p>
-              <button className="w-full bg-white border border-gray-300 text-gray-700 text-xs font-medium py-1.5 rounded hover:bg-gray-50 transition-colors">
-                Get Support
-              </button>
-            </div>
-
-            {/* Version */}
-            <p className="text-center text-xs text-gray-400 mt-3">
-              v1.0.0 • SellIt Admin
-            </p>
-          </div>
+          {/* Bottom Section removed per request */}
         </div>
       </aside>
 

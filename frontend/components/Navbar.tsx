@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { useState, useEffect, useRef } from 'react';
 import { FiMenu, FiX, FiUser, FiLogOut, FiHeart, FiPlus, FiSettings, FiShoppingBag, FiMessageCircle, FiGrid, FiBriefcase, FiGlobe, FiBarChart2, FiMapPin, FiSearch } from 'react-icons/fi';
@@ -9,7 +10,7 @@ import { useChatNotifications } from '@/hooks/useChatNotifications';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useComparison } from '@/hooks/useComparison';
 import { useQuery } from '@tanstack/react-query';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import api from '@/lib/api';
 import NotificationIcon from './NotificationIcon';
 import ImageWithFallback from './ImageWithFallback';
@@ -43,13 +44,17 @@ const Translator = dynamic(
   }
 );
 
-// Logo component - simple text/icon logo
+// Logo component - using logo image
 function LogoImage() {
-  // Simple gradient logo badge
   return (
-    <div className="w-10 h-10 flex items-center justify-center bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg shadow-md">
-      <span className="text-white font-bold text-xl">S</span>
-    </div>
+    <Image
+      src="/logo.png"
+      alt="SellIt Logo"
+      width={120}
+      height={40}
+      className="h-8 w-auto object-contain"
+      priority
+    />
   );
 }
 
@@ -59,6 +64,7 @@ export default function Navbar() {
   const { t } = useTranslation();
   const { count: comparisonCount, mounted: comparisonMounted } = useComparison();
   const router = useRouter();
+  const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [loginModalOpen, setLoginModalOpen] = useState(false);
@@ -112,8 +118,12 @@ export default function Navbar() {
   }, [userMenuOpen]);
 
   return (
-    <div>
-      <nav className="sticky top-0 z-50 w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm" role="navigation">
+    <>
+      <nav 
+        className="sticky top-0 z-50 w-full bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shadow-sm" 
+        style={{ position: 'sticky', top: 0, zIndex: 50 }}
+        role="navigation"
+      >
         <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16 gap-6">
           {/* Logo */}
@@ -128,9 +138,6 @@ export default function Navbar() {
           {/* Desktop Nav Links */}
           <div className="hidden md:flex flex-1 items-center justify-end gap-4 ml-6">
             <div className="flex items-center gap-4">
-              <Link href="/" className="text-sm font-semibold text-slate-700 hover:text-primary dark:text-slate-300 dark:hover:text-primary transition-colors">
-                Home
-              </Link>
               {isAuthenticated && (
                 <Link href="/my-ads" className="text-sm font-semibold text-slate-700 hover:text-primary dark:text-slate-300 dark:hover:text-primary transition-colors">
                   My Ads
@@ -150,23 +157,7 @@ export default function Navbar() {
             </div>
             <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-2"></div>
             <div className="flex items-center gap-3">
-              {!mounted ? (
-                <>
-                  <button 
-                    onClick={() => setLoginModalOpen(true)}
-                    className="text-sm font-bold text-slate-900 dark:text-white hover:underline"
-                  >
-                    Login
-                  </button>
-                  <Link
-                    href="/post-ad"
-                    className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-primary text-white text-sm font-bold py-2.5 px-5 rounded-full shadow-md hover:shadow-lg hover:opacity-90 transition-all"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">add</span>
-                    <span>Sell</span>
-                  </Link>
-                </>
-              ) : isAuthenticated ? (
+              {mounted && isAuthenticated ? (
                 <>
                   <div className="relative">
                     <NotificationIcon />
@@ -176,7 +167,7 @@ export default function Navbar() {
                     className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-primary text-white text-sm font-bold py-2.5 px-5 rounded-full shadow-md hover:shadow-lg hover:opacity-90 transition-all"
                   >
                     <span className="material-symbols-outlined text-[18px]">add</span>
-                    <span>Sell</span>
+                    <span>Post Ad</span>
                   </Link>
                 {comparisonMounted && comparisonCount > 0 && (
                   <Link
@@ -276,28 +267,23 @@ export default function Navbar() {
                   )}
                 </div>
               </>
-            ) : (
-              <>
-                <Link
-                  href="/ads"
-                  className="text-gray-700 hover:text-primary-600 px-4 py-2 rounded-lg hover:bg-gray-50 flex items-center gap-2 transition-colors"
-                >
-                  <FiGrid className="text-blue-600" /> {t('nav.browse')}
-                </Link>
-                <button 
-                  onClick={() => setLoginModalOpen(true)}
-                  className="text-gray-700 hover:text-primary-600 transition-colors"
-                >
-                  {t('nav.login')}
-                </button>
-                <button
-                  onClick={() => setSignupModalOpen(true)}
-                  className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
-                >
-                  {t('nav.signUp')}
-                </button>
-              </>
-            )}
+              ) : (
+                <>
+                  <button 
+                    onClick={() => setLoginModalOpen(true)}
+                    className="text-sm font-bold text-slate-900 dark:text-white hover:underline"
+                  >
+                    Login
+                  </button>
+                  <Link
+                    href="/post-ad"
+                    className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-primary text-white text-sm font-bold py-2.5 px-5 rounded-full shadow-md hover:shadow-lg hover:opacity-90 transition-all"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">add</span>
+                    <span>Post Ad</span>
+                  </Link>
+                </>
+              )}
           </div>
 
           {/* Mobile Menu Button */}
@@ -350,6 +336,15 @@ export default function Navbar() {
             <div className="px-4 py-2 border-b border-gray-200">
               <Translator />
             </div>
+
+            {/* Home Link - Mobile */}
+            <Link
+              href="/"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block px-4 py-2 text-gray-700 hover:bg-gray-100 dark:text-gray-300 transition-colors"
+            >
+              Home
+            </Link>
             
             {!mounted ? (
               // Show default (not authenticated) state during SSR and initial render
@@ -377,18 +372,11 @@ export default function Navbar() {
             ) : isAuthenticated ? (
               <>
                 <Link
-                  href="/ads"
-                  className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <FiGrid className="text-blue-600" /> {t('nav.browse')}
-                </Link>
-                <Link
                   href="/post-ad"
                   className="block px-4 py-2 bg-teal-600 text-white rounded-lg font-semibold text-center"
                   onClick={() => setMobileMenuOpen(false)}
                 >
-                  <FiPlus className="inline w-4 h-4 mr-1" /> + SELL
+                  <FiPlus className="inline w-4 h-4 mr-1" /> + Post Ad
                 </Link>
                 <div className="px-4 py-2 flex items-center">
                   <span className="mr-2 text-gray-700">{t('nav.messages')}</span>
@@ -463,13 +451,6 @@ export default function Navbar() {
               </>
             ) : (
               <>
-                <Link
-                  href="/ads"
-                  className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 transition-colors"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <FiGrid className="text-blue-600" /> {t('nav.browse')}
-                </Link>
                 <button
                   onClick={() => {
                     setLoginModalOpen(true);
@@ -488,6 +469,13 @@ export default function Navbar() {
                 >
                   {t('nav.signUp')}
                 </button>
+                <Link
+                  href="/post-ad"
+                  className="block px-4 py-2 bg-teal-600 text-white rounded-lg font-semibold text-center mt-2"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  <FiPlus className="inline w-4 h-4 mr-1" /> Post Ad
+                </Link>
               </>
             )}
             </div>
@@ -508,7 +496,7 @@ export default function Navbar() {
         onClose={() => setSignupModalOpen(false)}
         onSwitchToLogin={() => setLoginModalOpen(true)}
       />
-    </div>
+    </>
   );
 }
 

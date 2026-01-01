@@ -21,6 +21,9 @@ router.get('/',
     query('maxPrice').optional().isFloat({ min: 0 }),
     query('condition').optional().isIn(['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED']),
     query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped']),
+    query('latitude').optional().isFloat(),
+    query('longitude').optional().isFloat(),
+    query('radius').optional().isFloat({ min: 0 }), // Radius in kilometers
   ],
   async (req, res) => {
     try {
@@ -40,6 +43,9 @@ router.get('/',
         maxPrice,
         condition,
         sort = 'newest',
+        latitude,
+        longitude,
+        radius = 50, // Default 50km radius
       } = req.query;
 
       // Resolve category, subcategory, and location IDs
@@ -111,6 +117,8 @@ router.get('/',
               id: true,
               name: true,
               slug: true,
+              latitude: true,
+              longitude: true,
             },
           },
         },
@@ -118,19 +126,91 @@ router.get('/',
 
       // Maintain search result order
       const adsMap = new Map(ads.map(ad => [ad.id, ad]));
-      const orderedAds = adIds.map(id => adsMap.get(id)).filter(Boolean);
+      let orderedAds = adIds.map(id => adsMap.get(id)).filter(Boolean);
+
+      // Calculate distance if latitude/longitude provided
+      if (latitude && longitude) {
+        const userLat = parseFloat(latitude);
+        const userLng = parseFloat(longitude);
+        const radiusKm = parseFloat(radius) || 50;
+
+        // Haversine formula to calculate distance
+        const calculateDistance = (lat1, lon1, lat2, lon2) => {
+          const R = 6371; // Earth's radius in kilometers
+          const dLat = (lat2 - lat1) * Math.PI / 180;
+          const dLon = (lon2 - lon1) * Math.PI / 180;
+          const a = 
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          return R * c; // Distance in kilometers
+        };
+
+        orderedAds = orderedAds
+          .map(ad => {
+            if (ad.location?.latitude && ad.location?.longitude) {
+              const distance = calculateDistance(
+                userLat,
+                userLng,
+                ad.location.latitude,
+                ad.location.longitude
+              );
+              return { ...ad, distance };
+            }
+            return { ...ad, distance: null };
+          })
+          .filter(ad => {
+            // Filter by radius if location has coordinates
+            if (ad.location?.latitude && ad.location?.longitude) {
+              return ad.distance <= radiusKm;
+            }
+            // Include ads without location coordinates if no location filter
+            return !locationObj;
+          })
+          .sort((a, b) => {
+            // Sort by distance if available, otherwise by original order
+            if (a.distance !== null && b.distance !== null) {
+              return a.distance - b.distance;
+            }
+            if (a.distance !== null) return -1;
+            if (b.distance !== null) return 1;
+            return 0;
+          });
+      }
 
       // Post-process to prioritize premium ads
       const premiumAds = orderedAds.filter(ad => ad.isPremium);
       const regularAds = orderedAds.filter(ad => !ad.isPremium);
       
-      // Sort premium ads by type (TOP > FEATURED > BUMP_UP)
+      // Sort premium ads by type (TOP > FEATURED > BUMP_UP), then by distance if available
       premiumAds.sort((a, b) => {
+        // First sort by premium type
         const typeOrder = { TOP: 0, FEATURED: 1, BUMP_UP: 2 };
         const aOrder = typeOrder[a.premiumType] ?? 3;
         const bOrder = typeOrder[b.premiumType] ?? 3;
-        return aOrder - bOrder;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        
+        // Then sort by distance if available
+        if (a.distance !== null && b.distance !== null) {
+          return a.distance - b.distance;
+        }
+        if (a.distance !== null) return -1;
+        if (b.distance !== null) return 1;
+        return 0;
       });
+
+      // Sort regular ads by distance if available
+      if (latitude && longitude) {
+        regularAds.sort((a, b) => {
+          if (a.distance !== null && b.distance !== null) {
+            return a.distance - b.distance;
+          }
+          if (a.distance !== null) return -1;
+          if (b.distance !== null) return 1;
+          return 0;
+        });
+      }
 
       const finalAds = [...premiumAds, ...regularAds];
 
@@ -174,6 +254,42 @@ router.get('/',
     }
   }
 );
+
+// Get trending searches
+router.get('/trending', async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+
+    // Get trending search queries (you may need to track searches)
+    // For now, returning popular categories/subcategories
+    const trending = await prisma.category.findMany({
+      take: parseInt(limit),
+      where: { isActive: true },
+      orderBy: { _count: { ads: 'desc' } },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        _count: {
+          select: { ads: true }
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      trending: trending.map(cat => ({
+        query: cat.name,
+        count: cat._count.ads,
+        type: 'category',
+        slug: cat.slug
+      }))
+    });
+  } catch (error) {
+    console.error('Get trending searches error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch trending searches' });
+  }
+});
 
 // Autocomplete endpoint
 router.get('/autocomplete',

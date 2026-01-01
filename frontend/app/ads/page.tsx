@@ -40,6 +40,9 @@ function AdsPageContent() {
     search?: string;
     condition?: string;
     sort?: 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
+    latitude?: string;
+    longitude?: string;
+    radius?: string;
   }>({
     page: parseInt(searchParams.get('page') || '1'),
     limit: 20,
@@ -51,10 +54,14 @@ function AdsPageContent() {
     search: searchParams.get('search') || undefined,
     condition: searchParams.get('condition') || undefined,
     sort: (searchParams.get('sort') || 'newest') as 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped',
+    latitude: searchParams.get('latitude') || undefined,
+    longitude: searchParams.get('longitude') || undefined,
+    radius: searchParams.get('radius') || '50',
   });
 
   const [isFiltersExpanded, setIsFiltersExpanded] = useState(true);
   const [useInfiniteScroll, setUseInfiniteScroll] = useState(true);
+
 
   // Use infinite scroll for better performance
   const infiniteQuery = useInfiniteAds(filters);

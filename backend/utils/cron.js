@@ -2,6 +2,8 @@ const cron = require('node-cron');
 const { deleteDeactivatedAccounts } = require('../scripts/delete-deactivated-accounts');
 const { processSearchAlerts } = require('../services/searchAlerts');
 const { autoApprovePendingAds } = require('../services/autoApproval');
+const { resetMonthlyFreeAds } = require('../services/monthlyQuotaReset');
+const { expireAds } = require('../scripts/expire-ads');
 
 /**
  * Setup cron jobs for scheduled tasks
@@ -36,6 +38,26 @@ function setupCronJobs() {
       console.error('❌ Error in moderation processing task:', error);
     }
   });
+
+  // Reset monthly free ads quota on the 1st of every month at midnight
+  cron.schedule('0 0 1 * *', async () => {
+    console.log('⏰ Running scheduled task: Reset monthly free ads quota');
+    try {
+      await resetMonthlyFreeAds();
+    } catch (error) {
+      console.error('❌ Error in monthly quota reset task:', error);
+    }
+  });
+
+  // Auto-expire ads that have passed their expiration date (runs every hour)
+  cron.schedule('0 * * * *', async () => {
+    console.log('⏰ Running scheduled task: Auto-expire ads');
+    try {
+      await expireAds();
+    } catch (error) {
+      console.error('❌ Error in ad expiration task:', error);
+    }
+  });
   
   // Run search alerts on startup (after 30 seconds delay to allow server to fully initialize)
   setTimeout(async () => {
@@ -61,6 +83,8 @@ function setupCronJobs() {
   console.log('   - Delete deactivated accounts: Daily at 2 AM');
   console.log('   - Process search alerts: Every hour');
   console.log('   - Process pending moderation: Every 5 minutes (approve/reject after review)');
+  console.log('   - Reset monthly free ads quota: 1st of every month at midnight');
+  console.log('   - Auto-expire ads: Every hour');
   console.log('   - Initial search alerts check: 30 seconds after startup');
   console.log('   - Initial moderation check: 1 minute after startup');
 }
