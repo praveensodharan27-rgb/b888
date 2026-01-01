@@ -5,8 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { useState, useEffect, useRef } from 'react';
-import { FiMenu, FiX, FiUser, FiLogOut, FiHeart, FiPlus, FiSettings, FiShoppingBag, FiMessageCircle, FiGrid, FiBriefcase, FiGlobe, FiBarChart2, FiMapPin, FiSearch } from 'react-icons/fi';
-import { useChatNotifications } from '@/hooks/useChatNotifications';
+import { FiMenu, FiX, FiUser, FiLogOut, FiHeart, FiPlus, FiSettings, FiShoppingBag, FiGrid, FiBriefcase, FiGlobe, FiBarChart2, FiMapPin, FiSearch } from 'react-icons/fi';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useComparison } from '@/hooks/useComparison';
 import { useQuery } from '@tanstack/react-query';
@@ -49,10 +48,10 @@ function LogoImage() {
   return (
     <Image
       src="/logo.png"
-      alt="SellIt Logo"
-      width={120}
-      height={40}
-      className="h-8 w-auto object-contain"
+      alt="Logo"
+      width={150}
+      height={50}
+      className="h-12 w-auto object-contain"
       priority
     />
   );
@@ -60,7 +59,6 @@ function LogoImage() {
 
 export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth();
-  const { unreadCount } = useChatNotifications();
   const { t } = useTranslation();
   const { count: comparisonCount, mounted: comparisonMounted } = useComparison();
   const router = useRouter();
@@ -125,36 +123,14 @@ export default function Navbar() {
         role="navigation"
       >
         <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16 gap-6">
+          <div className="flex flex-col md:flex-row items-center justify-center md:justify-between gap-4 md:gap-6 py-4 md:py-0 md:h-16 text-center md:text-left">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 cursor-pointer flex-shrink-0">
+          <Link href="/" className="flex items-center gap-2 cursor-pointer flex-shrink-0 order-1">
             <LogoImage />
-            <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-              <span className="hidden sm:inline">SellIt</span>
-              <span className="sm:hidden">SellIt</span>
-            </h1>
           </Link>
 
           {/* Desktop Nav Links */}
-          <div className="hidden md:flex flex-1 items-center justify-end gap-4 ml-6">
-            <div className="flex items-center gap-4">
-              {isAuthenticated && (
-                <Link href="/my-ads" className="text-sm font-semibold text-slate-700 hover:text-primary dark:text-slate-300 dark:hover:text-primary transition-colors">
-                  My Ads
-                </Link>
-              )}
-              {isAuthenticated && (
-                <Link href="/chat" className="flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-primary dark:text-slate-300 dark:hover:text-primary transition-colors relative">
-                  <span className="material-symbols-outlined text-[20px]">chat</span>
-                  <span>Chat</span>
-                  {unreadCount > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">
-                      {unreadCount > 9 ? '9+' : unreadCount}
-                    </span>
-                  )}
-                </Link>
-              )}
-            </div>
+          <div className="hidden md:flex flex-1 items-center justify-center gap-4 order-2">
             <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-2"></div>
             <div className="flex items-center gap-3">
               {mounted && isAuthenticated ? (
@@ -238,13 +214,6 @@ export default function Navbar() {
                       >
                         <FiBriefcase className="text-blue-600" /> {t('nav.businessPackage')}
                       </Link>
-                      <Link
-                        href="/chat"
-                        className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
-                        onClick={() => setUserMenuOpen(false)}
-                      >
-                        <FiMessageCircle className="text-blue-600" /> {t('nav.messages')}
-                      </Link>
                       {user?.role === 'ADMIN' && (
                         <Link
                           href="/admin"
@@ -288,7 +257,7 @@ export default function Navbar() {
 
           {/* Mobile Menu Button */}
           <button
-            className="md:hidden text-gray-700 p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            className="md:hidden text-gray-700 p-2 hover:bg-gray-100 rounded-lg transition-colors order-3"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             aria-label="Toggle menu"
           >
@@ -378,8 +347,7 @@ export default function Navbar() {
                 >
                   <FiPlus className="inline w-4 h-4 mr-1" /> + Post Ad
                 </Link>
-                <div className="px-4 py-2 flex items-center">
-                  <span className="mr-2 text-gray-700">{t('nav.messages')}</span>
+                <div className="px-4 py-2">
                   <NotificationIcon />
                 </div>
                 <Link
@@ -388,13 +356,6 @@ export default function Navbar() {
                   onClick={() => setMobileMenuOpen(false)}
                 >
                   {t('nav.profile')}
-                </Link>
-                <Link
-                  href="/my-ads"
-                  className="block px-4 py-2 text-gray-700 hover:bg-gray-100"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  {t('nav.myAds')}
                 </Link>
                 <Link
                   href="/favorites"
@@ -416,20 +377,6 @@ export default function Navbar() {
                     </span>
                   </Link>
                 )}
-                <Link
-                  href="/chat"
-                  className="block px-4 py-2 text-gray-700 hover:bg-gray-100 relative"
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  <span className="flex items-center gap-2">
-                    {t('nav.messages')}
-                    {unreadCount > 0 && (
-                      <span className="bg-red-500 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">
-                        {unreadCount > 9 ? '9+' : unreadCount}
-                      </span>
-                    )}
-                  </span>
-                </Link>
                 {user?.role === 'ADMIN' && (
                   <Link
                     href="/admin"

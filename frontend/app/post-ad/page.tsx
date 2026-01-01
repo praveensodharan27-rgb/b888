@@ -1,13 +1,15 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { useCreateAd, useFreeAdsStatus, useCreateAdPostingOrder, useVerifyAdPostingPayment, useAdLimitStatus } from '@/hooks/useAds';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
-import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase } from 'react-icons/fi';
+import { getSocket } from '@/lib/socket';
+import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage } from 'react-icons/fi';
+import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import ImageWithFallback from '@/components/ImageWithFallback';
 import InterstitialAd from '@/components/InterstitialAd';
@@ -16,8 +18,18 @@ import AdLimitAlert from '@/components/AdLimitAlert';
 import toast from 'react-hot-toast';
 
 // Lazy load PaymentModal (heavy component with Razorpay SDK)
+// Using same pattern as other components (AdLimitAlert, PremiumFeatureButton)
 const PaymentModal = dynamic(() => import('@/components/PaymentModal'), {
-  loading: () => null,
+  loading: () => (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+        <div className="flex items-center justify-center gap-3">
+          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
+          <p className="text-gray-700">Loading payment gateway...</p>
+        </div>
+      </div>
+    </div>
+  ),
   ssr: false
 });
 
@@ -66,10 +78,131 @@ export default function PostAdPage() {
   const [showPaymentRequiredModal, setShowPaymentRequiredModal] = useState(false);
   const [paymentRequiredError, setPaymentRequiredError] = useState<any>(null);
   const [isAdLimitAlertDismissed, setIsAdLimitAlertDismissed] = useState(false);
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
+  
+  // Step-by-step wizard state - strict order enforcement
+  const [currentStep, setCurrentStep] = useState(1);
+  const TOTAL_STEPS = 8; // Category, Subcategory, Brand, Specs, Title/Description, Image, Price, Location
   
   // Check if premium features are selected
-  const hasPremiumFeatures = selectedPremium || isUrgent;
+  const hasPremiumFeatures = !!(selectedPremium || isUrgent);
+
+  // Real-time quota updates via socket
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !isAuthenticated) return;
+
+    const handleQuotaUpdate = (quotaData: any) => {
+      console.log('📡 Received AD_QUOTA_UPDATED event after purchase/usage:', quotaData);
+      
+      // CRITICAL: Calculate business ads remaining (only from NON-EXHAUSTED packages)
+      // Never count exhausted packages as "0 Available" - they should show as EXHAUSTED
+      const businessAdsRemaining = quotaData.packages?.reduce((sum: number, pkg: any) => {
+        // Only count packages that are NOT exhausted
+        if (pkg.isExhausted || (pkg.adsRemaining === 0 && pkg.totalAds > 0)) {
+          return sum; // Skip exhausted packages
+        }
+        return sum + (pkg.adsRemaining || 0);
+      }, 0) || 0;
+      
+      // Update React Query cache immediately
+      queryClient.setQueryData(['ad-limit-status'], (old: any) => ({
+        ...old,
+        userAdQuota: quotaData,
+        freeAdsRemaining: quotaData.monthlyFreeAds?.remaining || 0,
+        freeAdsUsed: quotaData.monthlyFreeAds?.used || 0,
+        freeAdsLimit: quotaData.monthlyFreeAds?.total || 2,
+        businessAdsRemaining: businessAdsRemaining,
+        packages: quotaData.packages || [],
+        totalRemaining: (quotaData.monthlyFreeAds?.remaining || 0) + businessAdsRemaining,
+        activePackagesCount: quotaData.packages?.filter((pkg: any) => !pkg.isExhausted && (pkg.adsRemaining || 0) > 0).length || 0,
+        exhaustedPackagesCount: quotaData.packages?.filter((pkg: any) => pkg.isExhausted || (pkg.adsRemaining === 0 && pkg.totalAds > 0)).length || 0,
+        totalPackages: quotaData.packages?.length || 0
+      }));
+      
+      // Force immediate refetch to ensure UI updates
+      queryClient.refetchQueries({ queryKey: ['ad-limit-status'] });
+      queryClient.refetchQueries({ queryKey: ['user-profile'] });
+      queryClient.refetchQueries({ queryKey: ['business-package', 'status'] });
+      
+      console.log('✅ Quota updated in real-time:', {
+        freeAds: quotaData.monthlyFreeAds?.remaining || 0,
+        businessAds: businessAdsRemaining,
+        totalPackages: quotaData.packages?.length || 0,
+        activePackages: quotaData.packages?.filter((pkg: any) => !pkg.isExhausted && (pkg.adsRemaining || 0) > 0).length || 0,
+        exhaustedPackages: quotaData.packages?.filter((pkg: any) => pkg.isExhausted || (pkg.adsRemaining === 0 && pkg.totalAds > 0)).length || 0
+      });
+    };
+
+    socket.on('AD_QUOTA_UPDATED', handleQuotaUpdate);
+    console.log('✅ Socket listener registered for AD_QUOTA_UPDATED');
+
+    // Also listen for connection events to re-register listener
+    socket.on('connect', () => {
+      console.log('✅ Socket reconnected - re-registering quota listener');
+      socket.on('AD_QUOTA_UPDATED', handleQuotaUpdate);
+    });
+
+    return () => {
+      if (socket) {
+        socket.off('AD_QUOTA_UPDATED', handleQuotaUpdate);
+        socket.off('connect');
+        console.log('🧹 Cleaned up socket listeners');
+      }
+    };
+  }, [isAuthenticated, queryClient]);
+
+  // Auto-select oldest package when free ads exhausted
+  useEffect(() => {
+    if (!isLoadingAdLimit && adLimitStatus?.userAdQuota) {
+      const { monthlyFreeAds, packages } = adLimitStatus.userAdQuota;
+      
+      // If free ads exhausted and packages available, auto-select oldest
+      if (monthlyFreeAds.remaining === 0 && packages && packages.length > 0) {
+        const oldestPackageWithAds = packages.find((pkg: any) => pkg.adsRemaining > 0);
+        if (oldestPackageWithAds && !selectedPackageId) {
+          setSelectedPackageId(oldestPackageWithAds.packageId);
+          console.log('✅ Auto-selected oldest package:', oldestPackageWithAds.packageName);
+        }
+      } else if (monthlyFreeAds.remaining > 0) {
+        // Reset selection when free ads available
+        setSelectedPackageId(null);
+      }
+    }
+  }, [isLoadingAdLimit, adLimitStatus, selectedPackageId]);
+
+  // Fallback: Check URL param for purchase redirect and refetch quota
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const fromPurchase = urlParams.get('from') === 'purchase';
+    
+    if (fromPurchase && isAuthenticated && !isLoadingAdLimit) {
+      console.log('🔄 Detected purchase redirect - refetching quota as fallback...');
+      queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
+      queryClient.invalidateQueries({ queryKey: ['user-profile'] });
+      queryClient.refetchQueries({ queryKey: ['ad-limit-status'] });
+      queryClient.refetchQueries({ queryKey: ['user-profile'] });
+      
+      // Clean URL
+      urlParams.delete('from');
+      const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+      window.history.replaceState({}, '', newUrl);
+    }
+  }, [isAuthenticated, isLoadingAdLimit, queryClient]);
   
+  // Prevent hydration mismatch by only rendering after mount
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Redirect only once, not on every render
+  useEffect(() => {
+    if (mounted && !isLoading && !isAuthenticated) {
+      router.push('/login');
+    }
+  }, [mounted, isAuthenticated, isLoading, router]);
+
   // Get premium offers (public endpoint for users)
   const { data: premiumSettings, isLoading: isLoadingOffers } = useQuery({
     queryKey: ['premium-offers'],
@@ -97,6 +230,59 @@ export default function PostAdPage() {
   const selectedSubcategoryId = watch('subcategoryId');
   const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
   const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId);
+  const attributes = watch('attributes');
+  
+  // Step validation functions
+  const validateStep = (step: number): boolean => {
+    switch (step) {
+      case 1: // Category
+        return !!selectedCategoryId;
+      case 2: // Subcategory
+        return !!selectedSubcategoryId;
+      case 3: // Brand (from attributes.brand if exists)
+        // Brand is optional in some categories, so check if category requires it
+        if (!selectedCategory || !selectedSubcategory) return false;
+        // For now, allow step 3 if subcategory is selected (brand might be optional)
+        return true;
+      case 4: // Specs (other attributes)
+        // Specs are optional, allow moving forward
+        return true;
+      case 5: // Title/Description
+        const title = watch('title');
+        const description = watch('description');
+        return !!(title && description);
+      case 6: // Image
+        return images.length > 0;
+      case 7: // Price
+        const price = watch('price');
+        return !!(price && parseFloat(price) >= 0);
+      case 8: // Location
+        const state = watch('state');
+        const city = watch('city');
+        return !!(state && city);
+      default:
+        return false;
+    }
+  };
+  
+  // Navigate to next step
+  const goToNextStep = () => {
+    if (validateStep(currentStep) && currentStep < TOTAL_STEPS) {
+      setCurrentStep(currentStep + 1);
+      // Scroll to top of form
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      toast.error('Please complete all required fields before proceeding');
+    }
+  };
+  
+  // Navigate to previous step
+  const goToPreviousStep = () => {
+    if (currentStep > 1) {
+      setCurrentStep(currentStep - 1);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
   
   // NEW SYSTEM: Check if user has active business package with ads remaining
   // IMPORTANT: Only check if adLimitStatus is loaded to avoid showing premium options during loading
@@ -121,17 +307,29 @@ export default function PostAdPage() {
   const hasPremiumSlotsAvailable = premiumSlotsAvailable > 0;
   
   // Calculate if premium options should be shown
-  // Show premium options if:
-  // 1. Not loading AND data exists (even if success is false, we still want to show options)
-  // 2. AND (no free ads OR no business package OR business package with no ads remaining)
-  // IMPORTANT: Show premium options by default if data shows no ads available
+  // CORE RULE: Hide premium options when business package ads are available
+  // Show premium options ONLY when:
+  // 1. No business package ads remaining AND no free ads remaining
+  // 2. OR no business package at all AND no free ads remaining
+  const businessAdsRemaining = adLimitStatus?.businessAdsRemaining || 0;
+  const hasBusinessAdsRemaining = businessAdsRemaining > 0;
+  
+  // CORE RULE: Show premium options ONLY when BOTH free ads AND business package ads are exhausted
+  // PRIORITY: 1. Free ads (monthly) 2. Business package ads 3. Payment required
+  // IMPORTANT: If user has ANY business package (even exhausted), don't show payment options
+  // Only show payment when NO business packages exist AND free ads exhausted
+  const hasAnyBusinessPackage = adLimitStatus?.packages && adLimitStatus.packages.length > 0;
+  
+  // CRITICAL: Hide payment options if user has free ads OR business package ads OR any business package
+  // Only show payment when BOTH free ads AND business package ads are exhausted AND no packages exist
+  const shouldHidePaymentOptions = hasFreeAdsRemaining || hasBusinessAdsRemaining || hasAnyBusinessPackage;
+  
   const shouldShowPremiumOptions = !isLoadingAdLimit && 
-    adLimitStatus && // Data exists (even if error, we have info)
-    (
-      (!hasFreeAdsRemaining) || // Show if no free ads remaining
-      (!hasActiveBusinessPackage) || // Show if no business package
-      (hasActiveBusinessPackage && !hasAdsRemaining) // Show if business package but no ads remaining
-    );
+    adLimitStatus && // Data exists
+    !hasFreeAdsRemaining && // Free ads exhausted FIRST
+    businessAdsRemaining === 0 && // Business package ads exhausted SECOND
+    !hasAnyBusinessPackage && // NO business packages at all (not even exhausted ones)
+    !shouldHidePaymentOptions; // Additional check: ensure no free/business ads available
 
   // Debug: Log the calculation with detailed breakdown
   useEffect(() => {
@@ -196,9 +394,9 @@ export default function PostAdPage() {
   }, [adLimitStatus, isLoadingAdLimit, hasActiveBusinessPackage, hasAdsRemaining, hasFreeAdsRemaining, shouldShowPremiumOptions]);
 
   // Check if payment is required
-  // If user has active business package with ads remaining, no payment needed
-  // Otherwise, premium features require payment
-  const requiresPayment = hasPremiumFeatures && !hasActiveBusinessPackage;
+  // Premium features ALWAYS require payment (even with business package)
+  // OR if no quota remaining (free + business), payment is required
+  const requiresPayment = hasPremiumFeatures || (!hasFreeAdsRemaining && (!hasActiveBusinessPackage || !hasAdsRemaining));
 
   // Compute button text based on premium features and business package
   const getButtonText = () => {
@@ -267,27 +465,6 @@ export default function PostAdPage() {
   };
 
   const buttonText = getButtonText();
-
-  // Prevent hydration mismatch by only rendering after mount
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  // Redirect only once, not on every render
-  useEffect(() => {
-    if (mounted && !isLoading && !isAuthenticated) {
-      router.push('/login');
-    }
-  }, [mounted, isAuthenticated, isLoading, router]);
-
-  // Show loading during initial mount to prevent hydration mismatch
-  if (!mounted || isLoading) {
-    return <div className="container mx-auto px-4 py-8">Loading...</div>;
-  }
-
-  if (!isAuthenticated) {
-    return null;
-  }
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -561,12 +738,17 @@ export default function PostAdPage() {
     formData.append('city', data.city);
     if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
     
-    // Add premium features if using business package ads (not paid)
-    // NEW SYSTEM: Use adsRemaining instead of premiumSlotsAvailable
-    if (hasActiveBusinessPackage && hasAdsRemaining && hasPremiumFeatures) {
+    // Add premium features if selected
+    // If user has business package with ads remaining, premium features are included for free
+    // If user has no quota, premium features require payment (backend will detect and require paymentOrderId)
+    if (hasPremiumFeatures) {
       if (selectedPremium) {
         formData.append('premiumType', selectedPremium);
-        console.log('📦 Adding premiumType to formData:', selectedPremium);
+        console.log('📦 Adding premiumType to formData:', selectedPremium, {
+          hasActiveBusinessPackage,
+          hasAdsRemaining,
+          willRequirePayment: !hasActiveBusinessPackage || !hasAdsRemaining
+        });
       }
       if (isUrgent) {
         formData.append('isUrgent', String(isUrgent));
@@ -707,6 +889,17 @@ export default function PostAdPage() {
           if (adFormData.neighbourhood) formData.append('neighbourhood', adFormData.neighbourhood);
           formData.append('paymentOrderId', paymentOrder.razorpayOrder.id);
           
+          // IMPORTANT: Add premium features to formData so backend detects it as premium ad
+          // This prevents quota check when payment order exists
+          if (selectedPremium) {
+            formData.append('premiumType', selectedPremium);
+            console.log('⭐ Adding premiumType to formData after payment:', selectedPremium);
+          }
+          if (isUrgent) {
+            formData.append('isUrgent', String(isUrgent));
+            console.log('⭐ Adding isUrgent to formData after payment:', isUrgent);
+          }
+          
           // Add attributes if they exist
           if (adFormData.attributes && Object.keys(adFormData.attributes).length > 0) {
             formData.append('attributes', JSON.stringify(adFormData.attributes));
@@ -724,7 +917,13 @@ export default function PostAdPage() {
             formData.append('images', image);
           });
 
-          console.log('📤 Submitting ad creation...');
+          console.log('📤 Submitting ad creation with:', {
+            hasPaymentOrder: true,
+            paymentOrderId: paymentOrder.razorpayOrder.id,
+            premiumType: selectedPremium || null,
+            isUrgent: isUrgent || false,
+            isPremiumAd: !!(selectedPremium || isUrgent)
+          });
           createAd.mutate(formData, {
             onSuccess: (data) => {
               console.log('✅ Ad created successfully:', data);
@@ -768,6 +967,15 @@ export default function PostAdPage() {
     setShowPaymentModal(false);
   };
 
+  // Show loading during initial mount to prevent hydration mismatch
+  if (!mounted || isLoading) {
+    return <div className="container mx-auto px-4 py-8">Loading...</div>;
+  }
+
+  if (!isAuthenticated) {
+    return null;
+  }
+
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
       <h1 className="text-3xl font-bold mb-8">Post a New Ad</h1>
@@ -796,16 +1004,240 @@ export default function PostAdPage() {
         </>
       )}
 
-      {/* Info Banner */}
-      <div className="mb-6 p-4 rounded-lg flex items-center gap-3 bg-blue-50 border border-blue-200">
-        <FiInfo className="w-5 h-5 text-blue-600" />
-        <div>
-          <p className="font-semibold text-blue-800">
-            Ad posting is FREE! Only premium features require payment.
-          </p>
-          <p className="text-sm text-blue-700 mt-1">
-            Select premium features below to boost your ad visibility.
-          </p>
+      {/* OLX-Like Quota Information Banner */}
+      {!isLoadingAdLimit && adLimitStatus && (
+        <div className="mb-6 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* FREE ADS Box - OLX Style */}
+            <div className="relative bg-white rounded-lg p-4 border-2 border-blue-200 shadow-sm hover:shadow-md transition-shadow">
+              <div className="absolute top-2 right-2">
+                <FiFlag className="w-5 h-5 text-orange-500" />
+              </div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-gray-700 uppercase">FREE ADS</span>
+              </div>
+              <div className="flex items-baseline gap-2 mb-1">
+                <span className={`text-3xl font-bold ${adLimitStatus.freeAdsRemaining > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                  {adLimitStatus.freeAdsRemaining || 0}
+                </span>
+                <span className="text-lg text-gray-500">/</span>
+                <span className="text-lg text-gray-600 font-medium">{adLimitStatus.freeAdsLimit || 2}</span>
+              </div>
+              <div className="text-xs text-gray-500 font-medium">
+                Remaining this month
+              </div>
+              <div className="mt-3 text-xs text-gray-600">
+                {adLimitStatus.freeAdsUsed || 0} used • Resets on {adLimitStatus.userAdQuota?.monthlyFreeAds?.resetAt ? new Date(adLimitStatus.userAdQuota.monthlyFreeAds.resetAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '1st of next month'}
+              </div>
+            </div>
+
+            {/* BUSINESS PACKAGE Box - OLX Style */}
+            <div className="relative bg-white rounded-lg p-4 border-2 border-green-200 shadow-sm hover:shadow-md transition-shadow">
+              <div className="absolute top-2 right-2">
+                <FiBriefcase className="w-5 h-5 text-orange-500" />
+              </div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-semibold text-gray-700 uppercase">BUSINESS PACKAGE</span>
+              </div>
+              <div className="flex items-baseline gap-2 mb-1">
+                <span className={`text-3xl font-bold ${adLimitStatus.businessAdsRemaining > 0 ? 'text-green-600' : 'text-orange-600'}`}>
+                  {adLimitStatus.businessAdsRemaining || 0}
+                </span>
+                <span className="text-lg text-gray-500">/</span>
+                <span className="text-lg text-gray-600 font-medium">
+                  {adLimitStatus.packages?.reduce((sum: number, pkg: any) => sum + (pkg.totalAds || pkg.totalAdsAllowed || 0), 0) || 0}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 font-medium">
+                Active credits available
+              </div>
+              <div className="mt-3 text-xs text-gray-600">
+                {adLimitStatus.totalPurchased || 0} Total Purchase{adLimitStatus.totalPurchased !== 1 ? 's' : ''} • {adLimitStatus.activePackagesCount || 0} Active Package{adLimitStatus.activePackagesCount !== 1 ? 's' : ''}
+                {adLimitStatus.exhaustedPackagesCount > 0 && (
+                  <> • {adLimitStatus.exhaustedPackagesCount} Exhausted</>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Package Details - Collapsible */}
+          {adLimitStatus.packages && adLimitStatus.packages.length > 0 && (
+            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-semibold text-gray-700">Package Details</h4>
+                <span className="text-xs text-gray-500">
+                  {adLimitStatus.packages.filter((p: any) => (p.adsRemaining || 0) > 0).length} Active • {adLimitStatus.packages.filter((p: any) => p.isExhausted || p.status === 'EXHAUSTED').length} Exhausted
+                </span>
+              </div>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {adLimitStatus.packages.map((pkg: any, index: number) => {
+                  const remaining = pkg.adsRemaining || 0;
+                  const used = pkg.usedAds || pkg.adsUsed || 0;
+                  const total = pkg.totalAds || pkg.totalAdsAllowed || 0;
+                  const isExhausted = pkg.isExhausted || (remaining === 0 && total > 0 && !pkg.isExpired);
+                  const isExpired = pkg.isExpired || pkg.status === 'EXPIRED';
+                  const isActive = !isExhausted && !isExpired && remaining > 0;
+                  const isOldestWithAds = index === 0 && isActive;
+                  const packageName = pkg.packageName || pkg.packageType?.replace('_', ' ') || 'Package';
+                  
+                  return (
+                    <div 
+                      key={pkg.packageId || pkg.id} 
+                      className={`text-xs p-2.5 rounded border ${
+                        isActive 
+                          ? 'bg-green-50 border-green-300' 
+                          : isExhausted 
+                            ? 'bg-orange-50 border-orange-300' 
+                            : isExpired
+                              ? 'bg-gray-50 border-gray-300'
+                              : 'bg-blue-50 border-blue-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`font-semibold ${
+                          isActive ? 'text-green-700' : isExhausted ? 'text-orange-700' : isExpired ? 'text-gray-600' : 'text-blue-700'
+                        }`}>
+                          {packageName}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {isOldestWithAds && (
+                            <span className="px-1.5 py-0.5 bg-blue-600 text-white text-xs rounded font-bold">
+                              USING
+                            </span>
+                          )}
+                          {isExhausted && (
+                            <span className="px-1.5 py-0.5 bg-orange-600 text-white text-xs rounded font-bold">
+                              EXHAUSTED
+                            </span>
+                          )}
+                          {isExpired && (
+                            <span className="px-1.5 py-0.5 bg-gray-600 text-white text-xs rounded font-bold">
+                              EXPIRED
+                            </span>
+                          )}
+                          {isActive && !isOldestWithAds && (
+                            <span className="font-bold text-green-600">
+                              {remaining} left
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <span className="text-gray-500">Ads: </span>
+                          <span className="font-medium">{used}/{total}</span>
+                        </div>
+                        {pkg.expiresAt && (
+                          <div>
+                            <span className="text-gray-500">Expires: </span>
+                            <span className="font-medium">{new Date(pkg.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Total Ads Available */}
+          <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-4 border-2 border-indigo-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-700 mb-1">Total Ads Available</div>
+                <div className="text-xs text-gray-600">
+                  {adLimitStatus.freeAdsRemaining || 0} Free + {adLimitStatus.businessAdsRemaining || 0} Package = <span className="font-bold text-indigo-600">{adLimitStatus.totalRemaining || 0} Total</span>
+                </div>
+              </div>
+              <div className={`text-4xl font-bold ${adLimitStatus.totalRemaining > 0 ? 'text-indigo-600' : 'text-red-500'}`}>
+                {adLimitStatus.totalRemaining || 0}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment Options Hidden Banner - OLX Style */}
+      {!isLoadingAdLimit && shouldHidePaymentOptions && adLimitStatus && (
+        <div className="mb-6 p-4 rounded-lg bg-orange-50 border-2 border-orange-300 flex items-center justify-between">
+          <div className="flex items-start gap-3 flex-1">
+            <FiInfo className="w-5 h-5 text-orange-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="font-semibold text-orange-900 mb-1">
+                Payment Options Hidden
+              </p>
+              <p className="text-sm text-orange-800">
+                Payment steps are hidden because you have {hasFreeAdsRemaining ? `${freeAdsRemaining} free ad${freeAdsRemaining !== 1 ? 's' : ''}` : ''}{hasFreeAdsRemaining && hasBusinessAdsRemaining ? ' and ' : ''}{hasBusinessAdsRemaining ? `${businessAdsRemaining} business package ad${businessAdsRemaining !== 1 ? 's' : ''}` : ''} available. {hasBusinessAdsRemaining ? 'Credits will be deducted automatically.' : 'Free ads are used first.'}
+              </p>
+            </div>
+          </div>
+          {hasAnyBusinessPackage && (
+            <Link 
+              href="/business-package"
+              className="px-4 py-2 bg-orange-600 text-white text-sm font-semibold rounded-lg hover:bg-orange-700 transition-colors whitespace-nowrap"
+            >
+              View Packages
+            </Link>
+          )}
+        </div>
+      )}
+
+      {/* Info Banner - When no ads available */}
+      {!isLoadingAdLimit && adLimitStatus && adLimitStatus.totalRemaining === 0 && !shouldHidePaymentOptions && (
+        <div className="mb-6 p-4 rounded-lg flex items-center gap-3 bg-red-50 border-2 border-red-200">
+          <FiAlertCircle className="w-5 h-5 text-red-600" />
+          <div>
+            <p className="font-semibold text-red-800">
+              All Ads Exhausted - Premium Payment Required
+            </p>
+            <p className="text-sm text-red-700 mt-1">
+              You have used all free ads and business package ads. Select premium features below to continue posting ads with enhanced visibility.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Step Progress Indicator */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between mb-4">
+          {[1, 2, 3, 4, 5, 6, 7, 8].map((step) => (
+            <div key={step} className="flex items-center flex-1">
+              <div className="flex flex-col items-center flex-1">
+                <div
+                  className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${
+                    step < currentStep
+                      ? 'bg-green-500 text-white'
+                      : step === currentStep
+                      ? 'bg-blue-600 text-white ring-4 ring-blue-200'
+                      : 'bg-gray-200 text-gray-600'
+                  }`}
+                >
+                  {step < currentStep ? '✓' : step}
+                </div>
+                <div className={`text-xs mt-2 text-center ${step === currentStep ? 'font-bold text-blue-600' : step < currentStep ? 'text-green-600' : 'text-gray-500'}`}>
+                  {step === 1 && 'Category'}
+                  {step === 2 && 'Subcategory'}
+                  {step === 3 && 'Brand'}
+                  {step === 4 && 'Specs'}
+                  {step === 5 && 'Title/Desc'}
+                  {step === 6 && 'Image'}
+                  {step === 7 && 'Price'}
+                  {step === 8 && 'Location'}
+                </div>
+              </div>
+              {step < 8 && (
+                <div
+                  className={`h-1 flex-1 mx-2 ${
+                    step < currentStep ? 'bg-green-500' : 'bg-gray-200'
+                  }`}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="text-center text-sm text-gray-600 mt-2">
+          Step {currentStep} of {TOTAL_STEPS}
         </div>
       </div>
 
@@ -813,8 +1245,126 @@ export default function PostAdPage() {
         onSubmit={handleSubmit(onSubmit)} 
         className="space-y-6"
       >
-        <div>
-          <label className="block text-sm font-medium mb-2">Title *</label>
+        {/* Step 1: Category */}
+        {currentStep === 1 && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 1: Select Category</h2>
+            <div>
+              <label className="block text-sm font-medium mb-2">Category *</label>
+              <select
+                {...register('categoryId', { required: 'Category is required' })}
+                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                onChange={(e) => {
+                  setValue('categoryId', e.target.value);
+                  // Auto-advance to next step if valid
+                  setTimeout(() => {
+                    if (e.target.value) {
+                      goToNextStep();
+                    }
+                  }, 100);
+                }}
+              >
+                <option value="">Select Category</option>
+                {categories?.map((cat: any) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+              {errors.categoryId && (
+                <div className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Subcategory */}
+        {currentStep === 2 && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 2: Select Subcategory</h2>
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Subcategory <span className="text-red-500">*</span>
+              </label>
+              <select
+                {...register('subcategoryId', { required: 'Subcategory is required' })}
+                className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                  errors.subcategoryId ? 'border-red-500' : ''
+                }`}
+                disabled={!selectedCategory}
+                onChange={(e) => {
+                  setValue('subcategoryId', e.target.value);
+                  // Auto-advance to next step if valid
+                  setTimeout(() => {
+                    if (e.target.value) {
+                      goToNextStep();
+                    }
+                  }, 100);
+                }}
+              >
+                <option value="">Select Subcategory</option>
+                {selectedCategory?.subcategories?.map((sub: any) => (
+                  <option key={sub.id} value={sub.id}>
+                    {sub.name}
+                  </option>
+                ))}
+              </select>
+              {errors.subcategoryId && (
+                <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  {errors.subcategoryId.message}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Brand */}
+        {currentStep === 3 && selectedCategory && selectedSubcategory && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 3: Enter Brand</h2>
+            <div className="bg-gray-50 rounded-lg p-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Brand
+                </label>
+                <input
+                  type="text"
+                  {...register('attributes.brand')}
+                  placeholder="e.g., Samsung, Apple, Sony, Maruti, Hero"
+                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Enter the brand/make name of your product
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Specs - CategoryAttributes (all attributes except brand handled here) */}
+        {currentStep === 4 && selectedCategory && selectedSubcategory && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 4: Product Specifications</h2>
+            <CategoryAttributes
+              categorySlug={selectedCategory.slug}
+              subcategorySlug={selectedSubcategory.slug}
+              register={register}
+              watch={watch}
+              setValue={setValue}
+              errors={errors}
+            />
+          </div>
+        )}
+
+        {/* Step 5: Title/Description */}
+        {currentStep === 5 && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 5: Title & Description</h2>
+            <div>
+              <label className="block text-sm font-medium mb-2">Title *</label>
           <input
             {...register('title', { required: 'Title is required' })}
             className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
@@ -848,703 +1398,246 @@ export default function PostAdPage() {
             <div className="text-red-500 text-sm mt-1">{errors.description.message as string}</div>
           )}
         </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Price (₹) *</label>
-            <input
-              type="number"
-              step="0.01"
-              {...register('price', { required: 'Price is required', min: 0 })}
-              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-              placeholder="0.00"
-            />
-            {errors.price && (
-              <div className="text-red-500 text-sm mt-1">{errors.price.message as string}</div>
-            )}
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-2">Original Price (₹)</label>
-            <input
-              type="number"
-              step="0.01"
-              {...register('originalPrice', { min: 0 })}
-              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-              placeholder="Original price (optional)"
-            />
-            <p className="text-xs text-gray-500 mt-1">Leave empty if no discount</p>
-          </div>
-        </div>
-
-        {/* Discount is automatically calculated from originalPrice - price */}
-
-        <div>
-          <label className="block text-sm font-medium mb-2">Condition</label>
-          <select
-            {...register('condition')}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-          >
-            <option value="">Select Condition</option>
-            <option value="NEW">New</option>
-            <option value="LIKE_NEW">Like New</option>
-            <option value="USED">Used</option>
-            <option value="REFURBISHED">Refurbished</option>
-          </select>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Category *</label>
-            <select
-              {...register('categoryId', { required: 'Category is required' })}
-              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-            >
-              <option value="">Select Category</option>
-              {categories?.map((cat: any) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.name}
-                </option>
-              ))}
-            </select>
-            {errors.categoryId && (
-              <div className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</div>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Subcategory <span className="text-red-500">*</span>
-            </label>
-            <select
-              {...register('subcategoryId', { required: 'Subcategory is required' })}
-              className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                errors.subcategoryId ? 'border-red-500' : ''
-              }`}
-              disabled={!selectedCategory}
-            >
-              <option value="">Select Subcategory</option>
-              {selectedCategory?.subcategories?.map((sub: any) => (
-                <option key={sub.id} value={sub.id}>
-                  {sub.name}
-                </option>
-              ))}
-            </select>
-            {errors.subcategoryId && (
-              <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-                {errors.subcategoryId.message}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* Category Attributes - Show when category and subcategory are selected */}
-        {selectedCategory && selectedSubcategory && (
-          <CategoryAttributes
-            categorySlug={selectedCategory.slug}
-            subcategorySlug={selectedSubcategory.slug}
-            register={register}
-            watch={watch}
-            setValue={setValue}
-            errors={errors}
-          />
         )}
 
+        {/* Step 6: Images */}
+        {currentStep === 6 && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 6: Upload Images</h2>
+            <div>
+              <label className="block text-sm font-medium mb-2">Images (Max 12) *</label>
+              <p className="text-sm text-gray-600 mb-4">
+                Images will be automatically renamed and alt text generated based on category before saving.
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                {previews.map((preview, index) => (
+                  <div key={index} className="relative">
+                    <img
+                      src={preview}
+                      alt={`Preview ${index + 1}`}
+                      className="w-full h-32 object-cover rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(index)}
+                      className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1"
+                    >
+                      <FiX className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                {previews.length < 12 && (
+                  <label className="border-2 border-dashed border-gray-300 rounded-lg h-32 flex items-center justify-center cursor-pointer hover:border-primary-500">
+                    <FiUpload className="w-6 h-6 text-gray-400" />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleImageChange}
+                      className="hidden"
+                    />
+                  </label>
+                )}
+              </div>
+              {images.length === 0 && (
+                <p className="text-red-500 text-sm">At least one image is required</p>
+              )}
+            </div>
+          </div>
+        )}
 
-        {/* State, City, Neighbourhood Fields */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="block text-sm font-medium">Location Information</label>
+        {/* Step 7: Price */}
+        {currentStep === 7 && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 7: Set Price</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Price (₹) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  {...register('price', { required: 'Price is required', min: 0 })}
+                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="0.00"
+                />
+                {errors.price && (
+                  <div className="text-red-500 text-sm mt-1">{errors.price.message as string}</div>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Original Price (₹)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  {...register('originalPrice', { min: 0 })}
+                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="Original price (optional)"
+                />
+                <p className="text-xs text-gray-500 mt-1">Leave empty if no discount</p>
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-medium mb-2">Condition</label>
+              <select
+                {...register('condition')}
+                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              >
+                <option value="">Select Condition</option>
+                <option value="NEW">New</option>
+                <option value="LIKE_NEW">Like New</option>
+                <option value="USED">Used</option>
+                <option value="REFURBISHED">Refurbished</option>
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Step 8: Location */}
+        {currentStep === 8 && (
+          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+            <h2 className="text-xl font-bold mb-4">Step 8: Set Location</h2>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium">Location Information</label>
+                <button
+                  type="button"
+                  onClick={detectLocation}
+                  disabled={isDetectingLocation}
+                  className="text-sm px-3 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                >
+                  {isDetectingLocation ? (
+                    <>
+                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-700"></div>
+                      Detecting...
+                    </>
+                  ) : (
+                    <>
+                      <FiNavigation className="w-3 h-3" />
+                      Auto Detect Location
+                    </>
+                  )}
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    State <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    {...register('state', { required: 'State is required' })}
+                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                      errors.state ? 'border-red-500' : ''
+                    }`}
+                    placeholder="State (use Auto Detect)"
+                  />
+                  {errors.state && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      {errors.state.message}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    City <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    {...register('city', { required: 'City is required' })}
+                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                      errors.city ? 'border-red-500' : ''
+                    }`}
+                    placeholder="City (use Auto Detect)"
+                  />
+                  {errors.city && (
+                    <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      {errors.city.message}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Neighbourhood</label>
+                  <input
+                    {...register('neighbourhood')}
+                    className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="Neighbourhood (optional)"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step Navigation Buttons */}
+        {currentStep < TOTAL_STEPS && (
+          <div className="flex justify-between gap-4 mt-6">
             <button
               type="button"
-              onClick={detectLocation}
-              disabled={isDetectingLocation}
-              className="text-sm px-3 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+              onClick={goToPreviousStep}
+              disabled={currentStep === 1}
+              className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {isDetectingLocation ? (
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={goToNextStep}
+              className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+            >
+              Next
+            </button>
+          </div>
+        )}
+
+        {/* Submit Button - Only show on final step (Step 8) */}
+        {currentStep === TOTAL_STEPS && (
+          <div className="mt-6">
+            <div className="flex justify-between gap-4 mb-4">
+              <button
+                type="button"
+                onClick={goToPreviousStep}
+                className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 transition-colors"
+              >
+                Previous
+              </button>
+            </div>
+            <button
+              type="submit"
+              disabled={
+                createAd.isPending || 
+                createPaymentOrder.isPending
+              }
+              onClick={(e) => {
+                console.log('🔘 Submit button clicked on final step', { 
+                  disabled: createAd.isPending || createPaymentOrder.isPending || (adLimitStatus?.hasLimit && !adLimitStatus?.canPost),
+                  hasPremiumFeatures,
+                  requiresPayment
+                });
+              }}
+              className="w-full bg-primary-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {createAd.isPending || createPaymentOrder.isPending ? (
                 <>
-                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-700"></div>
-                  Detecting...
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  Processing...
                 </>
               ) : (
                 <>
-                  <FiNavigation className="w-3 h-3" />
-                  Auto Detect Location
+                  {hasPremiumFeatures && !hasActiveBusinessPackage && <FiCreditCard className="w-5 h-5" />}
+                  {hasPremiumFeatures && hasActiveBusinessPackage && <FiBriefcase className="w-5 h-5" />}
+                  {buttonText}
                 </>
               )}
             </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                State <span className="text-red-500">*</span>
-              </label>
-              <input
-                {...register('state', { required: 'State is required' })}
-                className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                  errors.state ? 'border-red-500' : ''
-                }`}
-                placeholder="State (use Auto Detect)"
-              />
-              {errors.state && (
-                <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.state.message}
-                </p>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                City <span className="text-red-500">*</span>
-              </label>
-              <input
-                {...register('city', { required: 'City is required' })}
-                className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                  errors.city ? 'border-red-500' : ''
-                }`}
-                placeholder="City (use Auto Detect)"
-              />
-              {errors.city && (
-                <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.city.message}
-                </p>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-2">Neighbourhood</label>
-              <input
-                {...register('neighbourhood')}
-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                placeholder="Neighbourhood (optional)"
-              />
-            </div>
-          </div>
-        </div>
-
-
-        {/* Premium Options - Show if:
-            1. User has NO free ads remaining (regardless of business package), OR
-            2. User has NO active business package, OR
-            3. User has active business package BUT ads remaining = 0 (Business Package Ads Limit Reached)
-        */}
-        
-        {/* Debug: Show why premium options are hidden */}
-        {!isLoadingAdLimit && !shouldShowPremiumOptions && adLimitStatus && (
-          <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-4 mb-4">
-            <p className="text-sm font-bold text-yellow-900 mb-2">
-              🔍 Debug: Premium Options Hidden
-            </p>
-            <div className="text-xs text-yellow-800 space-y-1">
-              <p>hasFreeAdsRemaining: <strong>{String(hasFreeAdsRemaining)}</strong></p>
-              <p>hasActiveBusinessPackage: <strong>{String(hasActiveBusinessPackage)}</strong></p>
-              <p>hasAdsRemaining: <strong>{String(hasAdsRemaining)}</strong></p>
-              <p>adsRemaining: <strong>{adsRemaining}</strong></p>
-              <p>freeAdsRemaining: <strong>{freeAdsRemaining}</strong></p>
-              <p>activePackagesCount: <strong>{adLimitStatus.activePackagesCount}</strong></p>
-              <p className="mt-2 font-bold">Check browser console (F12) for detailed logs</p>
-            </div>
-          </div>
-        )}
-        
-        {/* Hide during loading to prevent flickering */}
-        {shouldShowPremiumOptions && (
-        <div className="bg-gradient-to-br from-primary-50 to-blue-50 rounded-lg p-6 space-y-4 border-2 border-primary-200">
-          {/* Alert when all free ads and business package ads are exhausted */}
-          {!hasFreeAdsRemaining && (!hasActiveBusinessPackage || !hasAdsRemaining) && (
-            <div className="mb-4 p-4 bg-red-50 border-2 border-red-400 rounded-lg">
-              <div className="flex items-start gap-3">
-                <FiAlertCircle className="w-6 h-6 text-red-600 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <h4 className="font-bold text-lg text-red-900 mb-1">
-                    ⚠️ All Ads Exhausted - Premium Payment Required
-                  </h4>
-                  <p className="text-sm text-red-800 mb-2">
-                    You have used all <strong>{adLimitStatus?.freeAdsLimit || 2} free ads</strong>
-                    {hasActiveBusinessPackage && (
-                      <> and all <strong>{adLimitStatus?.totalAdsAllowed || 0} business package ads</strong></>
-                    )}.
-                    To post more ads, please <strong className="text-red-900">select premium options below</strong> or purchase a new business package.
-                  </p>
-                  <p className="text-xs text-red-700 font-medium mt-2">
-                    💡 Select a premium feature below to continue posting ads with enhanced visibility.
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-          
-          {/* Alert when only business package ads limit is reached (but free ads might still be available) */}
-          {hasActiveBusinessPackage && !hasAdsRemaining && hasFreeAdsRemaining && (
-            <div className="mb-4 p-4 bg-yellow-50 border-2 border-yellow-400 rounded-lg">
-              <div className="flex items-start gap-3">
-                <FiAlertCircle className="w-6 h-6 text-yellow-600 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <h4 className="font-bold text-lg text-yellow-900 mb-1">
-                    ⚠️ Active Business Package Ads Limit Reached
-                  </h4>
-                  <p className="text-sm text-yellow-800 mb-2">
-                    You have used all <strong>{adLimitStatus?.totalAdsAllowed || 0} ads</strong> from your active business package. 
-                    To post more ads, please <strong>select premium options below</strong> or purchase a new business package.
-                  </p>
-                  <p className="text-xs text-yellow-700 font-medium mt-2">
-                    💡 Premium options allow you to post ads with enhanced visibility features.
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-          
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold">
-              {!hasFreeAdsRemaining && (!hasActiveBusinessPackage || !hasAdsRemaining) 
-                ? 'Premium Options (Required)' 
-                : 'Premium Options (Optional)'}
-            </h3>
-            {premiumSettings && (
-              <span className="text-xs bg-primary-100 text-primary-700 px-3 py-1 rounded-full">
-                Live Offers
-              </span>
-            )}
-          </div>
-          
-          {/* Show message when payment is required */}
-          {!hasFreeAdsRemaining && (!hasActiveBusinessPackage || !hasAdsRemaining) && (
-            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <p className="text-sm text-blue-800 font-medium">
-                📌 Please select a premium feature below to post your ad. Premium features enhance your ad's visibility and reach.
-              </p>
-            </div>
-          )}
-          
-          {/* Offer Image */}
-          {premiumSettings?.offerImage && (
-            <div className="mb-4 rounded-lg overflow-hidden">
-              <ImageWithFallback
-                src={premiumSettings.offerImage}
-                alt="Premium Offers"
-                width={600}
-                height={200}
-                className="w-full h-48 object-cover"
-              />
-            </div>
-          )}
-          
-          {/* Premium Type Selection */}
-          <div>
-            <label className="block text-sm font-medium mb-3">Select Premium Feature</label>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <button
-                type="button"
-                onClick={() => setSelectedPremium(selectedPremium === 'TOP' ? null : 'TOP')}
-                className={`p-4 rounded-lg border-2 transition-all ${
-                  selectedPremium === 'TOP'
-                    ? 'border-yellow-500 bg-yellow-50'
-                    : 'border-gray-200 hover:border-yellow-300'
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <FiStar className={`w-5 h-5 ${selectedPremium === 'TOP' ? 'text-yellow-600' : 'text-gray-400'}`} />
-                  <span className="font-semibold">TOP Ads</span>
-                </div>
-                <p className="text-sm text-gray-600 mb-2">Get maximum visibility at the top</p>
-                <div className="flex items-baseline gap-1">
-                  {premiumSettings?.offerPrices?.TOP && premiumSettings.offerPrices.TOP < (premiumSettings?.prices?.TOP || 299) ? (
-                    <>
-                      <p className="text-lg font-bold text-gray-900">
-                        ₹{isLoadingOffers ? '...' : premiumSettings.offerPrices.TOP}
-                      </p>
-                      <p className="text-xs text-gray-400 line-through">
-                        ₹{premiumSettings.prices.TOP}
-                      </p>
-                      <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded font-bold">
-                        {Math.round(((premiumSettings.prices.TOP - premiumSettings.offerPrices.TOP) / premiumSettings.prices.TOP) * 100)}% OFF
-                      </span>
-                    </>
-                  ) : (
-                    <p className="text-lg font-bold text-gray-900">
-                      ₹{isLoadingOffers ? '...' : (premiumSettings?.prices?.TOP || 299)}
-                    </p>
-                  )}
-                  <p className="text-xs text-gray-500">
-                    / {isLoadingOffers ? '...' : (premiumSettings?.durations?.TOP || 7)} days
-                  </p>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedPremium(selectedPremium === 'FEATURED' ? null : 'FEATURED')}
-                className={`p-4 rounded-lg border-2 transition-all ${
-                  selectedPremium === 'FEATURED'
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-200 hover:border-blue-300'
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <FiTrendingUp className={`w-5 h-5 ${selectedPremium === 'FEATURED' ? 'text-blue-600' : 'text-gray-400'}`} />
-                  <span className="font-semibold">Featured</span>
-                </div>
-                <p className="text-sm text-gray-600 mb-2">Highlight your ad in featured section</p>
-                <div className="flex items-baseline gap-1">
-                  {premiumSettings?.offerPrices?.FEATURED && premiumSettings.offerPrices.FEATURED < (premiumSettings?.prices?.FEATURED || 199) ? (
-                    <>
-                      <p className="text-lg font-bold text-gray-900">
-                        ₹{isLoadingOffers ? '...' : premiumSettings.offerPrices.FEATURED}
-                      </p>
-                      <p className="text-xs text-gray-400 line-through">
-                        ₹{premiumSettings.prices.FEATURED}
-                      </p>
-                      <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded font-bold">
-                        {Math.round(((premiumSettings.prices.FEATURED - premiumSettings.offerPrices.FEATURED) / premiumSettings.prices.FEATURED) * 100)}% OFF
-                      </span>
-                    </>
-                  ) : (
-                    <p className="text-lg font-bold text-gray-900">
-                      ₹{isLoadingOffers ? '...' : (premiumSettings?.prices?.FEATURED || 199)}
-                    </p>
-                  )}
-                  <p className="text-xs text-gray-500">
-                    / {isLoadingOffers ? '...' : (premiumSettings?.durations?.FEATURED || 14)} days
-                  </p>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedPremium(selectedPremium === 'BUMP_UP' ? null : 'BUMP_UP')}
-                className={`p-4 rounded-lg border-2 transition-all ${
-                  selectedPremium === 'BUMP_UP'
-                    ? 'border-green-500 bg-green-50'
-                    : 'border-gray-200 hover:border-green-300'
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <FiRefreshCw className={`w-5 h-5 ${selectedPremium === 'BUMP_UP' ? 'text-green-600' : 'text-gray-400'}`} />
-                  <span className="font-semibold">Bump Up</span>
-                </div>
-                <p className="text-sm text-gray-600 mb-2">Refresh your ad to the top</p>
-                <div className="flex items-baseline gap-1">
-                  {premiumSettings?.offerPrices?.BUMP_UP && premiumSettings.offerPrices.BUMP_UP < (premiumSettings?.prices?.BUMP_UP || 99) ? (
-                    <>
-                      <p className="text-lg font-bold text-gray-900">
-                        ₹{isLoadingOffers ? '...' : premiumSettings.offerPrices.BUMP_UP}
-                      </p>
-                      <p className="text-xs text-gray-400 line-through">
-                        ₹{premiumSettings.prices.BUMP_UP}
-                      </p>
-                      <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded font-bold">
-                        {Math.round(((premiumSettings.prices.BUMP_UP - premiumSettings.offerPrices.BUMP_UP) / premiumSettings.prices.BUMP_UP) * 100)}% OFF
-                      </span>
-                    </>
-                  ) : (
-                    <p className="text-lg font-bold text-gray-900">
-                      ₹{isLoadingOffers ? '...' : (premiumSettings?.prices?.BUMP_UP || 99)}
-                    </p>
-                  )}
-                  <p className="text-xs text-gray-500">
-                    / {isLoadingOffers ? '...' : (premiumSettings?.durations?.BUMP_UP || 1)} day
-                  </p>
-                </div>
-              </button>
-            </div>
-          </div>
-
-          {/* Urgent Badge */}
-          <div className="flex items-center gap-3 p-4 bg-white rounded-lg border border-gray-200">
-            <input
-              type="checkbox"
-              id="urgent-badge"
-              checked={isUrgent}
-              onChange={(e) => setIsUrgent(e.target.checked)}
-              className="w-5 h-5 text-red-600 rounded focus:ring-red-500"
-            />
-            <label htmlFor="urgent-badge" className="flex-1 cursor-pointer">
-              <div className="flex items-center gap-2">
-                <FiAlertCircle className="w-5 h-5 text-red-600" />
-                <span className="font-semibold">Mark as Urgent</span>
-              </div>
-              <div className="text-sm text-gray-600 mt-1">
-                <div className="flex items-center gap-2">
-                  <span>
-                    Add urgent badge to your ad for{' '}
-                    {premiumSettings?.offerPrices?.URGENT && premiumSettings.offerPrices.URGENT < (premiumSettings?.prices?.URGENT || 49) ? (
-                      <>
-                        <span className="font-bold text-red-600">₹{premiumSettings.offerPrices.URGENT}</span>
-                        <span className="text-gray-400 line-through text-sm ml-1">₹{premiumSettings.prices.URGENT}</span>
-                        <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded font-bold">
-                          {Math.round(((premiumSettings.prices.URGENT - premiumSettings.offerPrices.URGENT) / premiumSettings.prices.URGENT) * 100)}% OFF
-                        </span>
-                      </>
-                    ) : (
-                      <span className="font-bold text-red-600">₹{premiumSettings?.prices?.URGENT || 49}</span>
-                    )}
-                    {' '}({premiumSettings?.durations?.URGENT || 7} days)
-                  </span>
-                </div>
-              </div>
-            </label>
-          </div>
-
-          {/* Total Calculation */}
-          {(selectedPremium || isUrgent) && (
-            <div className="bg-primary-50 border border-primary-200 rounded-lg p-4">
-              <div className="flex justify-between items-center">
-                <span className="font-semibold text-gray-700">Total Premium Cost:</span>
-                <span className="text-2xl font-bold text-primary-600">
-                  ₹{(() => {
-                    let total = 0;
-                    // Use offer prices if available
-                    if (selectedPremium === 'TOP') {
-                      const price = premiumSettings?.offerPrices?.TOP && premiumSettings.offerPrices.TOP < (premiumSettings?.prices?.TOP || 299)
-                        ? premiumSettings.offerPrices.TOP
-                        : (premiumSettings?.prices?.TOP || 299);
-                      total += price;
-                    }
-                    if (selectedPremium === 'FEATURED') {
-                      const price = premiumSettings?.offerPrices?.FEATURED && premiumSettings.offerPrices.FEATURED < (premiumSettings?.prices?.FEATURED || 199)
-                        ? premiumSettings.offerPrices.FEATURED
-                        : (premiumSettings?.prices?.FEATURED || 199);
-                      total += price;
-                    }
-                    if (selectedPremium === 'BUMP_UP') {
-                      const price = premiumSettings?.offerPrices?.BUMP_UP && premiumSettings.offerPrices.BUMP_UP < (premiumSettings?.prices?.BUMP_UP || 99)
-                        ? premiumSettings.offerPrices.BUMP_UP
-                        : (premiumSettings?.prices?.BUMP_UP || 99);
-                      total += price;
-                    }
-                    if (isUrgent) {
-                      const price = premiumSettings?.offerPrices?.URGENT && premiumSettings.offerPrices.URGENT < (premiumSettings?.prices?.URGENT || 49)
-                        ? premiumSettings.offerPrices.URGENT
-                        : (premiumSettings?.prices?.URGENT || 49);
-                      total += price;
-                    }
-                    return total;
-                  })()}
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
         )}
 
-        {/* Business Package Ads - Show if user has active package AND ads remaining > 0 */}
-        {!isLoadingAdLimit && hasActiveBusinessPackage && hasAdsRemaining && (
-        <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-lg p-6 space-y-4 border-2 border-green-200">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <FiBriefcase className="w-6 h-6 text-green-600" />
-              <h3 className="text-lg font-semibold">Business Package Ads Available</h3>
-            </div>
-            {hasAdsRemaining && (
-              <span className="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-semibold">
-                {adsRemaining} Available
-              </span>
-            )}
-          </div>
-
-          {hasAdsRemaining ? (
-            <>
-              <div className="bg-white rounded-lg p-4 border border-green-200">
-                <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
-                  <p className="text-sm font-medium text-green-800 mb-1">
-                    You have <span className="font-bold text-green-600">{adsRemaining}</span> ad{adsRemaining > 1 ? 's' : ''} remaining from your business package.
-                  </p>
-                  <p className="text-xs text-green-700">
-                    You can post ads using your business package (no payment required). Premium features are included.
-                  </p>
-                </div>
-
-                {/* Premium Type Selection */}
-                <div className="mb-4">
-                  <label className="block text-sm font-medium mb-3">Select Premium Feature</label>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPremium(selectedPremium === 'TOP' ? null : 'TOP')}
-                      disabled={!hasAdsRemaining}
-                      className={`p-4 rounded-lg border-2 transition-all ${
-                        selectedPremium === 'TOP'
-                          ? 'border-yellow-500 bg-yellow-50'
-                          : 'border-gray-200 hover:border-yellow-300'
-                      } ${!hasAdsRemaining ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <FiStar className={`w-5 h-5 ${selectedPremium === 'TOP' ? 'text-yellow-600' : 'text-gray-400'}`} />
-                        <span className="font-semibold">TOP Ads</span>
-                      </div>
-                      <p className="text-sm text-gray-600 mb-2">Get maximum visibility at the top</p>
-                      <p className="text-xs text-green-600 font-semibold">Free with your package</p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPremium(selectedPremium === 'FEATURED' ? null : 'FEATURED')}
-                      disabled={!hasAdsRemaining}
-                      className={`p-4 rounded-lg border-2 transition-all ${
-                        selectedPremium === 'FEATURED'
-                          ? 'border-blue-500 bg-blue-50'
-                          : 'border-gray-200 hover:border-blue-300'
-                      } ${!hasAdsRemaining ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <FiTrendingUp className={`w-5 h-5 ${selectedPremium === 'FEATURED' ? 'text-blue-600' : 'text-gray-400'}`} />
-                        <span className="font-semibold">Featured</span>
-                      </div>
-                      <p className="text-sm text-gray-600 mb-2">Highlight your ad in featured section</p>
-                      <p className="text-xs text-green-600 font-semibold">Free with your package</p>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPremium(selectedPremium === 'BUMP_UP' ? null : 'BUMP_UP')}
-                      disabled={!hasAdsRemaining}
-                      className={`p-4 rounded-lg border-2 transition-all ${
-                        selectedPremium === 'BUMP_UP'
-                          ? 'border-green-500 bg-green-50'
-                          : 'border-gray-200 hover:border-green-300'
-                      } ${!hasAdsRemaining ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <FiRefreshCw className={`w-5 h-5 ${selectedPremium === 'BUMP_UP' ? 'text-green-600' : 'text-gray-400'}`} />
-                        <span className="font-semibold">Bump Up</span>
-                      </div>
-                      <p className="text-sm text-gray-600 mb-2">Refresh your ad to the top</p>
-                      <p className="text-xs text-green-600 font-semibold">Free with your package</p>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Urgent Badge */}
-                <div className="flex items-center gap-3 p-4 bg-white rounded-lg border border-gray-200">
-                  <input
-                    type="checkbox"
-                    id="urgent-badge-package"
-                    checked={isUrgent}
-                    onChange={(e) => setIsUrgent(e.target.checked)}
-                    disabled={!hasPremiumSlotsAvailable}
-                    className="w-5 h-5 text-red-600 rounded focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  />
-                  <label htmlFor="urgent-badge-package" className="flex-1 cursor-pointer">
-                    <div className="flex items-center gap-2">
-                      <FiAlertCircle className="w-5 h-5 text-red-600" />
-                      <span className="font-semibold">Mark as Urgent</span>
-                      <span className="text-xs text-green-600 font-semibold ml-2">(Free with your package)</span>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-1">Add urgent badge to your ad</p>
-                  </label>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-              <div className="flex items-start gap-3">
-                <FiAlertCircle className="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="text-yellow-800 font-medium mb-1">No Business Package Ads Left</p>
-                  <p className="text-yellow-700 text-sm">
-                    You have used all ads from your business package. Please use premium options to post this ad, or purchase a new business package.
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-        )}
-
-        {/* Business Package Ad Deduction Notice - Show when posting with business package */}
-        {!isLoadingAdLimit && hasActiveBusinessPackage && hasAdsRemaining && (
-          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-400 rounded-lg p-5 flex items-start gap-4 shadow-sm">
-            <div className="flex-shrink-0">
-              <div className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center">
-                <FiBriefcase className="w-6 h-6 text-white" />
-              </div>
-            </div>
-            <div className="flex-1">
-              <p className="font-bold text-lg text-blue-900 mb-2">
-                Ad – 1 ad will be deducted from your business package
-              </p>
-              <p className="text-sm text-blue-700 font-medium">
-                ({adsRemaining - 1} ad{adsRemaining - 1 !== 1 ? 's' : ''} will remain after posting)
-              </p>
-              <p className="text-xs text-blue-600 mt-2 italic">
-                No payment required – using your business package ads
-              </p>
-            </div>
-          </div>
-        )}
-
-        <div>
-          <label className="block text-sm font-medium mb-2">Images (Max 12) *</label>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-            {previews.map((preview, index) => (
-              <div key={index} className="relative">
-                <img
-                  src={preview}
-                  alt={`Preview ${index + 1}`}
-                  className="w-full h-32 object-cover rounded-lg"
-                />
-                <button
-                  type="button"
-                  onClick={() => removeImage(index)}
-                  className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1"
-                >
-                  <FiX className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
-            {previews.length < 12 && (
-              <label className="border-2 border-dashed border-gray-300 rounded-lg h-32 flex items-center justify-center cursor-pointer hover:border-primary-500">
-                <FiUpload className="w-6 h-6 text-gray-400" />
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleImageChange}
-                  className="hidden"
-                />
-              </label>
-            )}
-          </div>
-          {images.length === 0 && (
-            <p className="text-red-500 text-sm">At least one image is required</p>
-          )}
-        </div>
-
-        <button
-          type="submit"
-          disabled={
-            createAd.isPending || 
-            createPaymentOrder.isPending
-          }
-          onClick={(e) => {
-            console.log('🔘 Button clicked', { 
-              disabled: createAd.isPending || createPaymentOrder.isPending || (adLimitStatus?.hasLimit && !adLimitStatus?.canPost),
-              hasPremiumFeatures,
-              requiresPayment
-            });
-          }}
-          className="w-full bg-primary-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-        >
-          {createAd.isPending || createPaymentOrder.isPending ? (
-            <>
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-              Processing...
-            </>
-          ) : (
-            <>
-              {hasPremiumFeatures && !hasActiveBusinessPackage && <FiCreditCard className="w-5 h-5" />}
-              {hasPremiumFeatures && hasActiveBusinessPackage && <FiBriefcase className="w-5 h-5" />}
-              {buttonText}
-            </>
-          )}
-        </button>
+      {/* Legacy single-step form preserved in git history */}
       </form>
 
       {/* Interstitial Ad - After Action */}
@@ -1595,7 +1688,35 @@ export default function PostAdPage() {
                 {paymentRequiredError.message || 'Please purchase a Business Package or Premium Options to continue posting ads.'}
               </p>
               
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                <p className="text-sm text-blue-800 font-medium">
+                  💡 <strong>Quick Option:</strong> Select a premium feature below and click "Post Ad" to continue with payment.
+                </p>
+              </div>
+              
               <div className="space-y-3">
+                <button
+                  onClick={() => {
+                    setShowPaymentRequiredModal(false);
+                    // Scroll to premium section
+                    setTimeout(() => {
+                      const premiumSection = document.querySelector('[data-premium-section]');
+                      if (premiumSection) {
+                        premiumSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        // Highlight the section
+                        premiumSection.classList.add('ring-4', 'ring-yellow-400');
+                        setTimeout(() => {
+                          premiumSection.classList.remove('ring-4', 'ring-yellow-400');
+                        }, 3000);
+                      }
+                    }, 100);
+                  }}
+                  className="w-full bg-yellow-500 text-white px-6 py-3 rounded-lg font-semibold hover:bg-yellow-600 flex items-center justify-center gap-2 transition-colors"
+                >
+                  <FiStar className="w-5 h-5" />
+                  Select Premium Features
+                </button>
+                
                 <button
                   onClick={() => {
                     setShowPaymentRequiredModal(false);
@@ -1615,8 +1736,28 @@ export default function PostAdPage() {
                       return;
                     }
                     
+                    // Check if premium feature is selected
+                    if (!selectedPremium && !isUrgent) {
+                      toast.error('Please select a premium feature below to continue posting.', { duration: 5000 });
+                      setShowPaymentRequiredModal(false);
+                      // Scroll to premium options section
+                      setTimeout(() => {
+                        const premiumSection = document.querySelector('[data-premium-section]');
+                        if (premiumSection) {
+                          premiumSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          // Highlight the section
+                          premiumSection.classList.add('ring-4', 'ring-yellow-400');
+                          setTimeout(() => {
+                            premiumSection.classList.remove('ring-4', 'ring-yellow-400');
+                          }, 3000);
+                        }
+                      }, 100);
+                      return;
+                    }
+                    
                     setShowPaymentRequiredModal(false);
                     console.log('💰 Creating payment order with data:', adFormData);
+                    console.log('💰 Premium features selected:', { selectedPremium, isUrgent });
                     
                     // Create payment order for ad posting (with optional premium features)
                     const orderData = {
@@ -1698,8 +1839,24 @@ export default function PostAdPage() {
                           }
                           
                           console.log('✅ Setting payment order and showing modal');
+                          console.log('✅ Payment order details:', {
+                            hasRazorpayOrder: !!response.razorpayOrder,
+                            orderId: response.razorpayOrder?.id,
+                            amount: response.razorpayOrder?.amount,
+                            key: response.razorpayOrder?.key?.substring(0, 10) + '...'
+                          });
+                          
+                          // Verify all required fields are present
+                          if (!response.razorpayOrder || !response.razorpayOrder.id || !response.razorpayOrder.key) {
+                            console.error('❌ Payment order missing required fields:', response);
+                            toast.error('Invalid payment order. Please try again.');
+                            setShowPaymentRequiredModal(true);
+                            return;
+                          }
+                          
                           setPaymentOrder(response);
                           setShowPaymentModal(true);
+                          console.log('✅ Payment modal state set to true, should be visible now');
                         },
                         onError: (error: any) => {
                           console.error('❌ Payment order creation failed:', error);
@@ -1715,8 +1872,13 @@ export default function PostAdPage() {
                   className="w-full bg-gray-100 text-gray-700 px-6 py-3 rounded-lg font-semibold hover:bg-gray-200 flex items-center justify-center gap-2 transition-colors"
                 >
                   <FiCreditCard className="w-5 h-5" />
-                  Pay to Post this Ad {selectedPremium || isUrgent ? '(with Premium Features)' : ''}
+                  {selectedPremium || isUrgent ? 'Pay to Post this Ad (with Premium Features)' : 'Select Premium Features First'}
                 </button>
+                {!selectedPremium && !isUrgent && (
+                  <p className="text-xs text-gray-500 text-center mt-2">
+                    ⚠️ Please select a premium feature above before clicking this button
+                  </p>
+                )}
               </div>
             </div>
             
