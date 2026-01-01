@@ -1,10 +1,10 @@
 'use client';
 
+import React from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
 import { useState, useEffect, useRef } from 'react';
-import { FiMenu, FiX, FiUser, FiLogOut, FiHeart, FiPlus, FiSettings, FiShoppingBag, FiMessageCircle, FiGrid, FiBriefcase, FiGlobe, FiBarChart2, FiMapPin } from 'react-icons/fi';
+import { FiMenu, FiX, FiUser, FiLogOut, FiHeart, FiPlus, FiSettings, FiShoppingBag, FiMessageCircle, FiGrid, FiBriefcase, FiGlobe, FiBarChart2, FiMapPin, FiSearch } from 'react-icons/fi';
 import { useChatNotifications } from '@/hooks/useChatNotifications';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useComparison } from '@/hooks/useComparison';
@@ -18,60 +18,38 @@ import SignupModal from './SignupModal';
 import dynamic from 'next/dynamic';
 
 // Dynamically import Translator with SSR disabled to prevent hydration errors
-const Translator = dynamic(() => import('./Translator'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center gap-2">
-      <button
-        className="flex items-center gap-2 text-gray-700 hover:text-primary-600 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors"
-        title="Translate Page"
-        disabled
-      >
-        <FiGlobe className="w-5 h-5" />
-        <span className="text-sm font-medium hidden sm:inline">Translate</span>
-      </button>
-    </div>
-  )
-});
-
-// Logo component with fallback - only renders if logo exists
-function LogoImage() {
-  const [showLogo, setShowLogo] = useState(false);
-  
-  // Check if logo exists on mount (client-side only)
-  useEffect(() => {
-    // Only check on client side
-    if (typeof window !== 'undefined') {
-      fetch('/logo.png', { method: 'HEAD' })
-        .then((response) => {
-          if (response.ok) {
-            setShowLogo(true);
-          } else {
-            setShowLogo(false);
-          }
-        })
-        .catch(() => {
-          // Logo doesn't exist, don't show it - silently fail
-          setShowLogo(false);
-        });
-    }
-  }, []);
-  
-  if (!showLogo) {
-    return null; // Don't render Image component if logo doesn't exist
+const Translator = dynamic(
+  () => {
+    return import('./Translator').catch((error) => {
+      console.error('Failed to load Translator component:', error);
+      // Return a no-op component as fallback
+      return { default: () => null };
+    });
+  },
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex items-center gap-2">
+        <button
+          className="flex items-center gap-2 text-gray-700 hover:text-primary-600 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors"
+          title="Translate Page"
+          disabled
+        >
+          <FiGlobe className="w-5 h-5" />
+          <span className="text-sm font-medium hidden sm:inline">Translate</span>
+        </button>
+      </div>
+    )
   }
-  
+);
+
+// Logo component - simple text/icon logo
+function LogoImage() {
+  // Simple gradient logo badge
   return (
-    <Link href="/" className="relative flex-shrink-0 hover:opacity-80 transition-opacity">
-      <Image
-        src="/logo.png"
-        alt="SellIt Logo"
-        width={120}
-        height={40}
-        className="object-contain h-10 w-auto"
-        priority
-      />
-    </Link>
+    <div className="w-10 h-10 flex items-center justify-center bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg shadow-md">
+      <span className="text-white font-bold text-xl">S</span>
+    </div>
   );
 }
 
@@ -134,88 +112,72 @@ export default function Navbar() {
   }, [userMenuOpen]);
 
   return (
-    <div className="bg-white shadow-md sticky top-0 z-50" role="navigation">
-      <div className="container mx-auto px-4">
-        {/* Top Bar - Logo and User Actions */}
-        <div className="flex items-center justify-between h-16">
-          {/* Left Side - Logo and Location */}
-          <div className="flex items-center gap-4">
-            {/* Logo */}
-            <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity group">
-              <LogoImage />
-              <span className="text-2xl font-bold text-primary-600 group-hover:text-primary-700 transition-colors">
-                SellIt
-              </span>
-            </Link>
+    <div>
+      <nav className="sticky top-0 z-50 w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm" role="navigation">
+        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16 gap-6">
+          {/* Logo */}
+          <Link href="/" className="flex items-center gap-2 cursor-pointer flex-shrink-0">
+            <LogoImage />
+            <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+              <span className="hidden sm:inline">SellIt</span>
+              <span className="sm:hidden">SellIt</span>
+            </h1>
+          </Link>
 
-            {/* Location Selector */}
-            <div className="hidden lg:block relative">
-              <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg hover:border-primary-500 transition-colors bg-white">
-                <FiMapPin className="w-4 h-4 text-primary-600 flex-shrink-0" />
-                <select
-                  value={selectedLocation}
-                  onChange={(e) => handleLocationChange(e.target.value)}
-                  className="text-sm text-gray-700 bg-transparent border-none focus:outline-none cursor-pointer pr-2 max-w-[150px]"
-                >
-                  <option value="">All Locations</option>
-                  {locations.map((loc: any) => (
-                    <option key={loc.id} value={loc.slug}>
-                      {loc.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* User Actions - Right Side */}
-          <div className="hidden md:flex items-center space-x-4">
-            {/* Translator */}
-            <Translator />
-            
-            {!mounted ? (
-              // Show default (not authenticated) state during SSR and initial render
-              // Use English text during SSR to prevent hydration mismatch
-              <>
-                <button 
-                  onClick={() => setLoginModalOpen(true)}
-                  className="text-gray-700 hover:text-primary-600 transition-colors"
-                >
-                  Login
-                </button>
-                <button
-                  onClick={() => setSignupModalOpen(true)}
-                  className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
-                >
-                  Sign Up
-                </button>
-              </>
-            ) : isAuthenticated ? (
-              <>
-                <Link
-                  href="/ads"
-                  className="text-gray-700 hover:text-primary-600 px-4 py-2 rounded-lg hover:bg-gray-50 flex items-center gap-2"
-                >
-                  <FiGrid className="text-blue-600" /> {t('nav.browse')}
+          {/* Desktop Nav Links */}
+          <div className="hidden md:flex flex-1 items-center justify-end gap-4 ml-6">
+            <div className="flex items-center gap-4">
+              <Link href="/" className="text-sm font-semibold text-slate-700 hover:text-primary dark:text-slate-300 dark:hover:text-primary transition-colors">
+                Home
+              </Link>
+              {isAuthenticated && (
+                <Link href="/my-ads" className="text-sm font-semibold text-slate-700 hover:text-primary dark:text-slate-300 dark:hover:text-primary transition-colors">
+                  My Ads
                 </Link>
-                <Link
-                  href="/post-ad"
-                  className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 flex items-center gap-2"
-                >
-                  <FiPlus className="text-white" /> {t('nav.post')}
-                </Link>
-                <NotificationIcon />
-                <Link
-                  href="/chat"
-                  className="relative text-gray-700 hover:text-primary-600"
-                >
-                  <FiMessageCircle className="w-6 h-6 text-blue-600" />
+              )}
+              {isAuthenticated && (
+                <Link href="/chat" className="flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-primary dark:text-slate-300 dark:hover:text-primary transition-colors relative">
+                  <span className="material-symbols-outlined text-[20px]">chat</span>
+                  <span>Chat</span>
                   {unreadCount > 0 && (
                     <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">
                       {unreadCount > 9 ? '9+' : unreadCount}
                     </span>
                   )}
                 </Link>
+              )}
+            </div>
+            <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-2"></div>
+            <div className="flex items-center gap-3">
+              {!mounted ? (
+                <>
+                  <button 
+                    onClick={() => setLoginModalOpen(true)}
+                    className="text-sm font-bold text-slate-900 dark:text-white hover:underline"
+                  >
+                    Login
+                  </button>
+                  <Link
+                    href="/post-ad"
+                    className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-primary text-white text-sm font-bold py-2.5 px-5 rounded-full shadow-md hover:shadow-lg hover:opacity-90 transition-all"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">add</span>
+                    <span>Sell</span>
+                  </Link>
+                </>
+              ) : isAuthenticated ? (
+                <>
+                  <div className="relative">
+                    <NotificationIcon />
+                  </div>
+                  <Link
+                    href="/post-ad"
+                    className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-primary text-white text-sm font-bold py-2.5 px-5 rounded-full shadow-md hover:shadow-lg hover:opacity-90 transition-all"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">add</span>
+                    <span>Sell</span>
+                  </Link>
                 {comparisonMounted && comparisonCount > 0 && (
                   <Link
                     href="/compare"
@@ -340,20 +302,54 @@ export default function Navbar() {
 
           {/* Mobile Menu Button */}
           <button
-            className="md:hidden text-gray-700"
+            className="md:hidden text-gray-700 p-2 hover:bg-gray-100 rounded-lg transition-colors"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            aria-label="Toggle menu"
           >
-            {mobileMenuOpen ? <FiX className="w-6 h-6 text-blue-600" /> : <FiMenu className="w-6 h-6 text-blue-600" />}
+            {mobileMenuOpen ? <FiX className="w-6 h-6 text-teal-600" /> : <FiMenu className="w-6 h-6 text-teal-600" />}
           </button>
+          </div>
         </div>
 
         {/* Mobile Menu */}
         {mobileMenuOpen && (
-          <div className="md:hidden py-4 space-y-2">
-                    {/* Translator - Mobile */}
-                    <div className="px-4 py-2 border-b border-gray-200">
-                      <Translator />
-                    </div>
+          <div className="md:hidden py-4 space-y-2 border-t border-gray-200 bg-white dark:bg-slate-800">
+              {/* Mobile Search - Show on mobile */}
+            <div className="px-4 pb-3 border-b border-gray-200">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-lg bg-white">
+                  <FiMapPin className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                  <select
+                    value={selectedLocation}
+                    onChange={(e) => handleLocationChange(e.target.value)}
+                    className="text-sm text-gray-700 bg-transparent border-none focus:outline-none cursor-pointer flex-1"
+                    onClick={() => setMobileMenuOpen(false)}
+                  >
+                    <option value="">All Locations</option>
+                    {locations.map((loc: any) => (
+                      <option key={loc.id} value={loc.slug}>
+                        {loc.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    router.push('/ads');
+                    setMobileMenuOpen(false);
+                  }}
+                  className="px-3 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg transition-colors"
+                >
+                  <FiSearch className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            
+            {/* Translator - Mobile */}
+            <div className="px-4 py-2 border-b border-gray-200">
+              <Translator />
+            </div>
             
             {!mounted ? (
               // Show default (not authenticated) state during SSR and initial render
@@ -389,10 +385,10 @@ export default function Navbar() {
                 </Link>
                 <Link
                   href="/post-ad"
-                  className="block px-4 py-2 bg-primary-600 text-white rounded-lg"
+                  className="block px-4 py-2 bg-teal-600 text-white rounded-lg font-semibold text-center"
                   onClick={() => setMobileMenuOpen(false)}
                 >
-                  {t('nav.post')}
+                  <FiPlus className="inline w-4 h-4 mr-1" /> + SELL
                 </Link>
                 <div className="px-4 py-2 flex items-center">
                   <span className="mr-2 text-gray-700">{t('nav.messages')}</span>
@@ -494,9 +490,10 @@ export default function Navbar() {
                 </button>
               </>
             )}
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
+      </nav>
 
       {/* Login Modal */}
       <LoginModal 

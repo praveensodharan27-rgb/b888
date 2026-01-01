@@ -1,109 +1,86 @@
 'use client';
 
 import Link from 'next/link';
-import Image from 'next/image';
-import { useState, useEffect } from 'react';
 
 function FooterLogo() {
-  const [showLogo, setShowLogo] = useState(false);
-  
-  // Check if logo exists on mount (client-side only)
-  useEffect(() => {
-    // Only check on client side
-    if (typeof window !== 'undefined') {
-      fetch('/logo.png', { method: 'HEAD' })
-        .then((response) => {
-          if (response.ok) {
-            setShowLogo(true);
-          } else {
-            setShowLogo(false);
-          }
-        })
-        .catch(() => {
-          // Logo doesn't exist, don't show it - silently fail
-          setShowLogo(false);
-        });
-    }
-  }, []);
-  
   return (
-    <Link href="/" className="flex items-center gap-2 mb-4">
-      {showLogo && (
-        <div className="relative w-8 h-8">
-          <Image
-            src="/logo.png"
-            alt="SellIt Logo"
-            width={32}
-            height={32}
-            className="object-contain"
-          />
-        </div>
-      )}
-      <h3 className="text-xl font-bold">SellIt</h3>
-    </Link>
+    <div className="flex items-center gap-2">
+      <div className="w-8 h-8 flex items-center justify-center bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg">
+        <span className="text-white font-bold text-lg">S</span>
+      </div>
+      <span className="text-lg font-bold">SellIt</span>
+    </div>
   );
 }
 
+const popularLocations = ['Kolkata', 'Mumbai', 'Chennai', 'Pune', 'Delhi', 'Bangalore'];
+const trendingLocations = ['Bhubaneshwar', 'Hyderabad', 'Chandigarh', 'Nashik', 'Jaipur', 'Ahmedabad'];
+
 export default function Footer() {
   return (
-    <footer className="bg-gray-800 text-white mt-16">
-      <div className="container mx-auto px-4 py-8">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+    <footer className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 mt-10">
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+          {/* Popular Locations */}
           <div>
-            <FooterLogo />
-            <p className="text-gray-400">
-              Buy and sell anything in your local area. Post free classified ads.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold mb-4">Quick Links</h4>
-            <ul className="space-y-2 text-gray-400">
-              <li>
-                <Link href="/ads" className="hover:text-white">
-                  Browse Ads
-                </Link>
-              </li>
-              <li>
-                <Link href="/post-ad" className="hover:text-white">
-                  Post Ad
-                </Link>
-              </li>
-              <li>
-                <Link href="/categories" className="hover:text-white">
-                  Categories
-                </Link>
-              </li>
+            <h4 className="font-bold text-slate-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Popular Locations</h4>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
+              {popularLocations.map((location) => (
+                <li key={location}>
+                  <Link href={`/ads?location=${location.toLowerCase()}`} className="hover:underline">
+                    {location}
+                  </Link>
+                </li>
+              ))}
             </ul>
           </div>
+
+          {/* Trending Locations */}
           <div>
-            <h4 className="font-semibold mb-4">Support</h4>
-            <ul className="space-y-2 text-gray-400">
-              <li>
-                <Link href="/help" className="hover:text-white">
-                  Help Center
-                </Link>
-              </li>
-              <li>
-                <Link href="/contact" className="hover:text-white">
-                  Contact Us
-                </Link>
-              </li>
-              <li>
-                <Link href="/terms" className="hover:text-white">
-                  Terms of Service
-                </Link>
-              </li>
+            <h4 className="font-bold text-slate-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Trending Locations</h4>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
+              {trendingLocations.map((location) => (
+                <li key={location}>
+                  <Link href={`/ads?location=${location.toLowerCase()}`} className="hover:underline">
+                    {location}
+                  </Link>
+                </li>
+              ))}
             </ul>
           </div>
+
+          {/* About Us */}
           <div>
-            <h4 className="font-semibold mb-4">Follow Us</h4>
-            <div className="flex space-x-4">
-              {/* Add social media links */}
-            </div>
+            <h4 className="font-bold text-slate-900 dark:text-white mb-4 uppercase text-sm tracking-wider">About Us</h4>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
+              <li><Link href="/about" className="hover:underline">Tech Group</Link></li>
+              <li><Link href="/careers" className="hover:underline">Careers</Link></li>
+              <li><Link href="/contact" className="hover:underline">Contact Us</Link></li>
+              <li><Link href="/team" className="hover:underline">OLXPeople</Link></li>
+            </ul>
+          </div>
+
+          {/* OLX Section */}
+          <div>
+            <h4 className="font-bold text-slate-900 dark:text-white mb-4 uppercase text-sm tracking-wider">OLX</h4>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-400">
+              <li><Link href="/help" className="hover:underline">Help</Link></li>
+              <li><Link href="/sitemap" className="hover:underline">Sitemap</Link></li>
+              <li><Link href="/legal" className="hover:underline">Legal & Privacy information</Link></li>
+              <li><Link href="/blog" className="hover:underline">Blog</Link></li>
+            </ul>
           </div>
         </div>
-        <div className="border-t border-gray-700 mt-8 pt-8 text-center text-gray-400">
-          <p>&copy; {new Date().getFullYear()} SellIt. All rights reserved.</p>
+
+        {/* Bottom Bar */}
+        <div className="border-t border-slate-200 dark:border-slate-800 mt-10 pt-6 flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 flex items-center justify-center bg-primary rounded text-white text-xs">
+              <span className="material-symbols-outlined text-[16px]">storefront</span>
+            </div>
+            <span className="font-bold text-slate-900 dark:text-white text-sm">Marketplace Clone</span>
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-500">© {new Date().getFullYear()} Marketplace Clone. All rights reserved.</p>
         </div>
       </div>
     </footer>
