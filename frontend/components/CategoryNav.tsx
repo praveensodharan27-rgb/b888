@@ -5,7 +5,7 @@ import api from '@/lib/api';
 import Link from 'next/link';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { FiGrid, FiChevronDown } from 'react-icons/fi';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import { dummyCategories } from '@/lib/dummyData';
 
 interface Category {
@@ -25,7 +25,7 @@ interface Subcategory {
   _count?: { ads: number };
 }
 
-export default function CategoryNav() {
+function CategoryNav() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -66,16 +66,15 @@ export default function CategoryNav() {
     })
     .slice(0, 12);
 
-  // Track active category based on URL or first available category
+  // Track active category based on URL only (no default selection)
   useEffect(() => {
     if (currentCategory) {
       setActiveCategorySlug(currentCategory);
-      return;
+    } else {
+      // Clear active category if no category in URL (no default)
+      setActiveCategorySlug('');
     }
-    if (!activeCategorySlug && topCategories.length > 0) {
-      setActiveCategorySlug(topCategories[0].slug);
-    }
-  }, [currentCategory, topCategories, activeCategorySlug]);
+  }, [currentCategory]);
 
   // Fetch subcategories / popular searches for the active category
   const { data: subcategoriesData, isLoading: isSubLoading } = useQuery({
@@ -140,8 +139,7 @@ export default function CategoryNav() {
   if (isLoading) {
     return (
       <div 
-        className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-16 z-40 shadow-sm"
-        style={{ position: 'sticky', top: '64px', zIndex: 40 }}
+        className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-20 z-40 shadow-sm"
       >
         <div className="container mx-auto px-4">
           <div className="flex items-center h-14">
@@ -169,23 +167,72 @@ export default function CategoryNav() {
       `}</style>
       
       <div 
-        className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-16 z-40 shadow-sm"
-        style={{ position: 'sticky', top: '64px', zIndex: 40 }}
+        className="bg-gray-100 border-b border-gray-200 sticky z-40 -mt-px"
+        style={{ top: '64px' }}
       >
         <div className="container mx-auto px-4">
           <div className="flex items-center gap-2 py-2">
-          {/* All Categories Mega Menu Button */}
-          <div className="relative" ref={megaMenuRef}>
+            {/* Quick Category Links - Top 12 Most Popular with Active State - Left aligned */}
+            <div 
+              ref={scrollContainerRef}
+              className="flex items-center gap-1 overflow-x-auto hide-scrollbar flex-1 scroll-smooth"
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+            >
+              {topCategories.map((category) => {
+              const isActive = activeCategorySlug === category.slug;
+              
+              return (
+                <Link
+                  key={category.id}
+                  href={`/?category=${category.slug}`}
+                  data-slug={category.slug}
+                  onClick={(e) => {
+                    // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                    if (e.ctrlKey || e.metaKey || e.button === 1) {
+                      return; // Let browser handle it
+                    }
+                    e.preventDefault();
+                    // For regular clicks, update active state and filter on home
+                    handleCategoryClick(category.slug);
+                  }}
+                  onAuxClick={(e) => {
+                    // Handle middle-click (mouse wheel click)
+                    if (e.button === 1) {
+                      window.open(`/?category=${category.slug}`, '_blank');
+                    }
+                  }}
+                  className={`
+                    flex-shrink-0 px-3 py-2 rounded-lg text-sm font-medium
+                    transition-colors duration-200 whitespace-nowrap
+                    ${isActive 
+                      ? 'bg-blue-600 text-white' 
+                      : 'text-gray-700'
+                    }
+                  `}
+                >
+                  {category.icon && <span className="mr-1.5">{category.icon}</span>}
+                  {category.name}
+                  {isActive && category._count?.ads ? (
+                    <span className="ml-2 px-2 py-0.5 text-xs bg-white/20 rounded-full">
+                      {category._count.ads}
+                    </span>
+                  ) : null}
+                </Link>
+              );
+              })}
+            </div>
+
+            {/* All Categories Mega Menu Button - Fixed on Right side */}
+            <div className="relative flex-shrink-0 ml-auto" ref={megaMenuRef}>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 setShowMegaMenu(!showMegaMenu);
               }}
-              onMouseEnter={() => setShowMegaMenu(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 transition-colors"
             >
               <FiGrid className="w-4 h-4" />
-              All Categories
+              <span>All</span>
               <FiChevronDown className={`w-4 h-4 transition-transform ${showMegaMenu ? 'rotate-180' : ''}`} />
             </button>
 
@@ -194,7 +241,6 @@ export default function CategoryNav() {
               <div 
                 className="fixed left-0 right-0 bg-white dark:bg-slate-800 shadow-2xl border-t border-gray-200 dark:border-slate-700"
                 style={{ top: '120px', zIndex: 60 }}
-                onMouseLeave={() => setShowMegaMenu(false)}
               >
                 <div className="max-w-7xl mx-auto px-4 py-6">
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
@@ -311,56 +357,6 @@ export default function CategoryNav() {
             )}
           </div>
 
-          {/* Quick Category Links - Top 12 Most Popular with Active State */}
-          <div 
-            ref={scrollContainerRef}
-            className="flex items-center gap-1 overflow-x-auto hide-scrollbar flex-1 scroll-smooth"
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-          >
-            {topCategories.map((category) => {
-              const isActive = activeCategorySlug === category.slug;
-              
-              return (
-                <Link
-                  key={category.id}
-                  href={`/?category=${category.slug}`}
-                  data-slug={category.slug}
-                  onClick={(e) => {
-                    // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
-                    if (e.ctrlKey || e.metaKey || e.button === 1) {
-                      return; // Let browser handle it
-                    }
-                    e.preventDefault();
-                    // For regular clicks, update active state and filter on home
-                    handleCategoryClick(category.slug);
-                  }}
-                  onAuxClick={(e) => {
-                    // Handle middle-click (mouse wheel click)
-                    if (e.button === 1) {
-                      window.open(`/?category=${category.slug}`, '_blank');
-                    }
-                  }}
-                  className={`
-                    flex-shrink-0 px-3 py-2 rounded-lg text-sm font-medium
-                    transition-all duration-200 whitespace-nowrap
-                    ${isActive 
-                      ? 'bg-blue-600 text-white shadow-lg scale-105' 
-                      : 'text-gray-700 hover:text-blue-600 hover:bg-gray-50 hover:scale-105'
-                    }
-                  `}
-                >
-                  {category.icon && <span className="mr-1.5">{category.icon}</span>}
-                  {category.name}
-                  {isActive && category._count?.ads ? (
-                    <span className="ml-2 px-2 py-0.5 text-xs bg-white/20 rounded-full">
-                      {category._count.ads}
-                    </span>
-                  ) : null}
-                </Link>
-              );
-            })}
-          </div>
-
           {/* Subcategory / Popular Searches Row */}
           {activeCategorySlug && (
             <div className="pt-2 pb-3">
@@ -417,3 +413,5 @@ export default function CategoryNav() {
     </>
   );
 }
+
+export default memo(CategoryNav);
