@@ -1,6 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
+import { memo } from 'react';
 import dynamic from 'next/dynamic';
 
 const Navbar = dynamic(
@@ -17,14 +18,17 @@ const Navbar = dynamic(
 );
 
 const CategoryNav = dynamic(
-  () => {
-    return import('@/components/CategoryNav').catch((error) => {
-      console.error('Failed to load CategoryNav component:', error);
-      return { default: () => null };
-    });
-  },
+  () => import('@/components/CategoryNav'),
   {
     loading: () => <div className="h-14 bg-white border-b border-gray-200"></div>,
+    ssr: false
+  }
+);
+
+const PostAdNavbar = dynamic(
+  () => import('@/components/PostAdNavbar'),
+  {
+    loading: () => <div className="h-16 bg-white border-b border-gray-200"></div>,
     ssr: false
   }
 );
@@ -48,6 +52,7 @@ export function ConditionalNavbar() {
 
   if (isAdminPage) return null;
 
+  // Show same Navbar on all pages (like home page)
   return (
     <>
       <Navbar />
