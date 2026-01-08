@@ -195,6 +195,34 @@ router.post('/order',
         }
       });
 
+      // Also create PaymentOrder record for payment processor
+      try {
+        await prisma.paymentOrder.create({
+          data: {
+            userId: req.user.id,
+            orderId: razorpayOrder.id,
+            amount: amount, // Amount in paise
+            currency: 'INR',
+            status: 'created',
+            notes: JSON.stringify({
+              userId: req.user.id,
+              type: 'PREMIUM',
+              order_type: 'premium',
+              purpose: 'ad_promotion',
+              premiumType: type,
+              adId: adId,
+              premiumOrderId: premiumOrder.id
+            }),
+            isTestOrder: process.env.NODE_ENV !== 'production'
+          }
+        });
+        console.log('✅ PaymentOrder record created for premium order:', razorpayOrder.id);
+      } catch (paymentOrderError) {
+        console.error('❌ Error creating PaymentOrder record:', paymentOrderError);
+        // Don't fail the request, but log the error
+        // Payment processor can still work with PremiumOrder record
+      }
+
       res.json({
         success: true,
         order: premiumOrder,
@@ -254,37 +282,28 @@ router.post('/verify',
         return res.status(403).json({ success: false, message: 'Not authorized' });
       }
 
-      // Get current settings
-      const settings = await getPremiumSettings();
-      const duration = settings.durations[premiumOrder.type];
-      const expiresAt = new Date(Date.now() + duration * 24 * 60 * 60 * 1000);
-
-      await prisma.premiumOrder.update({
-        where: { id: premiumOrder.id },
-        data: {
-          razorpayPaymentId: paymentId,
-          status: 'paid',
-          expiresAt
-        }
+      // Use central payment processor
+      const { processPaymentVerification } = require('../services/paymentProcessor');
+      
+      const result = await processPaymentVerification({
+        orderId,
+        paymentId,
+        signature,
+        userId: req.user.id,
+        orderType: 'premium'
       });
 
-      // Update ad with premium features
-      const updateData = {
-        isPremium: true,
-        premiumType: premiumOrder.type,
-        premiumExpiresAt: expiresAt
-      };
-
-      if (premiumOrder.type === 'FEATURED') {
-        updateData.featuredAt = new Date();
-      } else if (premiumOrder.type === 'BUMP_UP') {
-        updateData.bumpedAt = new Date();
+      // Update premium order with activation details
+      if (result.activation?.activationDetails?.expiresAt) {
+        await prisma.premiumOrder.update({
+          where: { id: premiumOrder.id },
+          data: {
+            razorpayPaymentId: paymentId,
+            status: 'paid',
+            expiresAt: result.activation.activationDetails.expiresAt
+          }
+        });
       }
-
-      await prisma.ad.update({
-        where: { id: premiumOrder.adId },
-        data: updateData
-      });
 
       // Create notification
       const notification = await prisma.notification.create({
@@ -309,7 +328,30 @@ router.post('/verify',
         createdAt: notification.createdAt
       });
 
-      res.json({ success: true, message: 'Premium activated successfully' });
+      // ✅ Return comprehensive response with activation confirmation
+      const activationConfirmed = result.activation?.serviceActivated || false;
+      const paymentVerified = result.success !== false;
+      
+      res.json({
+        success: true,
+        paymentVerified: paymentVerified,
+        activationConfirmed: activationConfirmed,
+        message: activationConfirmed 
+          ? 'Payment successful and premium activated' 
+          : paymentVerified 
+            ? 'Payment successful but activation pending' 
+            : 'Payment verified',
+        isDuplicate: result.isDuplicate || false,
+        serviceActivated: activationConfirmed,
+        activationDetails: result.activation?.activationDetails || null,
+        state: result.state || (activationConfirmed ? 'activated' : 'verified'),
+        payment: {
+          paymentId,
+          orderId,
+          amount: premiumOrder.amount,
+          status: 'paid'
+        }
+      });
     } catch (error) {
       console.error('Verify payment error:', error);
       res.status(500).json({ success: false, message: 'Payment verification failed' });
@@ -427,32 +469,82 @@ router.post('/ad-posting/order',
         isUrgent
       });
       
-      // Check if user has exhausted free ads
-      const user = await prisma.user.findUnique({
-        where: { id: req.user.id },
-        select: { freeAdsUsed: true }
-      });
-      const freeAdsUsed = user?.freeAdsUsed || 0;
-      const FREE_ADS_LIMIT = 2;
+      // CORE BUSINESS RULES:
+      // 1. Premium ads (TOP/FEATURED/BUMP_UP) ALWAYS require payment (ignore free/business quota)
+      // 2. Normal ads: Business package quota first, then free ads quota
+      // 3. Payment required only if no quota available
+
+      const isPremiumAd = !!(premiumType && ['TOP', 'FEATURED', 'BUMP_UP'].includes(premiumType));
       const AD_POSTING_PRICE = parseFloat(process.env.AD_POSTING_PRICE || '49');
-      const hasFreeAdsRemaining = freeAdsUsed < FREE_ADS_LIMIT;
-      
-      // Check if user has active business packages
-      const now = new Date();
-      const activeBusinessPackages = await prisma.businessPackage.findMany({
-        where: {
-          userId: req.user.id,
-          status: 'paid',
-          expiresAt: { gt: now }
+      const FREE_ADS_LIMIT = 2;
+
+      // RULE 1: Premium ads ALWAYS require payment (ignore quota)
+      if (isPremiumAd) {
+        console.log('⭐ Premium ad - ALWAYS requires payment (ignoring quota)');
+        // Premium cost will be calculated below, postingPrice stays 0
+      } else {
+        // RULE 2 & 3: Normal ads - check quota
+        const now = new Date();
+        const activeBusinessPackages = await prisma.businessPackage.findMany({
+          where: {
+            userId: req.user.id,
+            status: 'paid',
+            expiresAt: { gt: now }
+          }
+        });
+        
+        // Calculate business ads remaining
+        const businessAdsRemaining = activeBusinessPackages.reduce((sum, pkg) => {
+          const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+          return sum + remaining;
+        }, 0);
+        
+        // Get user free ads quota
+        const user = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          select: { freeAdsRemaining: true }
+        });
+        
+        const freeAdsRemaining = user?.freeAdsRemaining ?? FREE_ADS_LIMIT;
+        
+        // Check if user has quota for normal ads
+        const hasQuota = businessAdsRemaining > 0 || freeAdsRemaining > 0;
+        
+        if (!hasQuota) {
+          // No quota - require payment
+          console.log(`💰 No quota available - charging base ad posting price: ₹${AD_POSTING_PRICE}`);
+        } else {
+          console.log(`✅ Ad posting free - quota available (business: ${businessAdsRemaining}, free: ${freeAdsRemaining})`);
         }
-      });
+      }
       
-      // Ad posting is free if user has free ads remaining OR has active business package
-      // Otherwise, charge base ad posting price
+      // Base posting price (only for normal ads without quota)
       let postingPrice = 0;
-      if (!hasFreeAdsRemaining && activeBusinessPackages.length === 0) {
-        postingPrice = AD_POSTING_PRICE;
-        console.log(`💰 User has exhausted free ads. Charging base ad posting price: ₹${postingPrice}`);
+      if (!isPremiumAd) {
+        const now = new Date();
+        const activeBusinessPackages = await prisma.businessPackage.findMany({
+          where: {
+            userId: req.user.id,
+            status: 'paid',
+            expiresAt: { gt: now }
+          }
+        });
+        
+        const businessAdsRemaining = activeBusinessPackages.reduce((sum, pkg) => {
+          const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+          return sum + remaining;
+        }, 0);
+        
+        const user = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          select: { freeAdsRemaining: true }
+        });
+        
+        const freeAdsRemaining = user?.freeAdsRemaining ?? FREE_ADS_LIMIT;
+        
+        if (businessAdsRemaining <= 0 && freeAdsRemaining <= 0) {
+          postingPrice = AD_POSTING_PRICE;
+        }
       }
       
       // Get premium settings to use offer prices if available
@@ -597,6 +689,34 @@ router.post('/ad-posting/order',
         });
       }
 
+      // Also create PaymentOrder record for payment processor
+      try {
+        await prisma.paymentOrder.create({
+          data: {
+            userId: req.user.id,
+            orderId: razorpayOrder.id,
+            amount: amount, // Amount in paise
+            currency: 'INR',
+            status: 'created',
+            notes: JSON.stringify({
+              userId: req.user.id,
+              type: 'AD_POSTING',
+              order_type: 'ad_posting',
+              purpose: 'ad_posting',
+              premiumType: premiumType || '',
+              isUrgent: isUrgent,
+              adPostingOrderId: adPostingOrder.id
+            }),
+            isTestOrder: process.env.NODE_ENV !== 'production'
+          }
+        });
+        console.log('✅ PaymentOrder record created for ad posting order:', razorpayOrder.id);
+      } catch (paymentOrderError) {
+        console.error('❌ Error creating PaymentOrder record:', paymentOrderError);
+        // Don't fail the request, but log the error
+        // Payment processor can still work with AdPostingOrder record
+      }
+
       res.json({
         success: true,
         requiresPayment: true, // Always true when order is created (payment required)
@@ -620,6 +740,123 @@ router.post('/ad-posting/order',
         message: 'Failed to create order',
         error: error.message,
         stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    }
+  }
+);
+
+// Generate QR code for payment order (optional UPI payment method)
+router.post('/qr-code',
+  authenticate,
+  [
+    body('orderId').notEmpty().withMessage('Order ID is required')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { orderId } = req.body;
+
+      if (!razorpay) {
+        return res.status(503).json({ 
+          success: false, 
+          message: 'Payment service not configured' 
+        });
+      }
+
+      // Fetch order details from Razorpay
+      let razorpayOrder;
+      try {
+        razorpayOrder = await razorpay.orders.fetch(orderId);
+        console.log('✅ Fetched Razorpay order for QR:', orderId);
+      } catch (error) {
+        console.error('❌ Error fetching Razorpay order:', error);
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Order not found' 
+        });
+      }
+
+      // Verify order belongs to user (optional security check)
+      // Note: Razorpay orders don't have userId, so we check via PaymentOrder table
+      try {
+        const paymentOrder = await prisma.paymentOrder.findFirst({
+          where: {
+            orderId: orderId,
+            userId: req.user.id
+          }
+        });
+
+        if (!paymentOrder) {
+          // Also check AdPostingOrder
+          const adPostingOrder = await prisma.adPostingOrder.findFirst({
+            where: {
+              razorpayOrderId: orderId,
+              userId: req.user.id
+            }
+          });
+
+          if (!adPostingOrder) {
+            return res.status(403).json({ 
+              success: false, 
+              message: 'Order does not belong to user' 
+            });
+          }
+        }
+      } catch (dbError) {
+        console.warn('⚠️ Could not verify order ownership:', dbError);
+        // Continue anyway - orderId verification is sufficient
+      }
+
+      // Generate UPI payment string
+      // Format: upi://pay?pa=merchant@upi&pn=MerchantName&am=amount&cu=INR&tn=description
+      const amount = (razorpayOrder.amount / 100).toFixed(2); // Convert paise to INR
+      
+      // Get merchant VPA from environment or use Razorpay default
+      // For Razorpay, you typically use their payment link or generate QR through their API
+      // Since we're using orders, we'll create a UPI string that can be scanned
+      const merchantVpa = process.env.RAZORPAY_MERCHANT_VPA || process.env.RAZORPAY_UPI_ID || 'sellit@razorpay';
+      const merchantName = process.env.RAZORPAY_MERCHANT_NAME || 'SellIt';
+      const description = `Payment for Order ${orderId.substring(0, 12)}`;
+      
+      // Create UPI payment string
+      const upiString = `upi://pay?pa=${encodeURIComponent(merchantVpa)}&pn=${encodeURIComponent(merchantName)}&am=${amount}&cu=INR&tn=${encodeURIComponent(description)}&tr=${orderId.substring(0, 20)}`;
+      
+      // Generate QR code using qrcode library
+      const QRCode = require('qrcode');
+      
+      // Generate QR code as data URL (base64 image)
+      const qrCodeDataUrl = await QRCode.toDataURL(upiString, {
+        errorCorrectionLevel: 'M',
+        type: 'image/png',
+        width: 300,
+        margin: 2,
+        color: {
+          dark: '#000000',
+          light: '#FFFFFF'
+        }
+      });
+
+      console.log('✅ Generated QR code for order:', orderId);
+
+      res.json({
+        success: true,
+        qrCode: qrCodeDataUrl,
+        upiString: upiString,
+        amount: amount,
+        orderId: orderId,
+        merchantName: merchantName,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() // QR valid for 15 minutes
+      });
+    } catch (error) {
+      console.error('❌ Generate QR code error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Failed to generate QR code',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   }
@@ -714,11 +951,7 @@ router.post('/ad-posting/verify',
       
       let adPostingOrder;
       try {
-        // First, verify database connection
-        await prisma.$queryRaw`SELECT 1`;
-        console.log('   ✅ Database connection verified');
-        
-        // Use findUnique (now works because razorpayOrderId is @unique)
+        // Use findUnique (razorpayOrderId is @unique)
         console.log('   🔍 Querying ad posting order with findUnique...');
         adPostingOrder = await prisma.adPostingOrder.findUnique({
           where: { razorpayOrderId: cleanOrderId }
@@ -841,10 +1074,66 @@ router.post('/ad-posting/verify',
         return res.status(403).json({ success: false, message: 'Not authorized' });
       }
 
-      if (adPostingOrder.status === 'paid') {
+      // ✅ Duplicate payment protection
+      if (adPostingOrder.status === 'paid' && adPostingOrder.razorpayPaymentId === cleanPaymentId) {
         console.log('ℹ️ Payment already verified');
-        return res.json({ success: true, message: 'Payment already verified', adId: adPostingOrder.adId });
+        return res.json({
+          success: true,
+          message: 'Payment already verified',
+          isDuplicate: true,
+          serviceActivated: true,
+          activationDetails: {
+            type: 'ad_posting',
+            message: 'Ad can now be created',
+            adId: adPostingOrder.adId
+          },
+          adId: adPostingOrder.adId
+        });
       }
+
+      // ✅ Validate adId if provided in adData
+      let adIdFromData = null;
+      if (adPostingOrder.adData) {
+        try {
+          const parsedAdData = JSON.parse(adPostingOrder.adData);
+          adIdFromData = parsedAdData.adId;
+          
+          // If adId exists, validate it
+          if (adIdFromData) {
+            const adValidation = await prisma.ad.findUnique({
+              where: { id: adIdFromData },
+              select: { id: true, userId: true }
+            });
+
+            if (!adValidation) {
+              return res.status(404).json({ success: false, message: 'Ad not found' });
+            }
+
+            if (adValidation.userId !== req.user.id) {
+              return res.status(403).json({ success: false, message: 'Ad does not belong to user' });
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ Error parsing adData:', e);
+        }
+      }
+
+      // Use payment activation service
+      const { processPayment } = require('../services/paymentActivation');
+
+      // Process payment: Save record + Activate service
+      const paymentResult = await processPayment({
+        paymentId: cleanPaymentId,
+        orderId: cleanOrderId,
+        amount: Math.round(adPostingOrder.amount * 100), // Convert to paise
+        purpose: 'ad_posting',
+        referenceId: adIdFromData || adPostingOrder.adId || null,
+        userId: req.user.id,
+        metadata: {
+          orderId: adPostingOrder.id,
+          hasAdData: !!adPostingOrder.adData
+        }
+      });
 
       // Update order status
       console.log('💾 Updating order status to paid...');
@@ -914,9 +1203,32 @@ router.post('/ad-posting/verify',
       });
 
       console.log('✅ Payment verified successfully');
+      
+      // ✅ Return comprehensive response with activation confirmation
+      const activationConfirmed = paymentResult.activation?.serviceActivated !== false;
+      const paymentVerified = paymentResult.success !== false;
+      
       res.json({ 
-        success: true, 
-        message: 'Payment verified successfully. You can now create your ad.',
+        success: true,
+        paymentVerified: paymentVerified,
+        activationConfirmed: activationConfirmed,
+        message: activationConfirmed 
+          ? 'Payment successful and ad posting activated' 
+          : paymentVerified 
+            ? 'Payment successful but activation pending' 
+            : 'Payment verified successfully. You can now create your ad.',
+        isDuplicate: paymentResult.isDuplicate || false,
+        serviceActivated: activationConfirmed,
+        activationDetails: paymentResult.activation?.activationDetails || {
+          type: 'ad_posting',
+          message: 'Ad can now be created'
+        },
+        payment: {
+          paymentId: cleanPaymentId,
+          orderId: cleanOrderId,
+          amount: adPostingOrder.amount,
+          status: 'paid'
+        },
         orderId: adPostingOrder.id,
         razorpayOrderId: cleanOrderId,
         razorpayPaymentId: cleanPaymentId
@@ -948,6 +1260,101 @@ router.post('/ad-posting/verify',
     }
   }
 );
+
+// Get user's premium status/info
+router.get('/status', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const now = new Date();
+
+    // Get user's active premium ads
+    const activePremiumAds = await prisma.ad.findMany({
+      where: {
+        userId: userId,
+        isPremium: true,
+        OR: [
+          { premiumExpiresAt: null },
+          { premiumExpiresAt: { gt: now } }
+        ]
+      },
+      select: {
+        id: true,
+        title: true,
+        isPremium: true,
+        premiumType: true,
+        premiumExpiresAt: true,
+        featuredAt: true,
+        bumpedAt: true
+      },
+      orderBy: { premiumExpiresAt: 'desc' }
+    });
+
+    // Get user's membership status
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        membershipActive: true,
+        membershipType: true,
+        membershipExpiresAt: true
+      }
+    });
+
+    // Get recent premium orders
+    const recentOrders = await prisma.premiumOrder.findMany({
+      where: { userId: userId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: {
+        id: true,
+        adId: true,
+        type: true,
+        amount: true,
+        status: true,
+        expiresAt: true,
+        createdAt: true,
+        ad: {
+          select: {
+            id: true,
+            title: true
+          }
+        }
+      }
+    });
+
+    // Count premium ads by type
+    const premiumCounts = {
+      TOP: activePremiumAds.filter(ad => ad.premiumType === 'TOP').length,
+      FEATURED: activePremiumAds.filter(ad => ad.premiumType === 'FEATURED').length,
+      BUMP_UP: activePremiumAds.filter(ad => ad.premiumType === 'BUMP_UP').length,
+      URGENT: activePremiumAds.filter(ad => ad.premiumType === 'URGENT').length
+    };
+
+    res.json({
+      success: true,
+      premium: {
+        hasActivePremium: activePremiumAds.length > 0,
+        activePremiumAdsCount: activePremiumAds.length,
+        activePremiumAds: activePremiumAds,
+        premiumCounts: premiumCounts
+      },
+      membership: {
+        active: user?.membershipActive || false,
+        type: user?.membershipType || null,
+        expiresAt: user?.membershipExpiresAt || null,
+        isExpired: user?.membershipExpiresAt ? user.membershipExpiresAt < now : true
+      },
+      recentOrders: recentOrders,
+      summary: {
+        totalActivePremium: activePremiumAds.length,
+        hasActiveMembership: user?.membershipActive || false,
+        totalOrders: recentOrders.length
+      }
+    });
+  } catch (error) {
+    console.error('Get premium status error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch premium status' });
+  }
+});
 
 module.exports = router;
 
