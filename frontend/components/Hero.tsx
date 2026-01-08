@@ -168,6 +168,7 @@ export default function Hero() {
     setIsFocused(false);
     if (search.trim()) {
       saveRecentSearch(search.trim());
+      // Search overrides category - clear category from URL
       router.push(`/ads?search=${encodeURIComponent(search)}`);
     }
   };

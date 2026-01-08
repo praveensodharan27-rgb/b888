@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { useCreateAd, useFreeAdsStatus, useCreateAdPostingOrder, useVerifyAdPostingPayment, useAdLimitStatus } from '@/hooks/useAds';
@@ -8,36 +8,69 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { getSocket } from '@/lib/socket';
-import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage } from 'react-icons/fi';
+import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage, FiUser, FiCamera, FiMapPin } from 'react-icons/fi';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import ImageWithFallback from '@/components/ImageWithFallback';
-import InterstitialAd from '@/components/InterstitialAd';
 import CategoryAttributes from '@/components/CategoryAttributes';
 import AdLimitAlert from '@/components/AdLimitAlert';
 import toast from 'react-hot-toast';
 
 // Lazy load PaymentModal (heavy component with Razorpay SDK)
 // Using same pattern as other components (AdLimitAlert, PremiumFeatureButton)
-const PaymentModal = dynamic(() => import('@/components/PaymentModal'), {
-  loading: () => (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-        <div className="flex items-center justify-center gap-3">
-          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
-          <p className="text-gray-700">Loading payment gateway...</p>
+const PaymentModal = dynamic(
+  () => import('@/components/PaymentModal').catch((error) => {
+    console.error('Failed to load PaymentModal:', error);
+    // Return a fallback component that just returns null
+    return { default: () => null };
+  }),
+  {
+    loading: () => (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+          <div className="flex items-center justify-center gap-3">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
+            <p className="text-gray-700">Loading payment gateway...</p>
+          </div>
         </div>
       </div>
-    </div>
-  ),
-  ssr: false
-});
+    ),
+    ssr: false
+  }
+);
 
 export default function PostAdPage() {
+  // 1. Basic hooks (router, auth, query client, form)
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAuth();
   const queryClient = useQueryClient();
   const { register, handleSubmit, formState: { errors }, watch, setValue } = useForm();
+  
+  // 2. ALL useState hooks - must be called unconditionally and in same order
+  const [images, setImages] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentOrder, setPaymentOrder] = useState<any>(null);
+  const [adFormData, setAdFormData] = useState<any>(null);
+  const [selectedPremium, setSelectedPremium] = useState<string | null>(null);
+  const [isUrgent, setIsUrgent] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [showPaymentRequiredModal, setShowPaymentRequiredModal] = useState(false);
+  const [paymentRequiredError, setPaymentRequiredError] = useState<any>(null);
+  const [isAdLimitAlertDismissed, setIsAdLimitAlertDismissed] = useState(false);
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
+  const [isPaymentVerified, setIsPaymentVerified] = useState(false); // Track if payment is verified
+  const [googlePlacesLoaded, setGooglePlacesLoaded] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  
+  // 3. ALL useRef hooks
+  const locationAutocompleteRef = useRef<HTMLInputElement>(null);
+  const autocompleteInstanceRef = useRef<any>(null);
+  const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
+  
+  // 4. Custom hooks and useQuery hooks
   const createAd = useCreateAd();
   const { data: freeAdsStatus } = useFreeAdsStatus();
   const { data: adLimitStatus, isLoading: isLoadingAdLimit } = useAdLimitStatus(isAuthenticated);
@@ -55,34 +88,81 @@ export default function PostAdPage() {
   });
   
   const createPaymentOrder = useCreateAdPostingOrder();
-  
-  // Enhanced error handling for payment order creation
-  useEffect(() => {
-    if (createPaymentOrder.isError) {
-      console.error('❌ Payment order creation error:', createPaymentOrder.error);
-    }
-  }, [createPaymentOrder.isError, createPaymentOrder.error]);
   const verifyPayment = useVerifyAdPostingPayment();
   
-  const [images, setImages] = useState<File[]>([]);
-  const [previews, setPreviews] = useState<string[]>([]);
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentOrder, setPaymentOrder] = useState<any>(null);
-  const [adFormData, setAdFormData] = useState<any>(null);
-  const [selectedPremium, setSelectedPremium] = useState<string | null>(null);
-  const [isUrgent, setIsUrgent] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
-  const [showAfterActionAd, setShowAfterActionAd] = useState(false);
-  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
-  const [showPaymentRequiredModal, setShowPaymentRequiredModal] = useState(false);
-  const [paymentRequiredError, setPaymentRequiredError] = useState<any>(null);
-  const [isAdLimitAlertDismissed, setIsAdLimitAlertDismissed] = useState(false);
-  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
+  const TOTAL_STEPS = 8; // Category & Subcategory (combined), Brand, Specs, Title/Description, Image, Price, Location
   
-  // Step-by-step wizard state - strict order enforcement
-  const [currentStep, setCurrentStep] = useState(1);
-  const TOTAL_STEPS = 8; // Category, Subcategory, Brand, Specs, Title/Description, Image, Price, Location
+  // Get premium offers (public endpoint for users) - must be after useState hooks
+  const { data: premiumSettings, isLoading: isLoadingOffers } = useQuery({
+    queryKey: ['premium-offers'],
+    queryFn: async () => {
+      const response = await api.get('/premium/offers');
+      const offersData = response.data.offers;
+      
+      // Transform the object structure into an array format
+      // API returns: { prices: {...}, offerPrices: {...}, durations: {...} }
+      // We need: [{ type: 'TOP', name: '...', price: ..., duration: ... }, ...]
+      if (offersData && typeof offersData === 'object' && !Array.isArray(offersData)) {
+        const offersArray = [];
+        const premiumTypes = ['TOP', 'FEATURED', 'BUMP_UP', 'URGENT'];
+        
+        premiumTypes.forEach((type) => {
+          const price = offersData.offerPrices?.[type] || offersData.prices?.[type] || 0;
+          const duration = offersData.durations?.[type] || 7;
+          
+          if (price > 0) {
+            offersArray.push({
+              id: type,
+              type: type,
+              name: type === 'TOP' ? 'Top Ad' : 
+                    type === 'FEATURED' ? 'Featured Ad' : 
+                    type === 'BUMP_UP' ? 'Bump Up' : 'Urgent Ad',
+              description: type === 'TOP' ? 'Get your ad featured at the top of search results' :
+                           type === 'FEATURED' ? 'Highlight your ad with featured badge' :
+                           type === 'BUMP_UP' ? 'Bump your ad to the top of listings' :
+                           'Mark your ad as urgent for priority placement',
+              price: price,
+              duration: duration,
+            });
+          }
+        });
+        
+        return offersArray;
+      }
+      
+      // If it's already an array, return as is
+      return Array.isArray(offersData) ? offersData : [];
+    },
+    staleTime: 2 * 60 * 1000, // Cache for 2 minutes (shorter to get updates faster)
+    gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
+    refetchOnWindowFocus: true, // Refetch when window gains focus to get latest offers
+  });
+
+  const { data: categories } = useQuery({
+    queryKey: ['categories'],
+    queryFn: async () => {
+      const response = await api.get('/categories');
+      return response.data.categories;
+    },
+    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
+    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
+    refetchOnWindowFocus: false,
+  });
+  
+  // ALL watch() calls must be at top level, before useEffect hooks
+  const selectedCategoryId = watch('categoryId');
+  const selectedSubcategoryId = watch('subcategoryId');
+  const attributes = watch('attributes');
+  const title = watch('title');
+  const description = watch('description');
+  const price = watch('price');
+  const condition = watch('condition');
+  const state = watch('state');
+  const city = watch('city');
+  
+  // Computed values from watched values
+  const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
+  const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId);
   
   // Check if premium features are selected
   const hasPremiumFeatures = !!(selectedPremium || isUrgent);
@@ -191,6 +271,49 @@ export default function PostAdPage() {
     }
   }, [isAuthenticated, isLoadingAdLimit, queryClient]);
   
+  // Enhanced error handling for payment order creation
+  useEffect(() => {
+    if (createPaymentOrder.isError) {
+      console.error('❌ Payment order creation error:', createPaymentOrder.error);
+    }
+  }, [createPaymentOrder.isError, createPaymentOrder.error]);
+
+  // Scroll to a specific step - must be before useEffect hooks
+  const scrollToStep = useCallback((step: number) => {
+    const stepIndex = step - 1; // Convert to 0-based index
+    if (stepRefs.current[stepIndex]) {
+      stepRefs.current[stepIndex]?.scrollIntoView({ 
+        behavior: 'smooth', 
+        block: 'start',
+        inline: 'nearest'
+      });
+    }
+  }, []);
+  
+  // Step validation functions - uses top-level watched values
+  const validateStep = (step: number): boolean => {
+    switch (step) {
+      case 1: // Category & Subcategory (combined)
+        return !!(selectedCategoryId && selectedSubcategoryId);
+      case 2: // Brand
+        if (!selectedCategory || !selectedSubcategory) return false;
+        return true;
+      case 3: // Specs (other attributes)
+        if (!selectedCategory || !selectedSubcategory) return false;
+        return true;
+      case 4: // Title/Description
+        return !!(title && description);
+      case 5: // Image
+        return images.length > 0;
+      case 6: // Price
+        return !!(price && parseFloat(price) >= 0);
+      case 7: // Location
+        return !!(state && city);
+      default:
+        return false;
+    }
+  };
+
   // Prevent hydration mismatch by only rendering after mount
   useEffect(() => {
     setMounted(true);
@@ -203,74 +326,16 @@ export default function PostAdPage() {
     }
   }, [mounted, isAuthenticated, isLoading, router]);
 
-  // Get premium offers (public endpoint for users)
-  const { data: premiumSettings, isLoading: isLoadingOffers } = useQuery({
-    queryKey: ['premium-offers'],
-    queryFn: async () => {
-      const response = await api.get('/premium/offers');
-      return response.data.offers;
-    },
-    staleTime: 2 * 60 * 1000, // Cache for 2 minutes (shorter to get updates faster)
-    gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
-    refetchOnWindowFocus: true, // Refetch when window gains focus to get latest offers
-  });
-
-  const { data: categories } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      const response = await api.get('/categories');
-      return response.data.categories;
-    },
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-    refetchOnWindowFocus: false,
-  });
-
-  const selectedCategoryId = watch('categoryId');
-  const selectedSubcategoryId = watch('subcategoryId');
-  const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
-  const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId);
-  const attributes = watch('attributes');
-  
-  // Step validation functions
-  const validateStep = (step: number): boolean => {
-    switch (step) {
-      case 1: // Category
-        return !!selectedCategoryId;
-      case 2: // Subcategory
-        return !!selectedSubcategoryId;
-      case 3: // Brand (from attributes.brand if exists)
-        // Brand is optional in some categories, so check if category requires it
-        if (!selectedCategory || !selectedSubcategory) return false;
-        // For now, allow step 3 if subcategory is selected (brand might be optional)
-        return true;
-      case 4: // Specs (other attributes)
-        // Specs are optional, allow moving forward
-        return true;
-      case 5: // Title/Description
-        const title = watch('title');
-        const description = watch('description');
-        return !!(title && description);
-      case 6: // Image
-        return images.length > 0;
-      case 7: // Price
-        const price = watch('price');
-        return !!(price && parseFloat(price) >= 0);
-      case 8: // Location
-        const state = watch('state');
-        const city = watch('city');
-        return !!(state && city);
-      default:
-        return false;
-    }
-  };
-  
   // Navigate to next step
   const goToNextStep = () => {
+    // Block navigation if payment is required but not verified
+    if (requiresPaymentBeforePosting && !isPaymentVerified) {
+      toast.error('Please complete payment before proceeding');
+      return;
+    }
+    
     if (validateStep(currentStep) && currentStep < TOTAL_STEPS) {
       setCurrentStep(currentStep + 1);
-      // Scroll to top of form
-      window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       toast.error('Please complete all required fields before proceeding');
     }
@@ -280,9 +345,171 @@ export default function PostAdPage() {
   const goToPreviousStep = () => {
     if (currentStep > 1) {
       setCurrentStep(currentStep - 1);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
+  
+  // Navigate to a specific step (for clicking on step indicator)
+  const goToStep = (step: number) => {
+    // Block navigation if payment is required but not verified (except going back)
+    if (step > currentStep && requiresPaymentBeforePosting && !isPaymentVerified) {
+      toast.error('Please complete payment before proceeding');
+      return;
+    }
+    
+    if (step >= 1 && step <= TOTAL_STEPS) {
+      // Allow going to any step, but validate if going forward
+      if (step > currentStep) {
+        // Validate all previous steps before allowing forward navigation
+        let canProceed = true;
+        for (let i = 1; i < step; i++) {
+          if (!validateStep(i)) {
+            canProceed = false;
+            toast.error(`Please complete step ${i} before proceeding`);
+            break;
+          }
+        }
+        if (!canProceed) return;
+      }
+      setCurrentStep(step);
+      // useEffect will handle scrolling
+    }
+  };
+
+  // Scroll to current step when it changes
+  useEffect(() => {
+    // Small delay to ensure DOM is updated
+    const timer = setTimeout(() => {
+      scrollToStep(currentStep);
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [currentStep, scrollToStep]);
+
+  // Load Google Places API script
+  useEffect(() => {
+    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+    if (!apiKey) {
+      console.warn('Google Maps API key not found. Location autocomplete will not work.');
+      return;
+    }
+
+    // Check if script is already loaded
+    if (typeof window !== 'undefined' && window.google && window.google.maps && window.google.maps.places) {
+      setGooglePlacesLoaded(true);
+      return;
+    }
+
+    // Check if script is already in the DOM
+    const existingScript = document.querySelector('script[src*="places"]');
+    if (existingScript) {
+      existingScript.addEventListener('load', () => {
+        setGooglePlacesLoaded(true);
+      });
+      return;
+    }
+
+    // Load Google Places API script
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      setGooglePlacesLoaded(true);
+    };
+    script.onerror = () => {
+      console.error('Failed to load Google Places API');
+    };
+    document.head.appendChild(script);
+  }, []);
+
+  // Initialize Google Places Autocomplete when Google Places API is loaded
+  useEffect(() => {
+    if (!googlePlacesLoaded || !locationAutocompleteRef.current) {
+      return;
+    }
+
+    // Clear existing autocomplete if any
+    if (autocompleteInstanceRef.current && typeof window !== 'undefined' && window.google) {
+      window.google.maps.event.clearInstanceListeners(autocompleteInstanceRef.current);
+    }
+
+    if (typeof window === 'undefined' || !window.google || !window.google.maps || !window.google.maps.places) {
+      return;
+    }
+
+    // Create autocomplete instance
+    const autocomplete = new window.google.maps.places.Autocomplete(
+      locationAutocompleteRef.current,
+      {
+        // No types restriction - allows all place types (addresses, cities, establishments, etc.)
+        fields: ['place_id', 'geometry', 'formatted_address', 'address_components'],
+      }
+    );
+
+    autocompleteInstanceRef.current = autocomplete;
+
+    // Handle place selection
+    autocomplete.addListener('place_changed', () => {
+      const place = autocomplete.getPlace();
+      
+      if (!place.address_components) {
+        return;
+      }
+
+      // Update the input field with formatted address
+      if (locationAutocompleteRef.current && place.formatted_address) {
+        locationAutocompleteRef.current.value = place.formatted_address;
+      }
+
+      // Parse address components
+      let state = '';
+      let city = '';
+      let neighbourhood = '';
+
+      for (const component of place.address_components) {
+        const types = component.types;
+
+        if (types.includes('administrative_area_level_1')) {
+          state = component.long_name;
+        } else if (types.includes('locality') || types.includes('administrative_area_level_2')) {
+          city = component.long_name;
+        } else if (types.includes('sublocality') || types.includes('sublocality_level_1')) {
+          neighbourhood = component.long_name;
+        } else if (types.includes('neighborhood') && !neighbourhood) {
+          neighbourhood = component.long_name;
+        }
+      }
+
+      // Auto-populate form fields
+      if (state) {
+        setValue('state', state);
+      }
+      if (city) {
+        setValue('city', city);
+      }
+      if (neighbourhood) {
+        setValue('neighbourhood', neighbourhood);
+      }
+
+      // Also update the autocomplete input with city name or formatted address
+      if (locationAutocompleteRef.current) {
+        if (city) {
+          locationAutocompleteRef.current.value = city;
+        } else if (place.formatted_address) {
+          locationAutocompleteRef.current.value = place.formatted_address;
+        }
+      }
+
+      if (state || city || neighbourhood) {
+        toast.success('Location information auto-filled successfully!');
+      }
+    });
+
+    return () => {
+      if (autocompleteInstanceRef.current && typeof window !== 'undefined' && window.google) {
+        window.google.maps.event.clearInstanceListeners(autocompleteInstanceRef.current);
+      }
+    };
+  }, [googlePlacesLoaded, setValue]);
   
   // NEW SYSTEM: Check if user has active business package with ads remaining
   // IMPORTANT: Only check if adLimitStatus is loaded to avoid showing premium options during loading
@@ -393,10 +620,30 @@ export default function PostAdPage() {
     }
   }, [adLimitStatus, isLoadingAdLimit, hasActiveBusinessPackage, hasAdsRemaining, hasFreeAdsRemaining, shouldShowPremiumOptions]);
 
-  // Check if payment is required
+  // Check if payment is required BEFORE posting
+  // Priority: 1. Free ads 2. Business package 3. Payment required
+  // Payment is required if:
+  // - No free ads remaining AND
+  // - No active business package OR no business ads remaining
+  const requiresPaymentBeforePosting = !isLoadingAdLimit && 
+    !hasFreeAdsRemaining && 
+    (!hasActiveBusinessPackage || !hasBusinessAdsRemaining);
+
+  // Early check: If payment is required before posting, show payment modal immediately
+  // DISABLED: Payment popup removed on page load - will only show when user tries to submit
+  // useEffect(() => {
+  //   if (!isLoadingAdLimit && requiresPaymentBeforePosting && !isPaymentVerified && !showPaymentModal) {
+  //     console.log('💰 Payment required before posting - showing payment options');
+  //     // Create a dummy payment order to show payment modal
+  //     // We'll create the actual order when user fills the form
+  //     setShowPaymentRequiredModal(true);
+  //   }
+  // }, [isLoadingAdLimit, requiresPaymentBeforePosting, isPaymentVerified, showPaymentModal]);
+  
+  // Check if payment is required (for premium features or quota)
   // Premium features ALWAYS require payment (even with business package)
   // OR if no quota remaining (free + business), payment is required
-  const requiresPayment = hasPremiumFeatures || (!hasFreeAdsRemaining && (!hasActiveBusinessPackage || !hasAdsRemaining));
+  const requiresPayment = hasPremiumFeatures || requiresPaymentBeforePosting;
 
   // Compute button text based on premium features and business package
   const getButtonText = () => {
@@ -489,7 +736,13 @@ export default function PostAdPage() {
 
   const detectLocation = async () => {
     if (!navigator.geolocation) {
-      toast.error('Geolocation is not supported by your browser');
+      toast.error('Geolocation is not supported by your browser. Please enter location manually.', { duration: 5000 });
+      return;
+    }
+
+    // Check if we're on HTTPS (required for geolocation in production)
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      toast.error('Location detection requires HTTPS. Please enter location manually.', { duration: 5000 });
       return;
     }
 
@@ -506,9 +759,23 @@ export default function PostAdPage() {
       const { latitude, longitude } = position.coords;
 
       // Call geocoding API to detect location
+      console.log('📍 Calling geocoding API with coordinates:', { latitude, longitude });
       const response = await api.post('/geocoding/detect-location', {
         latitude,
         longitude,
+      }).catch((apiError: any) => {
+        console.error('❌ Geocoding API call failed:', apiError);
+        // Re-throw with more context
+        if (apiError.response) {
+          // API responded with error
+          throw apiError;
+        } else if (apiError.request) {
+          // Request was made but no response received
+          throw new Error('Network error: Could not reach the server. Please check your internet connection.');
+        } else {
+          // Something else happened
+          throw new Error(`Request setup error: ${apiError.message}`);
+        }
       });
 
       if (response.data.success) {
@@ -516,17 +783,25 @@ export default function PostAdPage() {
 
         // Auto-populate state, city, neighbourhood from detected location
         if (detectedLocation) {
+          // Build location string for autocomplete input
+          const locationParts = [];
+          if (detectedLocation.city) locationParts.push(detectedLocation.city);
+          if (detectedLocation.state) locationParts.push(detectedLocation.state);
+          const locationString = locationParts.join(', ');
+          
+          // Update autocomplete input field
+          if (locationAutocompleteRef.current && locationString) {
+            locationAutocompleteRef.current.value = locationString;
+          }
+          
           if (detectedLocation.state) {
             setValue('state', detectedLocation.state);
-            toast.success(`State detected: ${detectedLocation.state}`);
           }
           if (detectedLocation.city) {
             setValue('city', detectedLocation.city);
-            toast.success(`City detected: ${detectedLocation.city}`);
           }
           if (detectedLocation.neighbourhood) {
             setValue('neighbourhood', detectedLocation.neighbourhood);
-            toast.success(`Neighbourhood detected: ${detectedLocation.neighbourhood}`);
           }
           
           if (detectedLocation.state || detectedLocation.city || detectedLocation.neighbourhood) {
@@ -534,21 +809,80 @@ export default function PostAdPage() {
           } else {
             toast.success('Location detected but no detailed information available');
           }
+        } else {
+          toast.error('Location detected but no address details found. Please enter location manually.');
         }
       } else {
-        toast.error('Failed to detect location');
+        const errorMsg = response.data?.message || 'Failed to detect location';
+        toast.error(errorMsg, { duration: 5000 });
+        console.error('Location detection failed:', response.data);
       }
     } catch (error: any) {
       console.error('Location detection error:', error);
       
+      // Handle geolocation API errors
       if (error.code === 'PERMISSION_DENIED') {
-        toast.error('Location access denied. Please enable location permissions.');
+        toast.error('Location access denied. Please enable location permissions in your browser settings.', { duration: 5000 });
       } else if (error.code === 'POSITION_UNAVAILABLE') {
-        toast.error('Location information unavailable');
+        toast.error('Location information unavailable. Please try again or enter location manually.', { duration: 5000 });
       } else if (error.code === 'TIMEOUT') {
-        toast.error('Location request timed out');
+        toast.error('Location request timed out. Please try again or enter location manually.', { duration: 5000 });
+      } else if (error.response) {
+        // Handle API errors with detailed messages
+        const errorData = error.response.data;
+        const statusCode = error.response.status;
+        const errorMessage = errorData?.message || errorData?.error_message || 'Failed to detect location';
+        
+        console.error('API Error Details:', {
+          status: statusCode,
+          data: errorData,
+          url: error.config?.url
+        });
+        
+        // Handle HTTP status codes
+        if (statusCode === 401) {
+          toast.error('Please log in to use location detection. You can still enter location manually.', { duration: 5000 });
+        } else if (statusCode === 403) {
+          toast.error('Access denied. Please check your permissions.', { duration: 5000 });
+        } else if (statusCode === 404) {
+          toast.error('No location found for your coordinates. Please enter location manually.', { duration: 5000 });
+        } else if (statusCode === 429) {
+          toast.error('Location service quota exceeded. Please try again later or enter location manually.', { duration: 6000 });
+        } else if (statusCode === 500) {
+          toast.error('Server error. Please try again later or enter location manually.', { duration: 5000 });
+        } else if (statusCode === 503) {
+          toast.error('Location service temporarily unavailable. Please try again later or enter location manually.', { duration: 5000 });
+        } else {
+          // Show specific error messages based on API status
+          if (errorData?.status === 'REQUEST_DENIED') {
+            toast.error('Geocoding API error: Please check API configuration. You can still enter location manually.', { duration: 6000 });
+          } else if (errorData?.status === 'OVER_QUERY_LIMIT') {
+            toast.error('Location service quota exceeded. Please try again later or enter location manually.', { duration: 6000 });
+          } else if (errorData?.status === 'ZERO_RESULTS') {
+            toast.error('No location found for your coordinates. Please enter location manually.', { duration: 5000 });
+          } else if (errorData?.status === 'INVALID_REQUEST') {
+            toast.error('Invalid location request. Please try again or enter location manually.', { duration: 5000 });
+          } else {
+            toast.error(errorMessage, { duration: 5000 });
+          }
+        }
       } else {
-        toast.error(error.response?.data?.message || 'Failed to detect location');
+        // Handle network errors or other unexpected errors
+        const errorMessage = error.message || 'Failed to detect location';
+        console.error('Location detection error details:', {
+          message: error.message,
+          name: error.name,
+          stack: error.stack
+        });
+        
+        // Provide more helpful error messages
+        if (error.message?.includes('Network') || error.message?.includes('fetch')) {
+          toast.error('Network error. Please check your internet connection and try again.', { duration: 5000 });
+        } else if (error.message?.includes('CORS')) {
+          toast.error('CORS error. Please contact support.', { duration: 5000 });
+        } else {
+          toast.error(`Failed to detect location: ${errorMessage}. Please enter location manually.`, { duration: 5000 });
+        }
       }
     } finally {
       setIsDetectingLocation(false);
@@ -556,12 +890,7 @@ export default function PostAdPage() {
   };
 
   const generateDescription = async () => {
-    const title = watch('title');
-    const price = watch('price');
-    const condition = watch('condition');
-    const categoryId = watch('categoryId');
-    const subcategoryId = watch('subcategoryId');
-
+    // Use top-level watched values instead of calling watch() inside function
     if (!title) {
       toast.error('Please enter a title first');
       return;
@@ -569,16 +898,14 @@ export default function PostAdPage() {
 
     setIsGeneratingDescription(true);
     try {
-      // Get category names
-      const category = categories?.find((cat: any) => cat.id === categoryId);
-      const subcategory = category?.subcategories?.find((sub: any) => sub.id === subcategoryId);
+      // Use already computed selectedCategory and selectedSubcategory from top-level
 
       const response = await api.post('/ai/generate-description', {
         title,
         price: price || undefined,
         condition: condition || undefined,
-        category: category?.name || undefined,
-        subcategory: subcategory?.name || undefined,
+        category: selectedCategory?.name || undefined,
+        subcategory: selectedSubcategory?.name || undefined,
       });
 
       if (response.data.success && response.data.description) {
@@ -599,10 +926,26 @@ export default function PostAdPage() {
     console.log('🚀 onSubmit called', { 
       hasPremiumFeatures, 
       requiresPayment, 
+      requiresPaymentBeforePosting,
+      isPaymentVerified,
       selectedPremium, 
-      isUrgent,
       imagesCount: images.length 
     });
+
+    // CRITICAL: Block submission if payment is required but not verified
+    if (requiresPaymentBeforePosting && !isPaymentVerified) {
+      toast.error('Please complete payment before posting your ad');
+      // Set payment required error data so modal can display
+      setPaymentRequiredError({
+        message: 'Please purchase a Business Package or Premium Options to continue posting ads.',
+        freeAdsUsed: adLimitStatus?.freeAdsUsed || 0,
+        freeAdsLimit: adLimitStatus?.freeAdsLimit || 2,
+      });
+      // Store form data for later use
+      setAdFormData({ ...data });
+      setShowPaymentRequiredModal(true);
+      return;
+    }
 
     // Check ad limit before proceeding
     // Only block if no premium features are selected AND user can't post
@@ -684,11 +1027,10 @@ export default function PostAdPage() {
                 // Invalidate ad limit status to refresh it after ad creation
                 queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
                 queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
-                setShowAfterActionAd(true);
                 setTimeout(() => {
                   console.log('🔄 Redirecting to /my-ads');
                   router.push('/my-ads');
-                }, 3000);
+                }, 1500);
               },
               onError: (error: any) => {
                 console.error('❌ Ad creation failed:', error);
@@ -738,22 +1080,13 @@ export default function PostAdPage() {
     formData.append('city', data.city);
     if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
     
-    // Add premium features if selected
-    // If user has business package with ads remaining, premium features are included for free
-    // If user has no quota, premium features require payment (backend will detect and require paymentOrderId)
-    if (hasPremiumFeatures) {
-      if (selectedPremium) {
-        formData.append('premiumType', selectedPremium);
-        console.log('📦 Adding premiumType to formData:', selectedPremium, {
-          hasActiveBusinessPackage,
-          hasAdsRemaining,
-          willRequirePayment: !hasActiveBusinessPackage || !hasAdsRemaining
-        });
-      }
-      if (isUrgent) {
-        formData.append('isUrgent', String(isUrgent));
-        console.log('📦 Adding isUrgent to formData:', isUrgent);
-      }
+    // DON'T add premium features to initial submission if business package is active and free ads remain
+    // Premium features will be applied after payment is collected (only if user selected them and doesn't have free ads)
+    // If business package is active and free ads remain, ignore premium features selection
+    if (hasPremiumFeatures && hasActiveBusinessPackage && hasFreeAdsRemaining) {
+      // Clear premium features if user has free ads - they should use free ads instead
+      console.log('📦 Premium features cleared - user has free ads available');
+      setSelectedPremium(null);
     }
     
     // Add attributes if they exist
@@ -766,41 +1099,69 @@ export default function PostAdPage() {
     });
 
     createAd.mutate(formData, {
-      onSuccess: (data) => {
-        console.log('✅ Ad created successfully:', data);
-        toast.success('Ad posted successfully! Waiting for approval.');
-        // Invalidate and refetch ad limit status to refresh ads remaining count immediately
-        console.log('🔄 Invalidating queries to refresh ads count...');
+      onSuccess: (adResponse) => {
+        console.log('✅ Ad created successfully:', adResponse);
+        const createdAdId = adResponse?.data?.id || adResponse?.id;
+        
+        // Invalidate and refetch ad limit status
         queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
         queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
-        // Force immediate refetch to update UI with new ads count (after backend updates)
-        // Use multiple refetches with increasing delays to ensure backend has updated
-        setTimeout(() => {
-          console.log('🔄 Refetching queries to update ads remaining count (attempt 1)...');
-          queryClient.refetchQueries({ queryKey: ['ad-limit-status'] }).then(() => {
-            console.log('✅ Refetched ad-limit-status (attempt 1)');
-          });
-          queryClient.refetchQueries({ queryKey: ['business-package', 'status'] }).then((result) => {
-            console.log('✅ Refetched business-package status (attempt 1):', result);
-          });
-        }, 500); // First refetch after 500ms
         
-        setTimeout(() => {
-          console.log('🔄 Refetching queries to update ads remaining count (attempt 2)...');
-          queryClient.refetchQueries({ queryKey: ['ad-limit-status'] }).then(() => {
-            console.log('✅ Refetched ad-limit-status (attempt 2)');
+        // If premium features were selected, show payment modal AFTER posting
+        // BUT: Skip payment if business package is active and free ads remain
+        if (hasPremiumFeatures && createdAdId && !(hasActiveBusinessPackage && hasFreeAdsRemaining)) {
+          console.log('💰 Premium features selected, creating payment order after ad posting...');
+          toast.success('Ad posted successfully! Please complete payment for premium features.');
+          
+          // Create payment order for premium features with ad data
+          const premiumOrderData = {
+            adId: createdAdId,
+            title: data.title,
+            description: data.description,
+            price: data.price,
+            originalPrice: data.originalPrice,
+            discount: data.originalPrice && data.price 
+              ? ((parseFloat(data.originalPrice) - parseFloat(data.price)) / parseFloat(data.originalPrice) * 100).toFixed(2)
+              : null,
+            condition: data.condition,
+            categoryId: data.categoryId,
+            subcategoryId: data.subcategoryId,
+            state: data.state,
+            city: data.city,
+            neighbourhood: data.neighbourhood,
+            premiumType: selectedPremium || null,
+            isUrgent: isUrgent || false,
+          };
+          
+          createPaymentOrder.mutate(premiumOrderData, {
+            onSuccess: (paymentResponse) => {
+              console.log('✅ Premium payment order created:', paymentResponse);
+              if (paymentResponse.requiresPayment && paymentResponse.razorpayOrder) {
+                setPaymentOrder(paymentResponse);
+                setShowPaymentModal(true);
+              } else {
+                toast.success('Premium features applied successfully!');
+                setTimeout(() => {
+                  router.push('/my-ads');
+                }, 1500);
+              }
+            },
+            onError: (error: any) => {
+              console.error('❌ Premium payment order creation failed:', error);
+              toast.error('Ad posted but failed to create premium payment order. You can upgrade later.');
+              setTimeout(() => {
+                router.push('/my-ads');
+              }, 2000);
+            }
           });
-          queryClient.refetchQueries({ queryKey: ['business-package', 'status'] }).then((result) => {
-            console.log('✅ Refetched business-package status (attempt 2):', result);
-          });
-        }, 1500); // Second refetch after 1500ms to ensure backend has processed
-        setShowAfterActionAd(true);
-        // Redirect after interstitial ad is shown (or after delay if ad doesn't show)
-        // Use a longer timeout to allow interstitial ad to display
-        setTimeout(() => {
-          console.log('🔄 Redirecting to /my-ads');
-          router.push('/my-ads');
-        }, 3000);
+        } else {
+          // No premium features, redirect normally
+          toast.success('Ad posted successfully! Waiting for approval.');
+          setTimeout(() => {
+            console.log('🔄 Redirecting to /my-ads');
+            router.push('/my-ads');
+          }, 1500);
+        }
       },
       onError: (error: any) => {
         console.error('❌ Ad creation failed:', error);
@@ -864,6 +1225,8 @@ export default function PostAdPage() {
           console.log('✅ Payment verified:', response);
           toast.success('Payment verified! Creating your ad...');
           setShowPaymentModal(false);
+          // Mark payment as verified - this allows form submission
+          setIsPaymentVerified(true);
           // Invalidate ad limit status immediately after payment verification
           queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
           queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
@@ -894,10 +1257,6 @@ export default function PostAdPage() {
           if (selectedPremium) {
             formData.append('premiumType', selectedPremium);
             console.log('⭐ Adding premiumType to formData after payment:', selectedPremium);
-          }
-          if (isUrgent) {
-            formData.append('isUrgent', String(isUrgent));
-            console.log('⭐ Adding isUrgent to formData after payment:', isUrgent);
           }
           
           // Add attributes if they exist
@@ -967,7 +1326,16 @@ export default function PostAdPage() {
     setShowPaymentModal(false);
   };
 
+  // Remove body padding for post-ad page - must be before any early returns
+  useEffect(() => {
+    document.body.classList.add('no-navbar-padding');
+    return () => {
+      document.body.classList.remove('no-navbar-padding');
+    };
+  }, []);
+
   // Show loading during initial mount to prevent hydration mismatch
+  // Early returns must be AFTER all hooks
   if (!mounted || isLoading) {
     return <div className="container mx-auto px-4 py-8">Loading...</div>;
   }
@@ -977,11 +1345,16 @@ export default function PostAdPage() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
-      <h1 className="text-3xl font-bold mb-8">Post a New Ad</h1>
+    <div className="min-h-screen bg-[#faf9f7]" style={{ margin: 0, padding: 0 }}>
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Header */}
+        <div className="mb-8 text-center">
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">Post your Ad</h1>
+          <p className="text-gray-600 text-lg">Fill in the details to sell your item quickly</p>
+        </div>
 
-      {/* Ad Limit Alert - Only show if not dismissed */}
-      {!isLoadingAdLimit && adLimitStatus?.hasLimit && !adLimitStatus?.canPost && !isAdLimitAlertDismissed && (
+        {/* Ad Limit Alert - Only show if not dismissed */}
+        {!isLoadingAdLimit && adLimitStatus?.hasLimit && !adLimitStatus?.canPost && !isAdLimitAlertDismissed && (
         <>
           <AdLimitAlert
             packageName={adLimitStatus.packageName || 'Business Package'}
@@ -1002,13 +1375,45 @@ export default function PostAdPage() {
             </div>
           )}
         </>
-      )}
+        )}
 
-      {/* OLX-Like Quota Information Banner */}
-      {!isLoadingAdLimit && adLimitStatus && (
+        {/* Payment Required Alert - Show if payment is required but not verified */}
+        {!isLoadingAdLimit && requiresPaymentBeforePosting && !isPaymentVerified && (
+          <div className="mb-6 p-6 bg-red-50 border-2 border-red-300 rounded-lg shadow-lg">
+            <div className="flex items-start gap-4">
+              <FiAlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-lg font-bold text-red-900 mb-2">
+                  Payment Required to Post Ad
+                </h3>
+                <p className="text-red-800 mb-4">
+                  You have used all your free ads and business package ads. Please complete payment to continue posting ads.
+                </p>
+                <p className="text-sm text-red-700">
+                  Please fill in the form below and click "Post Ad" to proceed with payment.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Payment Verified Success Message */}
+        {isPaymentVerified && (
+          <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-lg">
+            <div className="flex items-center gap-3">
+              <FiCheckCircle className="w-5 h-5 text-green-600" />
+              <p className="text-green-800 font-medium">
+                Payment verified! You can now proceed to post your ad.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Sell Box Style Quota Information Banner - HIDDEN */}
+        {false && !isLoadingAdLimit && adLimitStatus && (
         <div className="mb-6 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* FREE ADS Box - OLX Style */}
+            {/* FREE ADS Box - Sell Box Style */}
             <div className="relative bg-white rounded-lg p-4 border-2 border-blue-200 shadow-sm hover:shadow-md transition-shadow">
               <div className="absolute top-2 right-2">
                 <FiFlag className="w-5 h-5 text-orange-500" />
@@ -1031,7 +1436,7 @@ export default function PostAdPage() {
               </div>
             </div>
 
-            {/* BUSINESS PACKAGE Box - OLX Style */}
+            {/* BUSINESS PACKAGE Box - Sell Box Style */}
             <div className="relative bg-white rounded-lg p-4 border-2 border-green-200 shadow-sm hover:shadow-md transition-shadow">
               <div className="absolute top-2 right-2">
                 <FiBriefcase className="w-5 h-5 text-orange-500" />
@@ -1141,7 +1546,8 @@ export default function PostAdPage() {
             </div>
           )}
 
-          {/* Total Ads Available */}
+          {/* Total Ads Available - HIDDEN */}
+          {false && (
           <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-4 border-2 border-indigo-200">
             <div className="flex items-center justify-between">
               <div>
@@ -1155,11 +1561,12 @@ export default function PostAdPage() {
               </div>
             </div>
           </div>
+          )}
         </div>
-      )}
+        )}
 
-      {/* Payment Options Hidden Banner - OLX Style */}
-      {!isLoadingAdLimit && shouldHidePaymentOptions && adLimitStatus && (
+        {/* Payment Options Hidden Banner - Sell Box Style - HIDDEN */}
+        {false && !isLoadingAdLimit && shouldHidePaymentOptions && adLimitStatus && (
         <div className="mb-6 p-4 rounded-lg bg-orange-50 border-2 border-orange-300 flex items-center justify-between">
           <div className="flex items-start gap-3 flex-1">
             <FiInfo className="w-5 h-5 text-orange-600 mt-0.5 flex-shrink-0" />
@@ -1181,10 +1588,10 @@ export default function PostAdPage() {
             </Link>
           )}
         </div>
-      )}
+        )}
 
-      {/* Info Banner - When no ads available */}
-      {!isLoadingAdLimit && adLimitStatus && adLimitStatus.totalRemaining === 0 && !shouldHidePaymentOptions && (
+        {/* Info Banner - When no ads available */}
+        {!isLoadingAdLimit && adLimitStatus && adLimitStatus.totalRemaining === 0 && !shouldHidePaymentOptions && (
         <div className="mb-6 p-4 rounded-lg flex items-center gap-3 bg-red-50 border-2 border-red-200">
           <FiAlertCircle className="w-5 h-5 text-red-600" />
           <div>
@@ -1196,514 +1603,623 @@ export default function PostAdPage() {
             </p>
           </div>
         </div>
-      )}
-
-      {/* Step Progress Indicator */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
-          {[1, 2, 3, 4, 5, 6, 7, 8].map((step) => (
-            <div key={step} className="flex items-center flex-1">
-              <div className="flex flex-col items-center flex-1">
-                <div
-                  className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${
-                    step < currentStep
-                      ? 'bg-green-500 text-white'
-                      : step === currentStep
-                      ? 'bg-blue-600 text-white ring-4 ring-blue-200'
-                      : 'bg-gray-200 text-gray-600'
-                  }`}
-                >
-                  {step < currentStep ? '✓' : step}
-                </div>
-                <div className={`text-xs mt-2 text-center ${step === currentStep ? 'font-bold text-blue-600' : step < currentStep ? 'text-green-600' : 'text-gray-500'}`}>
-                  {step === 1 && 'Category'}
-                  {step === 2 && 'Subcategory'}
-                  {step === 3 && 'Brand'}
-                  {step === 4 && 'Specs'}
-                  {step === 5 && 'Title/Desc'}
-                  {step === 6 && 'Image'}
-                  {step === 7 && 'Price'}
-                  {step === 8 && 'Location'}
-                </div>
-              </div>
-              {step < 8 && (
-                <div
-                  className={`h-1 flex-1 mx-2 ${
-                    step < currentStep ? 'bg-green-500' : 'bg-gray-200'
-                  }`}
-                />
-              )}
-            </div>
-          ))}
-        </div>
-        <div className="text-center text-sm text-gray-600 mt-2">
-          Step {currentStep} of {TOTAL_STEPS}
-        </div>
-      </div>
-
-      <form 
-        onSubmit={handleSubmit(onSubmit)} 
-        className="space-y-6"
-      >
-        {/* Step 1: Category */}
-        {currentStep === 1 && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 1: Select Category</h2>
-            <div>
-              <label className="block text-sm font-medium mb-2">Category *</label>
-              <select
-                {...register('categoryId', { required: 'Category is required' })}
-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                onChange={(e) => {
-                  setValue('categoryId', e.target.value);
-                  // Auto-advance to next step if valid
-                  setTimeout(() => {
-                    if (e.target.value) {
-                      goToNextStep();
-                    }
-                  }, 100);
-                }}
-              >
-                <option value="">Select Category</option>
-                {categories?.map((cat: any) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.name}
-                  </option>
-                ))}
-              </select>
-              {errors.categoryId && (
-                <div className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</div>
-              )}
-            </div>
-          </div>
         )}
 
-        {/* Step 2: Subcategory */}
-        {currentStep === 2 && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 2: Select Subcategory</h2>
-            <div>
-              <label className="block text-sm font-medium mb-2">
-                Subcategory <span className="text-red-500">*</span>
-              </label>
-              <select
-                {...register('subcategoryId', { required: 'Subcategory is required' })}
-                className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                  errors.subcategoryId ? 'border-red-500' : ''
-                }`}
-                disabled={!selectedCategory}
-                onChange={(e) => {
-                  setValue('subcategoryId', e.target.value);
-                  // Auto-advance to next step if valid
-                  setTimeout(() => {
-                    if (e.target.value) {
-                      goToNextStep();
-                    }
-                  }, 100);
-                }}
-              >
-                <option value="">Select Subcategory</option>
-                {selectedCategory?.subcategories?.map((sub: any) => (
-                  <option key={sub.id} value={sub.id}>
-                    {sub.name}
-                  </option>
-                ))}
-              </select>
-              {errors.subcategoryId && (
-                <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  {errors.subcategoryId.message}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
+        {/* Form Sections */}
+        <div className="space-y-6">
 
-        {/* Step 3: Brand */}
-        {currentStep === 3 && selectedCategory && selectedSubcategory && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 3: Enter Brand</h2>
-            <div className="bg-gray-50 rounded-lg p-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Brand
-                </label>
-                <input
-                  type="text"
-                  {...register('attributes.brand')}
-                  placeholder="e.g., Samsung, Apple, Sony, Maruti, Hero"
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                />
-                <p className="text-xs text-gray-500 mt-2">
-                  Enter the brand/make name of your product
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Step 4: Specs - CategoryAttributes (all attributes except brand handled here) */}
-        {currentStep === 4 && selectedCategory && selectedSubcategory && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 4: Product Specifications</h2>
-            <CategoryAttributes
-              categorySlug={selectedCategory.slug}
-              subcategorySlug={selectedSubcategory.slug}
-              register={register}
-              watch={watch}
-              setValue={setValue}
-              errors={errors}
-            />
-          </div>
-        )}
-
-        {/* Step 5: Title/Description */}
-        {currentStep === 5 && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 5: Title & Description</h2>
-            <div>
-              <label className="block text-sm font-medium mb-2">Title *</label>
-          <input
-            {...register('title', { required: 'Title is required' })}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-            placeholder="Enter ad title"
-          />
-          {errors.title && (
-            <div className="text-red-500 text-sm mt-1">{errors.title.message as string}</div>
-          )}
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="block text-sm font-medium">Description *</label>
-            <button
-              type="button"
-              onClick={generateDescription}
-              disabled={isGeneratingDescription || !watch('title')}
-              className="inline-flex items-center gap-2 px-3 py-1.5 text-sm bg-primary-50 text-primary-700 rounded-lg hover:bg-primary-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            <form 
+              onSubmit={handleSubmit(onSubmit)} 
+              className="space-y-6"
             >
-              <FiZap className={`w-4 h-4 ${isGeneratingDescription ? 'animate-spin' : ''}`} />
-              {isGeneratingDescription ? 'Generating...' : 'Auto Generate'}
-            </button>
-          </div>
-          <textarea
-            {...register('description', { required: 'Description is required' })}
-            rows={6}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-            placeholder="Describe your item in detail or click 'Auto Generate' to create one automatically"
-          />
-          {errors.description && (
-            <div className="text-red-500 text-sm mt-1">{errors.description.message as string}</div>
-          )}
-        </div>
-          </div>
-        )}
-
-        {/* Step 6: Images */}
-        {currentStep === 6 && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 6: Upload Images</h2>
-            <div>
-              <label className="block text-sm font-medium mb-2">Images (Max 12) *</label>
-              <p className="text-sm text-gray-600 mb-4">
-                Images will be automatically renamed and alt text generated based on category before saving.
-              </p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                {previews.map((preview, index) => (
-                  <div key={index} className="relative">
-                    <img
-                      src={preview}
-                      alt={`Preview ${index + 1}`}
-                      className="w-full h-32 object-cover rounded-lg"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(index)}
-                      className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1"
-                    >
-                      <FiX className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-                {previews.length < 12 && (
-                  <label className="border-2 border-dashed border-gray-300 rounded-lg h-32 flex items-center justify-center cursor-pointer hover:border-primary-500">
-                    <FiUpload className="w-6 h-6 text-gray-400" />
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      onChange={handleImageChange}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
-              {images.length === 0 && (
-                <p className="text-red-500 text-sm">At least one image is required</p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Step 7: Price */}
-        {currentStep === 7 && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 7: Set Price</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">Price (₹) *</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  {...register('price', { required: 'Price is required', min: 0 })}
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  placeholder="0.00"
-                />
-                {errors.price && (
-                  <div className="text-red-500 text-sm mt-1">{errors.price.message as string}</div>
-                )}
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Original Price (₹)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  {...register('originalPrice', { min: 0 })}
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  placeholder="Original price (optional)"
-                />
-                <p className="text-xs text-gray-500 mt-1">Leave empty if no discount</p>
-              </div>
-            </div>
-            <div className="mt-4">
-              <label className="block text-sm font-medium mb-2">Condition</label>
-              <select
-                {...register('condition')}
-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+              {/* Section 1: Choose a category */}
+              <div 
+                ref={(el) => { stepRefs.current[0] = el; }}
+                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
               >
-                <option value="">Select Condition</option>
-                <option value="NEW">New</option>
-                <option value="LIKE_NEW">Like New</option>
-                <option value="USED">Used</option>
-                <option value="REFURBISHED">Refurbished</option>
-              </select>
-            </div>
-          </div>
-        )}
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-white text-xl font-bold">1</span>
+                  </div>
+                  <div className="flex-1">
+                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Choose a category</h2>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Main Category</label>
+                        <select
+                          {...register('categoryId', { required: 'Category is required' })}
+                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white"
+                          onChange={(e) => {
+                            setValue('categoryId', e.target.value);
+                            setValue('subcategoryId', ''); // Reset subcategory when category changes
+                          }}
+                        >
+                          <option value="">Select category</option>
+                          {categories?.map((cat: any) => (
+                            <option key={cat.id} value={cat.id}>
+                              {cat.name}
+                            </option>
+                          ))}
+                        </select>
+                        {errors.categoryId && (
+                          <div className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</div>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Sub-Category</label>
+                        <select
+                          {...register('subcategoryId', { required: 'Subcategory is required' })}
+                          className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 appearance-none bg-white ${
+                            errors.subcategoryId ? 'border-red-500' : 'border-gray-300'
+                          }`}
+                          disabled={!selectedCategory}
+                          onChange={(e) => {
+                            setValue('subcategoryId', e.target.value);
+                          }}
+                        >
+                          <option value="">Select sub-category</option>
+                          {selectedCategory?.subcategories?.map((sub: any) => (
+                            <option key={sub.id} value={sub.id}>
+                              {sub.name}
+                            </option>
+                          ))}
+                        </select>
+                        {errors.subcategoryId && (
+                          <p className="mt-1 text-sm text-red-600">{errors.subcategoryId.message as string}</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-        {/* Step 8: Location */}
-        {currentStep === 8 && (
-          <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-            <h2 className="text-xl font-bold mb-4">Step 8: Set Location</h2>
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-sm font-medium">Location Information</label>
-                <button
-                  type="button"
-                  onClick={detectLocation}
-                  disabled={isDetectingLocation}
-                  className="text-sm px-3 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+              {/* Section 2: Include some details */}
+              <div 
+                ref={(el) => { stepRefs.current[3] = el; }}
+                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
+              >
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-white text-xl font-bold">2</span>
+                  </div>
+                  <div className="flex-1">
+                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Include some details</h2>
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-sm font-medium text-gray-700">Ad Title</label>
+                          <span className="text-xs text-gray-500">{title?.length || 0}/70 characters</span>
+                        </div>
+                        <input
+                          {...register('title', { required: 'Title is required', maxLength: 70 })}
+                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                          placeholder="e.g. Brand new iPhone 14 Pro Max - 128GB"
+                        />
+                        {errors.title && (
+                          <div className="text-red-500 text-sm mt-1">{errors.title.message as string}</div>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
+                        <textarea
+                          {...register('description', { required: 'Description is required' })}
+                          rows={6}
+                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 resize-none"
+                          placeholder="Describe what you are selling. Include details like brand, condition, features, and reason for selling."
+                        />
+                        {errors.description && (
+                          <div className="text-red-500 text-sm mt-1">{errors.description.message as string}</div>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Set a Price</label>
+                        <div className="relative">
+                          <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-600 font-semibold">₹</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            {...register('price', { required: 'Price is required', min: 0 })}
+                            className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                            placeholder="0"
+                          />
+                        </div>
+                        {errors.price && (
+                          <div className="text-red-500 text-sm mt-1">{errors.price.message as string}</div>
+                        )}
+                      </div>
+
+                      {/* Specifications - Show when category and subcategory are selected */}
+                      {selectedCategory && selectedSubcategory && (
+                        <div className="mt-6 pt-6 border-t border-gray-200">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
+                          <CategoryAttributes
+                            categorySlug={selectedCategory.slug}
+                            subcategorySlug={selectedSubcategory.slug}
+                            register={register}
+                            watch={watch}
+                            setValue={setValue}
+                            errors={errors}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 3: Upload photos */}
+              <div 
+                ref={(el) => { stepRefs.current[4] = el; }}
+                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
+              >
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-white text-xl font-bold">3</span>
+                  </div>
+                  <div className="flex-1">
+                    <h2 className="text-xl font-semibold text-gray-900 mb-2">Upload photos</h2>
+                    <p className="text-sm text-gray-600 mb-4">Add up to 12 photos. First photo will be your cover.</p>
+                    <div className="grid grid-cols-4 gap-4">
+                      <label className="block">
+                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-orange-500 transition-colors cursor-pointer bg-gray-50">
+                          <div className="flex flex-col items-center">
+                            <FiCamera className="w-8 h-8 text-gray-400 mb-2" />
+                            <span className="text-sm text-gray-600 font-medium">Add Photo</span>
+                          </div>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={handleImageChange}
+                            className="hidden"
+                          />
+                        </div>
+                      </label>
+                      {previews.map((preview, index) => (
+                        <div key={index} className="relative group">
+                          <img
+                            src={preview}
+                            alt={`Preview ${index + 1}`}
+                            className="w-full h-32 object-cover rounded-lg border-2 border-gray-200"
+                          />
+                          {index === 0 && (
+                            <span className="absolute bottom-1 left-1 bg-white text-gray-900 text-xs font-semibold px-2 py-0.5 rounded">
+                              MAIN PHOTO
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => removeImage(index)}
+                            className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <FiX className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                      {Array.from({ length: Math.max(0, 3 - previews.length) }).map((_, index) => (
+                        <div key={`placeholder-${index}`} className="border-2 border-gray-200 rounded-lg p-6 flex items-center justify-center bg-gray-50">
+                          <div className="text-gray-400">
+                            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {images.length === 0 && (
+                      <p className="text-red-500 text-sm mt-2">At least one image is required</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 5: Confirm your location */}
+              <div 
+                ref={(el) => { stepRefs.current[6] = el; }}
+                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
+              >
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-white text-xl font-bold">5</span>
+                  </div>
+                  <div className="flex-1">
+                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Confirm your location</h2>
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-sm font-medium text-gray-700">City/Neighborhood</label>
+                          <button
+                            type="button"
+                            onClick={detectLocation}
+                            disabled={isDetectingLocation}
+                            className="text-sm px-3 py-1.5 bg-orange-100 text-orange-700 rounded-lg hover:bg-orange-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                          >
+                            {isDetectingLocation ? (
+                              <>
+                                <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-orange-700"></div>
+                                Detecting...
+                              </>
+                            ) : (
+                              <>
+                                <FiNavigation className="w-4 h-4" />
+                                Auto Detect
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <input
+                            ref={locationAutocompleteRef}
+                            type="text"
+                            {...register('city', { required: 'City is required' })}
+                            className={`w-full pl-10 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
+                              errors.city ? 'border-red-500' : 'border-gray-300'
+                            }`}
+                            placeholder="Type an address or location..."
+                          />
+                          <FiMapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                        </div>
+                        {errors.city && (
+                          <p className="mt-1 text-sm text-red-600">{errors.city.message as string}</p>
+                        )}
+                        {googlePlacesLoaded && (
+                          <p className="mt-1 text-xs text-gray-500">
+                            Start typing to search for an address. Select from suggestions to auto-fill location fields.
+                          </p>
+                        )}
+                      </div>
+                      
+                      {/* Additional location fields (auto-filled by autocomplete) */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">State</label>
+                          <input
+                            {...register('state', { required: 'State is required' })}
+                            className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                              errors.state ? 'border-red-500' : 'border-gray-300'
+                            }`}
+                            placeholder="State"
+                          />
+                          {errors.state && (
+                            <p className="mt-1 text-sm text-red-600">{errors.state.message as string}</p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Neighborhood (Optional)</label>
+                          <input
+                            {...register('neighbourhood')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="Neighborhood"
+                          />
+                        </div>
+                      </div>
+                      
+                      {/* Map placeholder */}
+                      <div className="mt-4 bg-gray-100 rounded-lg h-64 flex items-center justify-center border border-gray-200">
+                        <div className="text-center text-gray-500">
+                          <FiMapPin className="w-8 h-8 mx-auto mb-2" />
+                          <p className="text-sm">Map View</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 5: Review your details */}
+              <div 
+                ref={(el) => { stepRefs.current[7] = el; }}
+                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
+              >
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-white text-xl font-bold">5</span>
+                  </div>
+                  <div className="flex-1">
+                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Review your details</h2>
+                    {user && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center">
+                            {user?.avatar ? (
+                              <ImageWithFallback
+                                src={user.avatar}
+                                alt={user?.name || 'User'}
+                                width={48}
+                                height={48}
+                                className="w-12 h-12 rounded-full object-cover"
+                              />
+                            ) : (
+                              <FiUser className="w-6 h-6 text-orange-600" />
+                            )}
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-900">{user?.name || 'User'}</p>
+                            <p className="text-sm text-gray-600">{user?.phone || '+1 202 555 0192'}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 pt-4 border-t border-gray-200">
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              defaultChecked
+                              className="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+                            />
+                            <div>
+                              <p className="text-sm font-medium text-gray-900">Show my phone number in ads</p>
+                              <p className="text-xs text-gray-500">Buyers can contact you directly</p>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 7: Premium Features (Optional) */}
+              <div 
+                data-premium-section
+                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
+              >
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-white text-xl font-bold">7</span>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <h2 className="text-xl font-semibold text-gray-900">Premium Features (Optional)</h2>
+                      <span className="bg-blue-500 text-white text-xs font-semibold px-2 py-0.5 rounded">NEW</span>
+                    </div>
+                    
+                    {/* Info message when business package is active and free ads remain */}
+                    {hasActiveBusinessPackage && hasFreeAdsRemaining && (
+                      <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                        <div className="flex items-start gap-3">
+                          <FiInfo className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
+                          <div>
+                            <p className="text-sm font-medium text-green-800 mb-1">
+                              You have {freeAdsRemaining} free ad{freeAdsRemaining !== 1 ? 's' : ''} remaining
+                            </p>
+                            <p className="text-sm text-green-700">
+                              Your ads will be posted using your free ads. Premium features are available but not required. You can post your ad now without any payment.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Hide premium payment options if business package is active and free ads remain */}
+                    {hasActiveBusinessPackage && hasFreeAdsRemaining ? (
+                      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <p className="text-sm text-gray-600 text-center">
+                          Premium features are disabled because you have free ads available. You can post your ad without any payment.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm text-gray-600 mb-4">Enhance your ad visibility with premium features. Payment will be collected after posting.</p>
+                    
+                        {isLoadingOffers ? (
+                          <div className="flex items-center justify-center py-8">
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
+                            <span className="ml-3 text-gray-600">Loading premium options...</span>
+                          </div>
+                        ) : Array.isArray(premiumSettings) && premiumSettings.length > 0 ? (
+                          <>
+                            <p className="text-sm text-gray-600 mb-3">
+                              <strong>Select ONE premium type:</strong> Choose the premium feature that best suits your ad. Each type has different visibility benefits.
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              {premiumSettings.map((offer: any) => (
+                                <button
+                                  key={offer.id || offer.type}
+                                  type="button"
+                                  disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
+                                  onClick={() => {
+                                    if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
+                                    // Radio button behavior: always select (don't toggle off)
+                                    setSelectedPremium(offer.type);
+                                  }}
+                                  className={`relative p-4 border-2 rounded-lg text-left transition-all ${
+                                    selectedPremium === offer.type
+                                      ? 'border-orange-500 bg-orange-50 ring-2 ring-orange-200'
+                                      : 'border-gray-200 hover:border-gray-300'
+                                  } ${hasActiveBusinessPackage && hasFreeAdsRemaining ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                >
+                                  {selectedPremium === offer.type && (
+                                    <div className="absolute top-2 right-2">
+                                      <FiCheckCircle className="w-6 h-6 text-orange-500" />
+                                    </div>
+                                  )}
+                                  <div className="font-semibold text-gray-900 mb-1">{offer.name || offer.type}</div>
+                                  <div className="text-sm text-gray-600 mb-2">{offer.description || 'Enhance your ad visibility'}</div>
+                                  <div className="text-lg font-bold text-orange-600">₹{offer.price || 0}</div>
+                                  {offer.duration && (
+                                    <div className="text-xs text-gray-500 mt-1">Duration: {offer.duration} days</div>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                            {selectedPremium && (
+                              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                                <p className="text-sm text-blue-800">
+                                  <strong>Selected:</strong> {premiumSettings.find((o: any) => o.type === selectedPremium)?.name || selectedPremium}
+                                  {' - '}
+                                  {premiumSettings.find((o: any) => o.type === selectedPremium)?.description || 'Premium feature selected'}
+                                </p>
+                                <p className="text-xs text-blue-600 mt-1">
+                                  Payment will be collected after you submit the ad form.
+                                </p>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="p-4 bg-gray-50 rounded-lg text-center text-gray-600">
+                            No premium options available at the moment.
+                          </div>
+                        )}
+                      </>
+                    )}
+                    
+                    {/* Urgent Badge Option */}
+                    <div className="mt-4">
+                      <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${
+                        hasActiveBusinessPackage && hasFreeAdsRemaining 
+                          ? 'opacity-50 cursor-not-allowed border-gray-200' 
+                          : 'cursor-pointer hover:bg-gray-50 border-gray-200'
+                      }`}>
+                        <input
+                          type="checkbox"
+                          checked={isUrgent}
+                          disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
+                          onChange={(e) => {
+                            if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
+                            setIsUrgent(e.target.checked);
+                          }}
+                          className="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+                        />
+                        <div className="flex-1">
+                          <div className="font-semibold text-gray-900">Mark as Urgent</div>
+                          <div className="text-sm text-gray-600">Get priority placement in search results</div>
+                        </div>
+                        {Array.isArray(premiumSettings) && premiumSettings.find((o: any) => o.type === 'URGENT') && (
+                          <div className="text-lg font-bold text-orange-600">
+                            ₹{premiumSettings.find((o: any) => o.type === 'URGENT')?.price || 0}
+                          </div>
+                        )}
+                      </label>
+                    </div>
+                    
+                    {(selectedPremium || isUrgent) && !hasActiveBusinessPackage && !hasFreeAdsRemaining && (
+                      <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                        <p className="text-sm text-blue-800">
+                          <strong>Note:</strong> Your ad will be posted first. Payment for premium features will be collected after posting.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer Actions */}
+              <div className="flex justify-between items-center mt-8 pt-6 border-t border-gray-200">
+                <Link
+                  href="/my-ads"
+                  className="text-gray-600 hover:text-gray-800 font-medium transition-colors"
                 >
-                  {isDetectingLocation ? (
+                  Discard and Cancel
+                </Link>
+                <button
+                  type="submit"
+                  disabled={
+                    createAd.isPending || 
+                    createPaymentOrder.isPending
+                  }
+                  className="px-8 py-3 bg-orange-500 text-white rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+                >
+                  {createAd.isPending || createPaymentOrder.isPending ? (
                     <>
-                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-700"></div>
-                      Detecting...
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      Processing...
                     </>
                   ) : (
                     <>
-                      <FiNavigation className="w-3 h-3" />
-                      Auto Detect Location
+                      Post Now
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
                     </>
                   )}
                 </button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    State <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    {...register('state', { required: 'State is required' })}
-                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                      errors.state ? 'border-red-500' : ''
-                    }`}
-                    placeholder="State (use Auto Detect)"
-                  />
-                  {errors.state && (
-                    <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                      </svg>
-                      {errors.state.message}
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    City <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    {...register('city', { required: 'City is required' })}
-                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
-                      errors.city ? 'border-red-500' : ''
-                    }`}
-                    placeholder="City (use Auto Detect)"
-                  />
-                  {errors.city && (
-                    <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                      </svg>
-                      {errors.city.message}
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Neighbourhood</label>
-                  <input
-                    {...register('neighbourhood')}
-                    className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    placeholder="Neighbourhood (optional)"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
 
-        {/* Step Navigation Buttons */}
-        {currentStep < TOTAL_STEPS && (
-          <div className="flex justify-between gap-4 mt-6">
-            <button
-              type="button"
-              onClick={goToPreviousStep}
-              disabled={currentStep === 1}
-              className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              onClick={goToNextStep}
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
-            >
-              Next
-            </button>
-          </div>
-        )}
+            </form>
+        </div>
+      </div>
 
-        {/* Submit Button - Only show on final step (Step 8) */}
-        {currentStep === TOTAL_STEPS && (
-          <div className="mt-6">
-            <div className="flex justify-between gap-4 mb-4">
-              <button
-                type="button"
-                onClick={goToPreviousStep}
-                className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold hover:bg-gray-300 transition-colors"
-              >
-                Previous
-              </button>
-            </div>
-            <button
-              type="submit"
-              disabled={
-                createAd.isPending || 
-                createPaymentOrder.isPending
-              }
-              onClick={(e) => {
-                console.log('🔘 Submit button clicked on final step', { 
-                  disabled: createAd.isPending || createPaymentOrder.isPending || (adLimitStatus?.hasLimit && !adLimitStatus?.canPost),
-                  hasPremiumFeatures,
-                  requiresPayment
-                });
-              }}
-              className="w-full bg-primary-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {createAd.isPending || createPaymentOrder.isPending ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  Processing...
-                </>
-              ) : (
-                <>
-                  {hasPremiumFeatures && !hasActiveBusinessPackage && <FiCreditCard className="w-5 h-5" />}
-                  {hasPremiumFeatures && hasActiveBusinessPackage && <FiBriefcase className="w-5 h-5" />}
-                  {buttonText}
-                </>
-              )}
-            </button>
-          </div>
-        )}
-
-      {/* Legacy single-step form preserved in git history */}
-      </form>
-
-      {/* Interstitial Ad - After Action */}
-      {showAfterActionAd && (
-        <InterstitialAd
-          position="after_action"
-          trigger={showAfterActionAd}
-          onClose={() => {
-            setShowAfterActionAd(false);
-            // Redirect immediately when interstitial ad is closed
-            console.log('🔄 Interstitial ad closed, redirecting to /my-ads');
-            router.push('/my-ads');
-          }}
-        />
-      )}
 
       {/* Payment Required Modal - Free Ads Limit Reached */}
-      {showPaymentRequiredModal && paymentRequiredError && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-md w-full p-6 shadow-xl">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold text-gray-900">Payment Required</h2>
-              <button
-                onClick={() => {
-                  setShowPaymentRequiredModal(false);
-                  setPaymentRequiredError(null);
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <FiX className="w-6 h-6" />
-              </button>
-            </div>
-            
-            <div className="mb-6">
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
-                <div className="flex items-start gap-3">
-                  <FiAlertCircle className="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <p className="text-yellow-800 font-medium mb-1">Free Ads Limit Reached</p>
-                    <p className="text-yellow-700 text-sm">
-                      You have used {paymentRequiredError.freeAdsUsed || 0} of {paymentRequiredError.freeAdsLimit || 2} free ads.
-                    </p>
+      {showPaymentRequiredModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden">
+            {/* Header with Gradient */}
+            <div className="bg-gradient-to-r from-orange-500 to-red-500 p-6 text-white">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm">
+                    <FiAlertCircle className="w-6 h-6" />
                   </div>
+                  <h2 className="text-2xl font-bold">Payment Required</h2>
                 </div>
-              </div>
-              
-              <p className="text-gray-700 mb-4">
-                {paymentRequiredError.message || 'Please purchase a Business Package or Premium Options to continue posting ads.'}
-              </p>
-              
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
-                <p className="text-sm text-blue-800 font-medium">
-                  💡 <strong>Quick Option:</strong> Select a premium feature below and click "Post Ad" to continue with payment.
-                </p>
-              </div>
-              
-              <div className="space-y-3">
                 <button
                   onClick={() => {
                     setShowPaymentRequiredModal(false);
-                    // Scroll to premium section
+                    setPaymentRequiredError(null);
+                  }}
+                  className="text-white hover:text-gray-200 transition-colors p-1 rounded-full hover:bg-white/20"
+                >
+                  <FiX className="w-6 h-6" />
+                </button>
+              </div>
+              <p className="text-orange-50 text-sm">Continue posting with premium features or business package</p>
+            </div>
+            
+            <div className="p-6">
+              {/* Free Ads Usage Progress */}
+              {paymentRequiredError && (
+                <div className="mb-6">
+                  <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-xl p-5 mb-4">
+                    <div className="flex items-start gap-3 mb-4">
+                      <div className="w-10 h-10 bg-yellow-500 rounded-full flex items-center justify-center flex-shrink-0">
+                        <FiAlertCircle className="w-5 h-5 text-white" />
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="text-lg font-bold text-yellow-900 mb-1">Free Ads Limit Reached</h3>
+                        <p className="text-yellow-800 text-sm">
+                          You have used <span className="font-bold">{paymentRequiredError.freeAdsUsed || 0}</span> of <span className="font-bold">{paymentRequiredError.freeAdsLimit || 2}</span> free ads this month.
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {/* Progress Bar */}
+                    <div className="mt-4">
+                      <div className="flex items-center justify-between text-xs text-yellow-800 mb-2">
+                        <span>Free Ads Used</span>
+                        <span>{paymentRequiredError.freeAdsUsed || 0} / {paymentRequiredError.freeAdsLimit || 2}</span>
+                      </div>
+                      <div className="w-full bg-yellow-200 rounded-full h-3 overflow-hidden">
+                        <div 
+                          className="bg-gradient-to-r from-yellow-500 to-orange-500 h-full rounded-full transition-all duration-500"
+                          style={{ 
+                            width: `${Math.min(((paymentRequiredError.freeAdsUsed || 0) / (paymentRequiredError.freeAdsLimit || 2)) * 100, 100)}%` 
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Message */}
+              <div className="mb-6">
+                <p className="text-gray-700 leading-relaxed">
+                  {paymentRequiredError?.message || 'To continue posting ads, choose one of the options below:'}
+                </p>
+              </div>
+              
+              {/* Options Cards */}
+              <div className="space-y-3 mb-6">
+                {/* Option 1: Premium Features */}
+                <button
+                  onClick={() => {
+                    setShowPaymentRequiredModal(false);
                     setTimeout(() => {
                       const premiumSection = document.querySelector('[data-premium-section]');
                       if (premiumSection) {
                         premiumSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        // Highlight the section
                         premiumSection.classList.add('ring-4', 'ring-yellow-400');
                         setTimeout(() => {
                           premiumSection.classList.remove('ring-4', 'ring-yellow-400');
@@ -1711,74 +2227,60 @@ export default function PostAdPage() {
                       }
                     }, 100);
                   }}
-                  className="w-full bg-yellow-500 text-white px-6 py-3 rounded-lg font-semibold hover:bg-yellow-600 flex items-center justify-center gap-2 transition-colors"
+                  className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 text-white px-6 py-4 rounded-xl font-semibold hover:from-yellow-600 hover:to-orange-600 flex items-center justify-center gap-3 transition-all shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
                 >
                   <FiStar className="w-5 h-5" />
-                  Select Premium Features
+                  <span>Select Premium Features</span>
+                  <span className="text-xs bg-white/20 px-2 py-1 rounded-full">Quick</span>
                 </button>
                 
+                {/* Option 2: Business Package */}
                 <button
                   onClick={() => {
                     setShowPaymentRequiredModal(false);
                     router.push('/business-package');
                   }}
-                  className="w-full bg-primary-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary-700 flex items-center justify-center gap-2 transition-colors"
+                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-4 rounded-xl font-semibold hover:from-indigo-700 hover:to-purple-700 flex items-center justify-center gap-3 transition-all shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
                 >
                   <FiBriefcase className="w-5 h-5" />
-                  Purchase Business Package
+                  <span>Purchase Business Package</span>
+                  <span className="text-xs bg-white/20 px-2 py-1 rounded-full">Best Value</span>
                 </button>
                 
-                <button
-                  onClick={async () => {
-                    if (!adFormData) {
-                      toast.error('Form data is missing. Please try submitting the form again.');
+                {/* Option 3: Continue with Payment */}
+                {selectedPremium && (
+                  <button
+                    className="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white px-6 py-4 rounded-xl font-semibold hover:from-green-700 hover:to-emerald-700 flex items-center justify-center gap-3 transition-all shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
+                    onClick={async () => {
+                      if (!adFormData) {
+                        toast.error('Form data is missing. Please try submitting the form again.');
+                        setShowPaymentRequiredModal(false);
+                        return;
+                      }
+                      
                       setShowPaymentRequiredModal(false);
-                      return;
-                    }
-                    
-                    // Check if premium feature is selected
-                    if (!selectedPremium && !isUrgent) {
-                      toast.error('Please select a premium feature below to continue posting.', { duration: 5000 });
-                      setShowPaymentRequiredModal(false);
-                      // Scroll to premium options section
-                      setTimeout(() => {
-                        const premiumSection = document.querySelector('[data-premium-section]');
-                        if (premiumSection) {
-                          premiumSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                          // Highlight the section
-                          premiumSection.classList.add('ring-4', 'ring-yellow-400');
-                          setTimeout(() => {
-                            premiumSection.classList.remove('ring-4', 'ring-yellow-400');
-                          }, 3000);
-                        }
-                      }, 100);
-                      return;
-                    }
-                    
-                    setShowPaymentRequiredModal(false);
-                    console.log('💰 Creating payment order with data:', adFormData);
-                    console.log('💰 Premium features selected:', { selectedPremium, isUrgent });
-                    
-                    // Create payment order for ad posting (with optional premium features)
-                    const orderData = {
-                      title: adFormData.title,
-                      description: adFormData.description,
-                      price: adFormData.price,
-                      originalPrice: adFormData.originalPrice,
-                      discount: adFormData.discount,
-                      condition: adFormData.condition,
-                      categoryId: adFormData.categoryId,
-                      subcategoryId: adFormData.subcategoryId,
-                      state: adFormData.state,
-                      city: adFormData.city,
-                      neighbourhood: adFormData.neighbourhood,
-                      attributes: adFormData.attributes || {},
-                      premiumType: selectedPremium || null,
-                      isUrgent: isUrgent || false,
-                    };
-                    
-                    console.log('📤 Sending payment order request:', orderData);
-                    createPaymentOrder.mutate(orderData, {
+                      console.log('💰 Creating payment order with data:', adFormData);
+                      console.log('💰 Premium features selected:', { selectedPremium, isUrgent });
+                      
+                      const orderData = {
+                        title: adFormData.title,
+                        description: adFormData.description,
+                        price: adFormData.price,
+                        originalPrice: adFormData.originalPrice,
+                        discount: adFormData.discount,
+                        condition: adFormData.condition,
+                        categoryId: adFormData.categoryId,
+                        subcategoryId: adFormData.subcategoryId,
+                        state: adFormData.state,
+                        city: adFormData.city,
+                        neighbourhood: adFormData.neighbourhood,
+                        attributes: adFormData.attributes || {},
+                        premiumType: selectedPremium || null,
+                        isUrgent: isUrgent || false,
+                      };
+                      
+                      console.log('📤 Sending payment order request:', orderData);
+                      createPaymentOrder.mutate(orderData, {
                         onSuccess: (response) => {
                           console.log('✅ Payment order response received:', response);
                           console.log('   requiresPayment:', response.requiresPayment);
@@ -1812,10 +2314,9 @@ export default function PostAdPage() {
                                 toast.success('Ad posted successfully! Waiting for approval.');
                                 queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
                                 queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
-                                setShowAfterActionAd(true);
                                 setTimeout(() => {
                                   router.push('/my-ads');
-                                }, 3000);
+                                }, 1500);
                               },
                               onError: (error: any) => {
                                 const errorData = error.response?.data;
@@ -1868,53 +2369,108 @@ export default function PostAdPage() {
                           setShowPaymentRequiredModal(true);
                         }
                       });
-                  }}
-                  className="w-full bg-gray-100 text-gray-700 px-6 py-3 rounded-lg font-semibold hover:bg-gray-200 flex items-center justify-center gap-2 transition-colors"
-                >
-                  <FiCreditCard className="w-5 h-5" />
-                  {selectedPremium || isUrgent ? 'Pay to Post this Ad (with Premium Features)' : 'Select Premium Features First'}
-                </button>
-                {!selectedPremium && !isUrgent && (
-                  <p className="text-xs text-gray-500 text-center mt-2">
-                    ⚠️ Please select a premium feature above before clicking this button
-                  </p>
+                    }}
+                  >
+                    <FiCreditCard className="w-5 h-5" />
+                    <span>Continue with Payment</span>
+                  </button>
                 )}
               </div>
+              
+              {/* Info Box */}
+              <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4 mb-4">
+                <div className="flex items-start gap-3">
+                  <FiInfo className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm text-blue-800 font-medium mb-1">💡 Quick Tip</p>
+                    <p className="text-xs text-blue-700">
+                      {selectedPremium 
+                        ? 'You have selected a premium feature. Click "Continue with Payment" to proceed.'
+                        : 'Select a premium feature from the form below, then click "Post Ad" to continue with payment.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Cancel Button */}
+              <button
+                onClick={() => {
+                  setShowPaymentRequiredModal(false);
+                  setPaymentRequiredError(null);
+                }}
+                className="w-full border-2 border-gray-300 text-gray-700 px-6 py-3 rounded-xl font-semibold hover:bg-gray-50 transition-all"
+              >
+                Cancel
+              </button>
             </div>
-            
-            <button
-              onClick={() => {
-                setShowPaymentRequiredModal(false);
-                setPaymentRequiredError(null);
-              }}
-              className="w-full text-gray-600 hover:text-gray-800 py-2 text-sm"
-            >
-              Cancel
-            </button>
           </div>
         </div>
       )}
 
       {/* Payment Modal */}
-      {showPaymentModal && paymentOrder && paymentOrder.razorpayOrder && (
-        <PaymentModal
-          isOpen={showPaymentModal}
-          onClose={() => setShowPaymentModal(false)}
-          amount={
-            // Use amount from razorpayOrder (already in paise from Razorpay) converted to INR
-            // This ensures exact match with the order amount
-            paymentOrder.razorpayOrder?.amount 
-              ? paymentOrder.razorpayOrder.amount / 100 
-              : (paymentOrder.amount || 49)
+      {showPaymentModal && paymentOrder && paymentOrder.razorpayOrder && (() => {
+        // Get premium offer details
+        const premiumOffer = premiumSettings?.find((offer: any) => offer.type === selectedPremium);
+        const premiumPrice = premiumOffer?.price || 0;
+        const baseAdPrice = paymentOrder.amount ? (paymentOrder.razorpayOrder.amount / 100) - premiumPrice : 0;
+        const totalAmount = paymentOrder.razorpayOrder?.amount 
+          ? paymentOrder.razorpayOrder.amount / 100 
+          : (paymentOrder.amount || 49);
+
+        // Build enhanced package details
+        const packageDetails: any = {
+          name: selectedPremium 
+            ? (selectedPremium === 'TOP' ? 'Top Ad Package' : selectedPremium === 'FEATURED' ? 'Featured Ad Package' : 'Bump Up Package')
+            : 'Ad Posting',
+          type: selectedPremium ? 'PREMIUM_AD' : 'AD_POSTING',
+          premiumType: selectedPremium as 'TOP' | 'FEATURED' | 'BUMP_UP' | undefined,
+          validity: selectedPremium 
+            ? (selectedPremium === 'TOP' ? 7 : selectedPremium === 'FEATURED' ? 14 : 1)
+            : undefined,
+          validityUnit: selectedPremium === 'BUMP_UP' ? 'hours' : selectedPremium ? 'days' : undefined,
+          benefits: selectedPremium 
+            ? (selectedPremium === 'TOP' 
+                ? ['Top placement in search results', 'Maximum visibility & reach', 'Featured badge on ad', 'Priority in category listings', '7 days premium visibility']
+                : selectedPremium === 'FEATURED'
+                ? ['Featured placement in listings', 'Enhanced visibility', 'Featured badge on ad', 'Better search ranking', '14 days premium visibility']
+                : ['Bump ad to top of listings', '24-hour visibility boost', 'Immediate top placement', 'Quick visibility increase'])
+            : ['Post your ad on SellIt', 'Reach thousands of buyers', 'Manage your listings'],
+          visibilityLevel: selectedPremium 
+            ? (selectedPremium === 'TOP' ? 'Maximum' : selectedPremium === 'FEATURED' ? 'Enhanced' : 'Boosted')
+            : 'Standard',
+          adTitle: title || 'Your Ad',
+          priceBreakdown: {
+            baseAdPrice: baseAdPrice > 0 ? baseAdPrice : undefined,
+            premiumPrice: premiumPrice > 0 ? premiumPrice : undefined,
+            total: totalAmount
           }
-          orderId={paymentOrder.razorpayOrder.id}
-          razorpayKey={paymentOrder.razorpayOrder.key}
-          razorpayOrderAmount={paymentOrder.razorpayOrder.amount} // Pass exact amount in paise from order
-          onSuccess={handlePaymentSuccess}
-          onError={handlePaymentError}
-          description="Complete payment to post your ad"
-        />
-      )}
+        };
+
+
+        return (
+          <PaymentModal
+            isOpen={showPaymentModal}
+            onClose={() => setShowPaymentModal(false)}
+            amount={totalAmount}
+            orderId={paymentOrder.razorpayOrder.id}
+            razorpayKey={paymentOrder.razorpayOrder.key}
+            razorpayOrderAmount={paymentOrder.razorpayOrder.amount}
+            onSuccess={handlePaymentSuccess}
+            onError={handlePaymentError}
+            description={selectedPremium 
+              ? `Complete payment to post your ${selectedPremium === 'TOP' ? 'Top' : selectedPremium === 'FEATURED' ? 'Featured' : 'Bump Up'} ad`
+              : 'Complete payment to post your ad'}
+            packageDetails={packageDetails}
+            successAction={{
+              label: 'Post Ad Now',
+              onClick: () => {
+                setShowPaymentModal(false);
+                // Payment success will trigger handlePaymentSuccess which will post the ad
+              }
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

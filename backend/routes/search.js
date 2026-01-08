@@ -4,6 +4,7 @@ const { PrismaClient } = require('@prisma/client');
 const { searchAds, autocomplete } = require('../services/meilisearch');
 const { saveSearchQuery } = require('../services/searchAlerts');
 const { authenticate } = require('../middleware/auth');
+const { rankAds } = require('../services/adRankingService');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -48,19 +49,23 @@ router.get('/',
         radius = 50, // Default 50km radius
       } = req.query;
 
+      // IMPORTANT: If search keyword exists, ignore category/subcategory filters (search overrides category)
+      const shouldIgnoreCategory = q && q.trim();
+      
       // Resolve category, subcategory, and location IDs
       const [categoryObj, subcategoryObj, locationObj] = await Promise.all([
-        category ? prisma.category.findUnique({ where: { slug: category }, select: { id: true } }) : null,
-        subcategory ? prisma.subcategory.findFirst({ where: { slug: subcategory }, select: { id: true } }) : null,
+        (!shouldIgnoreCategory && category) ? prisma.category.findUnique({ where: { slug: category }, select: { id: true } }) : null,
+        (!shouldIgnoreCategory && subcategory) ? prisma.subcategory.findFirst({ where: { slug: subcategory }, select: { id: true } }) : null,
         location ? prisma.location.findUnique({ where: { slug: location }, select: { id: true } }) : null,
       ]);
 
       // Search using Meilisearch
+      // Only pass category/subcategory if search doesn't exist
       const searchResults = await searchAds(q, {
         page: parseInt(page),
         limit: parseInt(limit),
-        categoryId: categoryObj?.id,
-        subcategoryId: subcategoryObj?.id,
+        categoryId: (!shouldIgnoreCategory && categoryObj) ? categoryObj.id : undefined,
+        subcategoryId: (!shouldIgnoreCategory && subcategoryObj) ? subcategoryObj.id : undefined,
         locationId: locationObj?.id,
         minPrice: minPrice ? parseFloat(minPrice) : undefined,
         maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
@@ -85,19 +90,34 @@ router.get('/',
         });
       }
 
+      // Fetch more ads for ranking (to allow proper rotation)
+      const fetchLimit = Math.min(parseInt(limit) * 3, 100);
+      const extendedAdIds = searchResults.hits.slice(0, fetchLimit).map(hit => hit.id);
+      
       const ads = await prisma.ad.findMany({
         where: {
-          id: { in: adIds },
+          id: { in: extendedAdIds },
           status: 'APPROVED',
         },
-        include: {
-          user: {
-            select: {
-              id: true,
-              name: true,
-              avatar: true,
-            },
-          },
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          price: true,
+          originalPrice: true,
+          discount: true,
+          condition: true,
+          images: true,
+          status: true,
+          isPremium: true,
+          premiumType: true,
+          isUrgent: true,
+          views: true,
+          expiresAt: true,
+          createdAt: true,
+          packageType: true,
+          lastShownAt: true,
+          userId: true,
           category: {
             select: {
               id: true,
@@ -121,12 +141,23 @@ router.get('/',
               longitude: true,
             },
           },
+          user: {
+            select: {
+              id: true,
+              name: true,
+              avatar: true,
+            },
+          },
         },
       });
 
-      // Maintain search result order
-      const adsMap = new Map(ads.map(ad => [ad.id, ad]));
-      let orderedAds = adIds.map(id => adsMap.get(id)).filter(Boolean);
+      // Apply package-based ranking
+      const rankedAds = await rankAds(ads, { updateLastShown: true });
+      
+      // Maintain search relevance by preserving original order within package groups
+      // But prioritize by package type
+      const adsMap = new Map(rankedAds.map(ad => [ad.id, ad]));
+      const orderedAds = rankedAds.slice(0, parseInt(limit));
 
       // Calculate distance if latitude/longitude provided
       if (latitude && longitude) {
@@ -179,40 +210,37 @@ router.get('/',
           });
       }
 
-      // Post-process to prioritize premium ads
-      const premiumAds = orderedAds.filter(ad => ad.isPremium);
-      const regularAds = orderedAds.filter(ad => !ad.isPremium);
-      
-      // Sort premium ads by type (TOP > FEATURED > BUMP_UP), then by distance if available
-      premiumAds.sort((a, b) => {
-        // First sort by premium type
-        const typeOrder = { TOP: 0, FEATURED: 1, BUMP_UP: 2 };
-        const aOrder = typeOrder[a.premiumType] ?? 3;
-        const bOrder = typeOrder[b.premiumType] ?? 3;
-        if (aOrder !== bOrder) return aOrder - bOrder;
-        
-        // Then sort by distance if available
-        if (a.distance !== null && b.distance !== null) {
-          return a.distance - b.distance;
-        }
-        if (a.distance !== null) return -1;
-        if (b.distance !== null) return 1;
-        return 0;
-      });
-
-      // Sort regular ads by distance if available
+      // Distance-based sorting within package groups (if location provided)
+      let finalAds = orderedAds;
       if (latitude && longitude) {
-        regularAds.sort((a, b) => {
-          if (a.distance !== null && b.distance !== null) {
-            return a.distance - b.distance;
-          }
-          if (a.distance !== null) return -1;
-          if (b.distance !== null) return 1;
-          return 0;
+        // Group by package priority and sort by distance within each group
+        const packageGroups = {};
+        orderedAds.forEach(ad => {
+          const priority = ad.packageType || 1;
+          if (!packageGroups[priority]) packageGroups[priority] = [];
+          packageGroups[priority].push(ad);
         });
+        
+        // Sort each group by distance
+        Object.keys(packageGroups).forEach(priority => {
+          packageGroups[priority].sort((a, b) => {
+            if (a.distance !== null && b.distance !== null) {
+              return a.distance - b.distance;
+            }
+            if (a.distance !== null) return -1;
+            if (b.distance !== null) return 1;
+            return 0;
+          });
+        });
+        
+        // Recombine in priority order
+        finalAds = [
+          ...(packageGroups[4] || []),
+          ...(packageGroups[3] || []),
+          ...(packageGroups[2] || []),
+          ...(packageGroups[1] || [])
+        ];
       }
-
-      const finalAds = [...premiumAds, ...regularAds];
 
       // Save search query for alerts (async, don't wait)
       if (q && q.trim().length > 0) {

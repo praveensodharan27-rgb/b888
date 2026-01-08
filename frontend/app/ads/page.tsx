@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, Suspense, useEffect, useRef } from 'react';
+import { useState, Suspense, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useAds } from '@/hooks/useAds';
 import { useInfiniteAds } from '@/hooks/useInfiniteAds';
 import dynamic from 'next/dynamic';
-import AdCard from '@/components/AdCard';
+import AdCardOLX from '@/components/AdCardOLX';
+import EmptyState from '@/components/EmptyState';
 
 // Lazy load heavy components
 const Filters = dynamic(() => import('@/components/Filters'), {
@@ -30,7 +30,6 @@ function AdsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [filters, setFilters] = useState<{
-    page: number;
     limit: number;
     category?: string;
     subcategory?: string;
@@ -44,7 +43,6 @@ function AdsPageContent() {
     longitude?: string;
     radius?: string;
   }>({
-    page: parseInt(searchParams.get('page') || '1'),
     limit: 20,
     category: searchParams.get('category') || undefined,
     subcategory: searchParams.get('subcategory') || undefined,
@@ -60,35 +58,75 @@ function AdsPageContent() {
   });
 
   const [isFiltersExpanded, setIsFiltersExpanded] = useState(true);
-  const [useInfiniteScroll, setUseInfiniteScroll] = useState(true);
 
+  // Sync URL searchParams to filters state when URL changes
+  useEffect(() => {
+    const categoryFromUrl = searchParams.get('category') || undefined;
+    const subcategoryFromUrl = searchParams.get('subcategory') || undefined;
+    const locationFromUrl = searchParams.get('location') || undefined;
+    const minPriceFromUrl = searchParams.get('minPrice') || undefined;
+    const maxPriceFromUrl = searchParams.get('maxPrice') || undefined;
+    const searchFromUrl = searchParams.get('search') || undefined;
+    const conditionFromUrl = searchParams.get('condition') || undefined;
+    const sortFromUrl = (searchParams.get('sort') || 'newest') as 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
+    
+    // Update filters from URL - this will trigger a refetch via React Query
+    setFilters({
+      limit: 20,
+      category: categoryFromUrl,
+      subcategory: subcategoryFromUrl,
+      location: locationFromUrl,
+      minPrice: minPriceFromUrl,
+      maxPrice: maxPriceFromUrl,
+      search: searchFromUrl,
+      condition: conditionFromUrl,
+      sort: sortFromUrl,
+      latitude: searchParams.get('latitude') || undefined,
+      longitude: searchParams.get('longitude') || undefined,
+      radius: searchParams.get('radius') || '50',
+    });
+  }, [
+    searchParams.get('category'),
+    searchParams.get('subcategory'),
+    searchParams.get('location'),
+    searchParams.get('minPrice'),
+    searchParams.get('maxPrice'),
+    searchParams.get('search'),
+    searchParams.get('condition'),
+    searchParams.get('sort'),
+  ]); // Re-run when any search param changes
 
-  // Use infinite scroll for better performance
+  // Use infinite scroll (lazy loading) for better performance
   const infiniteQuery = useInfiniteAds(filters);
-  const regularQuery = useAds(filters);
-  
-  // Choose which query to use
-  const query = useInfiniteScroll ? infiniteQuery : regularQuery;
   
   // Flatten infinite query pages
-  const adsData = useInfiniteScroll && infiniteQuery.data
+  const adsData = infiniteQuery.data && infiniteQuery.data.pages && infiniteQuery.data.pages.length > 0
     ? {
-        ads: infiniteQuery.data.pages.flatMap(page => page.ads || []),
+        ads: infiniteQuery.data.pages.flatMap(page => (page.ads && Array.isArray(page.ads)) ? page.ads : []),
         pagination: infiniteQuery.data.pages[infiniteQuery.data.pages.length - 1]?.pagination || { page: 1, limit: 20, total: 0, pages: 1 }
       }
-    : (regularQuery.data?.ads && regularQuery.data.ads.length > 0) 
-      ? regularQuery.data 
-      : { 
-          ads: dummyAds, 
-          pagination: { page: 1, limit: 20, total: dummyAds.length, pages: 1 } 
-        };
+    : { 
+        ads: [], 
+        pagination: { page: 1, limit: 20, total: 0, pages: 1 } 
+      };
   
-  const isLoading = useInfiniteScroll 
-    ? (infiniteQuery.isLoading || infiniteQuery.isFetchingNextPage)
-    : regularQuery.isLoading;
-  const isError = useInfiniteScroll ? infiniteQuery.isError : regularQuery.isError;
-  const hasNextPage = useInfiniteScroll ? infiniteQuery.hasNextPage : false;
-  const fetchNextPage = useInfiniteScroll ? infiniteQuery.fetchNextPage : () => {};
+  const isLoading = infiniteQuery.isLoading || infiniteQuery.isFetchingNextPage;
+  const isError = infiniteQuery.isError;
+  const hasNextPage = infiniteQuery.hasNextPage;
+  const fetchNextPage = infiniteQuery.fetchNextPage;
+  
+  // Debug logging
+  useEffect(() => {
+    if (infiniteQuery.data) {
+      console.log('📊 Infinite Query Data:', {
+        pages: infiniteQuery.data.pages.length,
+        totalAds: adsData.ads.length,
+        hasNextPage,
+        isLoading,
+        isError
+      });
+    }
+  }, [infiniteQuery.data, adsData.ads.length, hasNextPage, isLoading, isError]);
 
   // Intersection observer for infinite scroll
   const { elementRef: loadMoreRef, isIntersecting } = useIntersectionObserver({
@@ -105,21 +143,36 @@ function AdsPageContent() {
   }, [isIntersecting, hasNextPage, isLoading, fetchNextPage]);
 
   const handleFilterChange = (newFilters: any) => {
-    const updatedFilters = { ...filters, ...newFilters, page: 1 };
+    const updatedFilters = { ...filters, ...newFilters };
+    
+    // IMPORTANT: If search keyword exists, remove category and subcategory filters (search overrides category)
+    if (updatedFilters.search && updatedFilters.search.trim()) {
+      updatedFilters.category = '';
+      updatedFilters.subcategory = '';
+    }
+    
     setFilters(updatedFilters);
     
-    // Update URL with new filters
+    // Update URL with new filters - only include non-empty values
     const params = new URLSearchParams();
     Object.entries(updatedFilters).forEach(([key, value]) => {
-      if (value && key !== 'page' && key !== 'limit') {
+      if (value && value !== '' && key !== 'limit') {
         params.append(key, String(value));
       }
     });
-    router.push(`/ads?${params.toString()}`, { scroll: false });
+    const queryString = params.toString();
+    router.push(queryString ? `/ads?${queryString}` : '/ads', { scroll: false });
   };
 
   const handleRemoveFilter = (key: string) => {
-    handleFilterChange({ [key]: '' });
+    // Remove the filter by setting it to empty string
+    // handleFilterChange will automatically exclude empty values from URL
+    if (key === 'price') {
+      // Price filter removes both min and max
+      handleFilterChange({ minPrice: '', maxPrice: '' });
+    } else {
+      handleFilterChange({ [key]: '' });
+    }
   };
 
   const handleClearAllFilters = () => {
@@ -135,18 +188,26 @@ function AdsPageContent() {
   };
 
   const handleSearch = (searchTerm: string) => {
-    handleFilterChange({ search: searchTerm });
-  };
-
-  const handlePageChange = (page: number) => {
-    setFilters({ ...filters, page });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // When search exists, remove category and subcategory filters (search overrides category)
+    if (searchTerm && searchTerm.trim()) {
+      handleFilterChange({ 
+        search: searchTerm,
+        category: '', // Clear category when searching
+        subcategory: '' // Clear subcategory when searching
+      });
+    } else {
+      // If search is cleared, keep other filters
+      handleFilterChange({ search: searchTerm });
+    }
   };
 
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-8">
-        <Banners position="search" />
+        {/* Banners at the top */}
+        <div className="mb-6">
+          <Banners position="search" />
+        </div>
         
         {/* Advanced Search Bar */}
         <div className="mb-6">
@@ -219,9 +280,9 @@ function AdsPageContent() {
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
                   {adsData.ads.map((ad: any, index: number) => (
-                    <AdCard key={ad.id} ad={ad} priority={index < 6} />
+                    <AdCardOLX key={ad.id} ad={ad} />
                   ))}
                 </div>
 
@@ -232,65 +293,23 @@ function AdsPageContent() {
                   </div>
                 )}
 
-                {/* Infinite Scroll Load More Trigger */}
-                {useInfiniteScroll && (
-                  <div ref={loadMoreRef} className="py-8">
-                    {hasNextPage && (
-                      <div className="text-center">
-                        {isLoading ? (
-                          <div className="flex items-center justify-center gap-2 text-gray-500">
-                            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
-                            <span>Loading more ads...</span>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => fetchNextPage()}
-                            className="bg-primary-600 text-white px-6 py-2 rounded-lg hover:bg-primary-700"
-                          >
-                            Load More
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {!hasNextPage && adsData.ads.length > 0 && (
-                      <div className="text-center text-gray-500 py-4">
-                        <p>No more ads to load</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Pagination - Only show if not using infinite scroll */}
-                {!useInfiniteScroll && adsData.pagination && adsData.pagination.pages > 1 && (
-                  <div className="flex justify-center gap-2 mt-8">
-                    {Array.from({ length: adsData.pagination.pages }, (_, i) => i + 1).map((page) => (
-                      <button
-                        key={page}
-                        onClick={() => handlePageChange(page)}
-                        className={`px-4 py-2 rounded transition-colors ${
-                          page === filters.page
-                            ? 'bg-primary-600 text-white'
-                            : 'bg-white text-gray-700 hover:bg-gray-100 border'
-                        }`}
-                      >
-                        {page}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                
-                {/* Toggle between infinite scroll and pagination */}
-                <div className="mt-4 text-center">
-                  <button
-                    onClick={() => {
-                      setUseInfiniteScroll(!useInfiniteScroll);
-                      // Reset to page 1 when switching
-                      handlePageChange(1);
-                    }}
-                    className="text-sm text-gray-500 hover:text-primary-600"
-                  >
-                    {useInfiniteScroll ? 'Switch to Pagination' : 'Switch to Infinite Scroll'}
-                  </button>
+                {/* Lazy Loading - Infinite Scroll Trigger */}
+                <div ref={loadMoreRef} className="py-8">
+                  {hasNextPage && (
+                    <div className="text-center">
+                      {isLoading && (
+                        <div className="flex items-center justify-center gap-2 text-gray-500">
+                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
+                          <span>Loading more ads...</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!hasNextPage && adsData.ads.length > 0 && (
+                    <div className="text-center text-gray-500 py-4">
+                      <p>No more ads to load</p>
+                    </div>
+                  )}
                 </div>
               </>
             )}

@@ -162,6 +162,27 @@ export default function PremiumFeatureButton({
             setPaymentOrder(null);
           }}
           description={`Purchase ${selectedType} premium feature`}
+          packageDetails={selectedType ? {
+            name: selectedType === 'TOP' ? 'Top Ad' : selectedType === 'FEATURED' ? 'Featured Ad' : 'Bump Up Ad',
+            type: 'PREMIUM_AD',
+            premiumType: selectedType as 'TOP' | 'FEATURED' | 'BUMP_UP',
+            validity: selectedType === 'TOP' ? 7 : selectedType === 'FEATURED' ? 14 : 1,
+            validityUnit: selectedType === 'BUMP_UP' ? 'hours' : 'days',
+            benefits: selectedType === 'TOP' 
+              ? ['Top placement in search results', 'Maximum visibility', 'Featured badge']
+              : selectedType === 'FEATURED'
+              ? ['Featured placement', 'Enhanced visibility', 'Featured badge']
+              : ['Bump ad to top', '24-hour boost', 'Immediate visibility'],
+            visibilityLevel: selectedType === 'TOP' ? 'Maximum' : selectedType === 'FEATURED' ? 'Enhanced' : 'Boosted'
+          } : undefined}
+          successAction={{
+            label: 'View My Ads',
+            onClick: () => {
+              setShowModal(false);
+              setPaymentOrder(null);
+              window.location.href = '/my-ads';
+            }
+          }}
         />
       )}
     </>

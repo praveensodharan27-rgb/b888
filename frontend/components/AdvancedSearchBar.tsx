@@ -68,6 +68,7 @@ export default function AdvancedSearchBar({
       if (onSearch) {
         onSearch(search.trim());
       } else {
+        // Search overrides category - clear category from URL
         router.push(`/ads?search=${encodeURIComponent(search.trim())}`);
       }
       setShowSuggestions(false);
@@ -79,6 +80,7 @@ export default function AdvancedSearchBar({
     if (onSearch) {
       onSearch(suggestion);
     } else {
+      // Search overrides category - clear category from URL
       router.push(`/ads?search=${encodeURIComponent(suggestion)}`);
     }
     setShowSuggestions(false);
@@ -93,7 +95,7 @@ export default function AdvancedSearchBar({
     <div className="relative w-full">
       <form onSubmit={handleSubmit} className="relative">
         <div className="relative flex items-center">
-          <FiSearch className="absolute left-4 text-gray-400 w-5 h-5" />
+          <FiSearch className="absolute left-3 text-gray-400 w-5 h-5" />
           <input
             ref={searchRef}
             type="text"
@@ -106,21 +108,21 @@ export default function AdvancedSearchBar({
               setIsFocused(true);
               setShowSuggestions(true);
             }}
-            placeholder="Search for anything... (e.g., iPhone 13, Honda City, Sofa)"
-            className="w-full pl-12 pr-12 py-4 text-lg border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent shadow-sm"
+            placeholder="Search for anything..."
+            className="w-full pl-10 pr-20 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm"
           />
           {search && (
             <button
               type="button"
               onClick={handleClear}
-              className="absolute right-14 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute right-12 text-gray-400 hover:text-gray-600 transition-colors"
             >
-              <FiX className="w-5 h-5" />
+              <FiX className="w-4 h-4" />
             </button>
           )}
           <button
             type="submit"
-            className="absolute right-2 bg-primary-600 text-white px-6 py-2 rounded-lg hover:bg-primary-700 transition-colors font-semibold"
+            className="absolute right-1 bg-blue-600 text-white px-4 py-1.5 rounded-md hover:bg-blue-700 transition-colors text-sm font-medium"
           >
             Search
           </button>

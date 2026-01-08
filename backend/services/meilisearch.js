@@ -204,18 +204,22 @@ async function searchAds(query, options = {}) {
     // Build filter string
     const filters = [];
     
-    // Status filter (always filter by status)
+    // Status filter (always filter by status and exclude INACTIVE)
     filters.push(`status = "${status}"`);
+    filters.push(`status != "INACTIVE"`); // Explicitly exclude INACTIVE ads
     
     // Expired ads filter
     const now = new Date().toISOString();
     filters.push(`expiresAt = null OR expiresAt > "${now}"`);
     
-    if (categoryId) {
+    // IMPORTANT: If search query exists, ignore category/subcategory filters (search overrides category)
+    const hasSearchQuery = query && query.trim();
+    
+    if (!hasSearchQuery && categoryId) {
       filters.push(`categoryId = "${categoryId}"`);
     }
     
-    if (subcategoryId) {
+    if (!hasSearchQuery && subcategoryId) {
       filters.push(`subcategoryId = "${subcategoryId}"`);
     }
     
@@ -310,7 +314,7 @@ async function autocomplete(query, limit = 5) {
     const results = await index.search(query.trim(), {
       limit: limit,
       attributesToRetrieve: ['id', 'title', 'category', 'subcategory', 'location'],
-      filter: 'status = "APPROVED"',
+      filter: 'status = "APPROVED" AND status != "INACTIVE"', // Exclude INACTIVE ads
     });
 
     // Extract unique suggestions from results
@@ -354,7 +358,8 @@ async function reindexAllAds(prisma) {
     while (hasMore) {
       const ads = await prisma.ad.findMany({
         where: {
-          status: 'APPROVED',
+          // Only show APPROVED ads (excludes INACTIVE)
+          status: 'APPROVED'
         },
         include: {
           category: { select: { id: true, name: true } },

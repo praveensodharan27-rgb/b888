@@ -12,13 +12,35 @@ interface LoginModalProps {
   onSwitchToSignup?: () => void;
 }
 
+// Array of dark green/nature background images (free from Pexels/Unsplash)
+const BACKGROUND_IMAGES = [
+  'https://images.pexels.com/photos/1072824/pexels-photo-1072824.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/1440476/pexels-photo-1440476.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/167699/pexels-photo-167699.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/167698/pexels-photo-167698.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/1179229/pexels-photo-1179229.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/1323712/pexels-photo-1323712.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?q=80&w=1920&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=1920&auto=format&fit=crop',
+];
+
 export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginModalProps) {
   const { login, sendOTP, verifyOTP } = useAuth();
   const [mode, setMode] = useState<'password' | 'otp'>('password');
   const [otpSent, setOtpSent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [backgroundImage, setBackgroundImage] = useState<string>('');
   const { register, handleSubmit, formState: { errors }, reset, setError } = useForm();
+
+  // Change background image every time modal opens
+  useEffect(() => {
+    if (isOpen) {
+      // Randomly select a new image each time modal opens
+      const randomIndex = Math.floor(Math.random() * BACKGROUND_IMAGES.length);
+      setBackgroundImage(BACKGROUND_IMAGES[randomIndex]);
+    }
+  }, [isOpen]);
 
   // Reset form when modal opens/closes
   useEffect(() => {
@@ -205,40 +227,50 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
           <div className="flex flex-col lg:flex-row min-h-[600px]">
             {/* Left Side - Image Background */}
             <div 
-              className="hidden lg:block lg:w-1/2 bg-cover bg-center relative"
+              className="hidden lg:block lg:w-1/2 bg-cover bg-center relative bg-gradient-to-br from-green-900 via-green-800 to-green-900"
               style={{
-                backgroundImage: "url('https://images.unsplash.com/photo-1556742502-ec7c0e9f34b1?q=80&w=2187&auto=format&fit=crop')",
+                backgroundImage: backgroundImage 
+                  ? `url('${backgroundImage}'), linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))`
+                  : 'linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))',
+                transition: 'background-image 0.5s ease-in-out',
               }}
             >
               {/* Overlay */}
-              <div className="absolute inset-0 bg-gradient-to-br from-purple-900/90 via-purple-800/85 to-purple-900/90"></div>
+              <div className="absolute inset-0 bg-gradient-to-br from-green-900/90 via-green-800/85 to-green-900/90"></div>
               
               {/* Content */}
               <div className="relative z-10 h-full flex flex-col justify-between p-12 text-white">
                 {/* Logo and Tagline */}
-                <div>
-                  <h1 className="text-4xl font-bold mb-2">SellIt.</h1>
-                  <p className="text-purple-200 text-lg">Buy & Sell Anything Today</p>
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl font-bold text-white">
+                    SellIt
+                  </span>
+                  <p className="text-green-200 text-lg">Buy & Sell Anything Today</p>
                 </div>
 
                 {/* Center Message */}
                 <div className="text-center">
+                  <div className="flex justify-center mb-4">
+                    <span className="text-4xl font-bold text-white mb-4">
+                      SellIt
+                    </span>
+                  </div>
                   <h2 className="text-3xl font-bold mb-4">Welcome Back!</h2>
-                  <p className="text-purple-100 text-lg">
+                  <p className="text-green-100 text-lg">
                     Access your account and continue shopping
                   </p>
                   <div className="mt-8 flex justify-center gap-6">
                     <div className="text-center">
                       <div className="text-3xl font-bold">1000+</div>
-                      <div className="text-sm text-purple-200">Active Listings</div>
+                      <div className="text-sm text-green-200">Active Listings</div>
                     </div>
                     <div className="text-center">
                       <div className="text-3xl font-bold">500+</div>
-                      <div className="text-sm text-purple-200">Happy Users</div>
+                      <div className="text-sm text-green-200">Happy Users</div>
                     </div>
                     <div className="text-center">
                       <div className="text-3xl font-bold">50+</div>
-                      <div className="text-sm text-purple-200">Categories</div>
+                      <div className="text-sm text-green-200">Categories</div>
                     </div>
                   </div>
                 </div>
@@ -272,7 +304,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
               <div className="w-full max-w-md">
             {/* Title */}
             <h2 className="text-3xl font-bold text-gray-900 mb-2">
-              Log in to SellIt.
+              Log in
             </h2>
             <p className="text-gray-600 mb-8">
               Welcome back! login with your data that you entered during registration
@@ -364,7 +396,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full bg-gradient-to-r from-orange-500 to-orange-600 text-white py-3 rounded-lg font-semibold hover:from-orange-600 hover:to-orange-700 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                    className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-3 rounded-lg font-semibold hover:from-blue-600 hover:to-blue-700 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   >
                     {isSubmitting ? (
                       <span className="flex items-center justify-center gap-2">

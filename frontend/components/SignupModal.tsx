@@ -14,6 +14,18 @@ interface SignupModalProps {
   onSwitchToLogin?: () => void;
 }
 
+// Array of dark green/nature background images (free from Pexels/Unsplash)
+const BACKGROUND_IMAGES = [
+  'https://images.pexels.com/photos/1072824/pexels-photo-1072824.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/1440476/pexels-photo-1440476.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/167699/pexels-photo-167699.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/167698/pexels-photo-167698.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/1179229/pexels-photo-1179229.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.pexels.com/photos/1323712/pexels-photo-1323712.jpeg?auto=compress&cs=tinysrgb&w=1920',
+  'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?q=80&w=1920&auto=format&fit=crop',
+  'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=1920&auto=format&fit=crop',
+];
+
 export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) {
   const router = useRouter();
   const { register: registerUser, sendOTP, verifyOTP } = useAuth();
@@ -21,7 +33,17 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
   const [formData, setFormData] = useState<any>({});
   const [receiveUpdates, setReceiveUpdates] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [backgroundImage, setBackgroundImage] = useState<string>('');
   const { register, handleSubmit, formState: { errors }, watch, setValue, reset } = useForm();
+
+  // Change background image every time modal opens
+  useEffect(() => {
+    if (isOpen) {
+      // Randomly select a new image each time modal opens
+      const randomIndex = Math.floor(Math.random() * BACKGROUND_IMAGES.length);
+      setBackgroundImage(BACKGROUND_IMAGES[randomIndex]);
+    }
+  }, [isOpen]);
 
   // Reset form when modal opens/closes
   useEffect(() => {
@@ -143,58 +165,34 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
           <div className="flex flex-col lg:flex-row">
             {/* Left Side - Image Background */}
             <div 
-              className="hidden lg:block lg:w-1/2 bg-cover bg-center relative"
+              className="hidden lg:block lg:w-1/2 bg-cover bg-center relative bg-gradient-to-br from-green-900 via-green-800 to-green-900"
               style={{
-                backgroundImage: "url('https://images.unsplash.com/photo-1522071820081-009f0129c71c?q=80&w=2070&auto=format&fit=crop')",
+                backgroundImage: backgroundImage 
+                  ? `url('${backgroundImage}'), linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))`
+                  : 'linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))',
+                transition: 'background-image 0.5s ease-in-out',
               }}
             >
               {/* Overlay */}
-              <div className="absolute inset-0 bg-gradient-to-br from-orange-600/90 via-orange-500/85 to-orange-600/90"></div>
+              <div className="absolute inset-0 bg-gradient-to-br from-green-900/90 via-green-800/85 to-green-900/90"></div>
               
               {/* Content */}
               <div className="relative z-10 h-full flex flex-col justify-between p-12 text-white">
-                {/* Logo */}
-                <div>
-                  <h1 className="text-4xl font-bold mb-2">SellIt.</h1>
-                  <p className="text-orange-100 text-lg">Join thousands of buyers and sellers</p>
-                </div>
+                {/* Top Area - Empty for visual balance */}
+                <div></div>
 
-                {/* Center Message */}
-                <div className="text-center">
-                  <h2 className="text-3xl font-bold mb-4">Start Selling Today!</h2>
-                  <p className="text-orange-50 text-lg mb-8">
-                    Create your account and reach buyers instantly
+                {/* Center Message - Empty for visual balance */}
+                <div></div>
+
+                {/* Bottom - Logo and Text */}
+                <div className="flex flex-col items-start gap-3">
+                  <span className="text-4xl font-bold text-white">
+                    SellIt
+                  </span>
+                  <h2 className="text-3xl font-bold">Join the Green Revolution</h2>
+                  <p className="text-green-50 text-base">
+                    Connect with eco-conscious innovators and build a sustainable future together.
                   </p>
-                  <div className="flex flex-col gap-4 items-center">
-                    <div className="flex items-center gap-3 bg-white/20 backdrop-blur-sm px-6 py-3 rounded-full">
-                      <span className="text-2xl">🎯</span>
-                      <span className="text-sm font-semibold">Easy to use</span>
-                    </div>
-                    <div className="flex items-center gap-3 bg-white/20 backdrop-blur-sm px-6 py-3 rounded-full">
-                      <span className="text-2xl">🔒</span>
-                      <span className="text-sm font-semibold">100% Secure</span>
-                    </div>
-                    <div className="flex items-center gap-3 bg-white/20 backdrop-blur-sm px-6 py-3 rounded-full">
-                      <span className="text-2xl">⚡</span>
-                      <span className="text-sm font-semibold">Quick setup</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Bottom Stats */}
-                <div className="flex justify-center gap-8">
-                  <div className="text-center">
-                    <div className="text-2xl font-bold">2K+</div>
-                    <div className="text-xs text-orange-100">Active Users</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-2xl font-bold">5K+</div>
-                    <div className="text-xs text-orange-100">Listings</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-2xl font-bold">98%</div>
-                    <div className="text-xs text-orange-100">Satisfaction</div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -326,7 +324,7 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full bg-orange-500 hover:bg-orange-600 text-white px-6 py-3.5 rounded-lg font-bold text-lg transition-all shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full bg-blue-500 hover:bg-blue-600 text-white px-6 py-3.5 rounded-lg font-bold text-lg transition-all shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isSubmitting ? 'CREATING ACCOUNT...' : 'SIGN UP'}
                   </button>
