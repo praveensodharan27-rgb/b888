@@ -64,6 +64,31 @@ export default function PostAdPage() {
   const [isPaymentVerified, setIsPaymentVerified] = useState(false); // Track if payment is verified
   const [googlePlacesLoaded, setGooglePlacesLoaded] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
+  // Location Autocomplete (Typeahead) states
+  const [locationQuery, setLocationQuery] = useState('');
+  const [locationSuggestions, setLocationSuggestions] = useState<any[]>([]);
+  const [showLocationDropdown, setShowLocationDropdown] = useState(false);
+  const [isLoadingLocations, setIsLoadingLocations] = useState(false);
+  const [selectedLocationIndex, setSelectedLocationIndex] = useState(-1);
+  const locationDropdownRef = useRef<HTMLDivElement>(null);
+  
+  // State dropdown states
+  const [stateQuery, setStateQuery] = useState('');
+  const [stateSuggestions, setStateSuggestions] = useState<string[]>([]);
+  const [showStateDropdown, setShowStateDropdown] = useState(false);
+  const [isLoadingStates, setIsLoadingStates] = useState(false);
+  const [selectedStateIndex, setSelectedStateIndex] = useState(-1);
+  const stateDropdownRef = useRef<HTMLDivElement>(null);
+  const stateInputRef = useRef<HTMLInputElement>(null);
+  
+  // Neighborhood dropdown states
+  const [neighborhoodQuery, setNeighborhoodQuery] = useState('');
+  const [neighborhoodSuggestions, setNeighborhoodSuggestions] = useState<any[]>([]);
+  const [showNeighborhoodDropdown, setShowNeighborhoodDropdown] = useState(false);
+  const [isLoadingNeighborhoods, setIsLoadingNeighborhoods] = useState(false);
+  const [selectedNeighborhoodIndex, setSelectedNeighborhoodIndex] = useState(-1);
+  const neighborhoodDropdownRef = useRef<HTMLDivElement>(null);
+  const neighborhoodInputRef = useRef<HTMLInputElement>(null);
   
   // 3. ALL useRef hooks
   const locationAutocompleteRef = useRef<HTMLInputElement>(null);
@@ -413,10 +438,12 @@ export default function PostAdPage() {
     script.async = true;
     script.defer = true;
     script.onload = () => {
+      console.log('✅ Google Places API loaded successfully');
       setGooglePlacesLoaded(true);
     };
     script.onerror = () => {
-      console.error('Failed to load Google Places API');
+      console.error('❌ Failed to load Google Places API');
+      toast.error('Failed to load location search. Please refresh the page.');
     };
     document.head.appendChild(script);
   }, []);
@@ -433,17 +460,59 @@ export default function PostAdPage() {
     }
 
     if (typeof window === 'undefined' || !window.google || !window.google.maps || !window.google.maps.places) {
+      console.warn('⚠️ Google Places API not available');
       return;
     }
+
+    console.log('🔧 Initializing Google Places Autocomplete...');
 
     // Create autocomplete instance
     const autocomplete = new window.google.maps.places.Autocomplete(
       locationAutocompleteRef.current,
       {
-        // No types restriction - allows all place types (addresses, cities, establishments, etc.)
+        // Restrict to India for better results
+        componentRestrictions: { country: 'in' },
+        // Allow all place types (addresses, cities, establishments, etc.)
         fields: ['place_id', 'geometry', 'formatted_address', 'address_components'],
+        types: ['geocode', 'establishment'], // Include both addresses and places
       }
     );
+
+    console.log('✅ Google Places Autocomplete initialized');
+
+    // Function to ensure dropdown z-index is set
+    const ensureDropdownZIndex = () => {
+      const pacContainer = document.querySelector('.pac-container') as HTMLElement;
+      if (pacContainer) {
+        pacContainer.style.zIndex = '9999';
+        pacContainer.style.position = 'absolute';
+      }
+    };
+
+    // Set z-index immediately
+    ensureDropdownZIndex();
+
+    // Watch for dropdown appearance using MutationObserver
+    const observer = new MutationObserver(() => {
+      ensureDropdownZIndex();
+    });
+
+    // Observe the document body for changes
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    // Also set z-index on input focus (when dropdown is likely to appear)
+    const handleFocus = () => {
+      ensureDropdownZIndex();
+      // Also check after a short delay to catch the dropdown when it appears
+      setTimeout(ensureDropdownZIndex, 100);
+    };
+
+    if (locationAutocompleteRef.current) {
+      locationAutocompleteRef.current.addEventListener('focus', handleFocus);
+    }
 
     autocompleteInstanceRef.current = autocomplete;
 
@@ -482,12 +551,21 @@ export default function PostAdPage() {
       // Auto-populate form fields
       if (state) {
         setValue('state', state);
+        setStateQuery(state);
       }
       if (city) {
         setValue('city', city);
       }
       if (neighbourhood) {
         setValue('neighbourhood', neighbourhood);
+        setNeighborhoodQuery(neighbourhood);
+      }
+
+      // Update location query state for typeahead
+      if (city) {
+        setLocationQuery(city);
+      } else if (place.formatted_address) {
+        setLocationQuery(place.formatted_address);
       }
 
       // Also update the autocomplete input with city name or formatted address
@@ -499,6 +577,10 @@ export default function PostAdPage() {
         }
       }
 
+      // Hide location dropdown after Google Places selection
+      setShowLocationDropdown(false);
+      setLocationSuggestions([]);
+
       if (state || city || neighbourhood) {
         toast.success('Location information auto-filled successfully!');
       }
@@ -508,8 +590,297 @@ export default function PostAdPage() {
       if (autocompleteInstanceRef.current && typeof window !== 'undefined' && window.google) {
         window.google.maps.event.clearInstanceListeners(autocompleteInstanceRef.current);
       }
+      if (locationAutocompleteRef.current) {
+        locationAutocompleteRef.current.removeEventListener('focus', handleFocus);
+      }
+      observer.disconnect();
     };
   }, [googlePlacesLoaded, setValue]);
+
+  // Location Autocomplete (Typeahead) - Debounced search
+  useEffect(() => {
+    if (!locationQuery || locationQuery.trim().length < 2) {
+      setLocationSuggestions([]);
+      setShowLocationDropdown(false);
+      return;
+    }
+
+    setIsLoadingLocations(true);
+    setShowLocationDropdown(true);
+
+    const searchTimeout = setTimeout(async () => {
+      try {
+        const response = await api.get('/locations/mobile/search', {
+          params: { q: locationQuery.trim(), limit: 10 }
+        });
+        
+        if (response.data.success && response.data.locations) {
+          setLocationSuggestions(response.data.locations);
+          setSelectedLocationIndex(-1);
+        } else {
+          setLocationSuggestions([]);
+        }
+      } catch (error) {
+        console.error('Location search error:', error);
+        setLocationSuggestions([]);
+      } finally {
+        setIsLoadingLocations(false);
+      }
+    }, 300); // 300ms debounce
+
+    return () => clearTimeout(searchTimeout);
+  }, [locationQuery]);
+
+  // Handle location selection
+  const handleLocationSelect = (location: any) => {
+    // Update input value
+    const locationName = location.name || location.city || '';
+    setLocationQuery(locationName);
+    setValue('city', locationName);
+
+    // Auto-populate form fields
+    if (location.state) {
+      setValue('state', location.state);
+      setStateQuery(location.state);
+    }
+    if (location.city) {
+      setValue('city', location.city);
+    }
+    if (location.neighbourhood) {
+      setValue('neighbourhood', location.neighbourhood);
+      setNeighborhoodQuery(location.neighbourhood);
+    }
+
+    // Hide dropdown
+    setShowLocationDropdown(false);
+    setLocationSuggestions([]);
+    setSelectedLocationIndex(-1);
+
+    // Also update Google Places input if it exists
+    if (locationAutocompleteRef.current) {
+      locationAutocompleteRef.current.value = locationName;
+    }
+  };
+
+  // Handle keyboard navigation for location dropdown
+  const handleLocationKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showLocationDropdown || locationSuggestions.length === 0) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedLocationIndex((prev) => {
+          const newIndex = prev < locationSuggestions.length - 1 ? prev + 1 : prev;
+          // Scroll selected item into view
+          setTimeout(() => {
+            const selectedElement = locationDropdownRef.current?.querySelector(
+              `li:nth-child(${newIndex + 1})`
+            ) as HTMLElement;
+            if (selectedElement) {
+              selectedElement.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+          }, 0);
+          return newIndex;
+        });
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedLocationIndex((prev) => {
+          const newIndex = prev > 0 ? prev - 1 : -1;
+          // Scroll selected item into view
+          if (newIndex >= 0) {
+            setTimeout(() => {
+              const selectedElement = locationDropdownRef.current?.querySelector(
+                `li:nth-child(${newIndex + 1})`
+              ) as HTMLElement;
+              if (selectedElement) {
+                selectedElement.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+              }
+            }, 0);
+          }
+          return newIndex;
+        });
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedLocationIndex >= 0 && selectedLocationIndex < locationSuggestions.length) {
+          handleLocationSelect(locationSuggestions[selectedLocationIndex]);
+        }
+        break;
+      case 'Escape':
+        setShowLocationDropdown(false);
+        setLocationSuggestions([]);
+        setSelectedLocationIndex(-1);
+        break;
+    }
+  };
+
+  // Store all states for filtering
+  const [allStates, setAllStates] = useState<string[]>([]);
+
+  // Fetch all states on mount
+  useEffect(() => {
+    const fetchStates = async () => {
+      try {
+        const response = await api.get('/locations/states');
+        if (response.data.success && response.data.states) {
+          setAllStates(response.data.states);
+          setStateSuggestions(response.data.states);
+        }
+      } catch (error) {
+        console.error('Failed to fetch states:', error);
+      }
+    };
+    fetchStates();
+  }, []);
+
+  // Filter states based on query
+  useEffect(() => {
+    if (!stateQuery || stateQuery.trim().length === 0) {
+      // Show all states if query is empty
+      setStateSuggestions(allStates);
+      return;
+    }
+
+    const searchTimeout = setTimeout(() => {
+      const query = stateQuery.trim().toLowerCase();
+      const filtered = allStates.filter((state: string) =>
+        state.toLowerCase().includes(query)
+      );
+      setStateSuggestions(filtered);
+      setShowStateDropdown(true);
+    }, 200);
+
+    return () => clearTimeout(searchTimeout);
+  }, [stateQuery, allStates]);
+
+  // Watch state value for neighborhood filtering
+  const currentState = watch('state');
+
+  // Fetch neighborhoods based on state and query
+  useEffect(() => {
+    // Only fetch if dropdown is shown or query exists
+    if (!showNeighborhoodDropdown && (!neighborhoodQuery || neighborhoodQuery.trim().length < 1)) {
+      return;
+    }
+
+    if (!neighborhoodQuery || neighborhoodQuery.trim().length < 1) {
+      // If query is empty but dropdown should show, fetch all neighborhoods for current state
+      setIsLoadingNeighborhoods(true);
+      const params: any = { limit: 50 };
+      if (currentState) {
+        params.state = currentState;
+      }
+      
+      api.get('/locations/neighborhoods', { params })
+        .then(response => {
+          if (response.data.success && response.data.neighborhoods) {
+            setNeighborhoodSuggestions(response.data.neighborhoods);
+          } else {
+            setNeighborhoodSuggestions([]);
+          }
+        })
+        .catch(error => {
+          console.error('Failed to fetch neighborhoods:', error);
+          setNeighborhoodSuggestions([]);
+        })
+        .finally(() => {
+          setIsLoadingNeighborhoods(false);
+        });
+      return;
+    }
+
+    setIsLoadingNeighborhoods(true);
+    const searchTimeout = setTimeout(async () => {
+      try {
+        const params: any = { q: neighborhoodQuery.trim(), limit: 20 };
+        if (currentState) {
+          params.state = currentState;
+        }
+        
+        const response = await api.get('/locations/neighborhoods', { params });
+        if (response.data.success && response.data.neighborhoods) {
+          setNeighborhoodSuggestions(response.data.neighborhoods);
+          setShowNeighborhoodDropdown(true);
+        } else {
+          setNeighborhoodSuggestions([]);
+        }
+      } catch (error) {
+        console.error('Failed to fetch neighborhoods:', error);
+        setNeighborhoodSuggestions([]);
+      } finally {
+        setIsLoadingNeighborhoods(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(searchTimeout);
+  }, [neighborhoodQuery, currentState, showNeighborhoodDropdown]);
+
+  // Handle state selection
+  const handleStateSelect = (state: string) => {
+    setStateQuery(state);
+    setValue('state', state);
+    setShowStateDropdown(false);
+    setSelectedStateIndex(-1);
+    
+    // Clear neighborhood if state changes
+    if (watch('state') !== state) {
+      setValue('neighbourhood', '');
+      setNeighborhoodQuery('');
+    }
+  };
+
+  // Handle neighborhood selection
+  const handleNeighborhoodSelect = (neighborhood: any) => {
+    const name = neighborhood.neighbourhood || '';
+    setNeighborhoodQuery(name);
+    setValue('neighbourhood', name);
+    setShowNeighborhoodDropdown(false);
+    setSelectedNeighborhoodIndex(-1);
+  };
+
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      // Location dropdown
+      if (
+        locationDropdownRef.current &&
+        !locationDropdownRef.current.contains(event.target as Node) &&
+        locationAutocompleteRef.current &&
+        !locationAutocompleteRef.current.contains(event.target as Node)
+      ) {
+        setShowLocationDropdown(false);
+      }
+      
+      // State dropdown
+      if (
+        stateDropdownRef.current &&
+        !stateDropdownRef.current.contains(event.target as Node) &&
+        stateInputRef.current &&
+        !stateInputRef.current.contains(event.target as Node)
+      ) {
+        setShowStateDropdown(false);
+      }
+      
+      // Neighborhood dropdown
+      if (
+        neighborhoodDropdownRef.current &&
+        !neighborhoodDropdownRef.current.contains(event.target as Node) &&
+        neighborhoodInputRef.current &&
+        !neighborhoodInputRef.current.contains(event.target as Node)
+      ) {
+        setShowNeighborhoodDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
   
   // NEW SYSTEM: Check if user has active business package with ads remaining
   // IMPORTANT: Only check if adLimitStatus is loaded to avoid showing premium options during loading
@@ -789,6 +1160,11 @@ export default function PostAdPage() {
           if (detectedLocation.state) locationParts.push(detectedLocation.state);
           const locationString = locationParts.join(', ');
           
+          // Update location query state for typeahead
+          if (detectedLocation.city) {
+            setLocationQuery(detectedLocation.city);
+          }
+          
           // Update autocomplete input field
           if (locationAutocompleteRef.current && locationString) {
             locationAutocompleteRef.current.value = locationString;
@@ -796,13 +1172,18 @@ export default function PostAdPage() {
           
           if (detectedLocation.state) {
             setValue('state', detectedLocation.state);
+            setStateQuery(detectedLocation.state);
           }
           if (detectedLocation.city) {
             setValue('city', detectedLocation.city);
           }
           if (detectedLocation.neighbourhood) {
             setValue('neighbourhood', detectedLocation.neighbourhood);
+            setNeighborhoodQuery(detectedLocation.neighbourhood);
           }
+          
+          // Hide location dropdown after auto-detect
+          setShowLocationDropdown(false);
           
           if (detectedLocation.state || detectedLocation.city || detectedLocation.neighbourhood) {
             toast.success('Location information auto-filled successfully!');
@@ -1819,6 +2200,7 @@ export default function PostAdPage() {
               <div 
                 ref={(el) => { stepRefs.current[6] = el; }}
                 className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
+                style={{ overflow: 'visible' }}
               >
                 <div className="flex items-start gap-4 mb-6">
                   <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
@@ -1849,17 +2231,85 @@ export default function PostAdPage() {
                             )}
                           </button>
                         </div>
-                        <div className="relative">
+                        <div className="relative" style={{ zIndex: 1000 }}>
                           <input
                             ref={locationAutocompleteRef}
                             type="text"
                             {...register('city', { required: 'City is required' })}
+                            autoComplete="off"
+                            value={locationQuery || watch('city') || ''}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setLocationQuery(value);
+                              setValue('city', value, { shouldValidate: false });
+                              if (value.length >= 2) {
+                                setShowLocationDropdown(true);
+                              } else {
+                                setShowLocationDropdown(false);
+                                setLocationSuggestions([]);
+                              }
+                            }}
+                            onFocus={() => {
+                              if (locationSuggestions.length > 0 || locationQuery.length >= 2) {
+                                setShowLocationDropdown(true);
+                              }
+                            }}
+                            onKeyDown={handleLocationKeyDown}
                             className={`w-full pl-10 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
                               errors.city ? 'border-red-500' : 'border-gray-300'
                             }`}
                             placeholder="Type an address or location..."
                           />
-                          <FiMapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                          <FiMapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
+                          
+                          {/* Location Autocomplete Dropdown */}
+                          {showLocationDropdown && (locationSuggestions.length > 0 || isLoadingLocations) && (
+                            <div 
+                              ref={locationDropdownRef}
+                              className="absolute z-[10001] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto"
+                            >
+                              {isLoadingLocations ? (
+                                <div className="p-4 text-center text-gray-500">
+                                  <div className="inline-block animate-spin rounded-full h-5 w-5 border-b-2 border-orange-500"></div>
+                                  <span className="ml-2 text-sm">Searching locations...</span>
+                                </div>
+                              ) : (
+                                <ul className="py-1">
+                                  {locationSuggestions.map((location, index) => (
+                                    <li
+                                      key={location.id || index}
+                                      onClick={() => handleLocationSelect(location)}
+                                      onMouseEnter={() => setSelectedLocationIndex(index)}
+                                      className={`px-4 py-3 cursor-pointer transition-colors ${
+                                        index === selectedLocationIndex
+                                          ? 'bg-orange-50 border-l-4 border-orange-500'
+                                          : 'hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      <div className="flex items-start gap-3">
+                                        <FiMapPin className="w-5 h-5 text-orange-500 mt-0.5 flex-shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                          <div className="font-medium text-gray-900 truncate">
+                                            {location.name || location.city || 'Unknown Location'}
+                                          </div>
+                                          <div className="text-sm text-gray-500 mt-0.5">
+                                            {[
+                                              location.neighbourhood,
+                                              location.city,
+                                              location.state,
+                                              location.pincode
+                                            ]
+                                              .filter(Boolean)
+                                              .join(', ')}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          )}
                         </div>
                         {errors.city && (
                           <p className="mt-1 text-sm text-red-600">{errors.city.message as string}</p>
@@ -1873,26 +2323,216 @@ export default function PostAdPage() {
                       
                       {/* Additional location fields (auto-filled by autocomplete) */}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
+                        {/* State Dropdown */}
+                        <div className="relative" style={{ zIndex: 999 }}>
                           <label className="block text-sm font-medium text-gray-700 mb-2">State</label>
-                          <input
-                            {...register('state', { required: 'State is required' })}
-                            className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
-                              errors.state ? 'border-red-500' : 'border-gray-300'
-                            }`}
-                            placeholder="State"
-                          />
+                          <div ref={stateDropdownRef}>
+                            <input
+                              ref={stateInputRef}
+                              {...register('state', { required: 'State is required' })}
+                              type="text"
+                              autoComplete="off"
+                              value={stateQuery || watch('state') || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setStateQuery(value);
+                                setValue('state', value, { shouldValidate: false });
+                                setShowStateDropdown(true);
+                              }}
+                              onFocus={() => {
+                                if (stateSuggestions.length > 0) {
+                                  setShowStateDropdown(true);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (!showStateDropdown || stateSuggestions.length === 0) {
+                                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                                    e.preventDefault();
+                                  }
+                                  return;
+                                }
+                                switch (e.key) {
+                                  case 'ArrowDown':
+                                    e.preventDefault();
+                                    setSelectedStateIndex((prev) =>
+                                      prev < stateSuggestions.length - 1 ? prev + 1 : prev
+                                    );
+                                    break;
+                                  case 'ArrowUp':
+                                    e.preventDefault();
+                                    setSelectedStateIndex((prev) => (prev > 0 ? prev - 1 : -1));
+                                    break;
+                                  case 'Enter':
+                                    e.preventDefault();
+                                    if (selectedStateIndex >= 0 && selectedStateIndex < stateSuggestions.length) {
+                                      handleStateSelect(stateSuggestions[selectedStateIndex]);
+                                    }
+                                    break;
+                                  case 'Escape':
+                                    setShowStateDropdown(false);
+                                    break;
+                                }
+                              }}
+                              className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                                errors.state ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                              placeholder="Select or type state..."
+                            />
+                            
+                            {/* State Dropdown */}
+                            {showStateDropdown && stateSuggestions.length > 0 && (
+                              <div className="absolute z-[10001] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                                <ul className="py-1">
+                                  {stateSuggestions.map((state, index) => (
+                                    <li
+                                      key={state}
+                                      onClick={() => handleStateSelect(state)}
+                                      onMouseEnter={() => setSelectedStateIndex(index)}
+                                      className={`px-4 py-2 cursor-pointer transition-colors ${
+                                        index === selectedStateIndex
+                                          ? 'bg-orange-50 border-l-4 border-orange-500'
+                                          : 'hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <FiMapPin className="w-4 h-4 text-orange-500 flex-shrink-0" />
+                                        <span className="text-gray-900">{state}</span>
+                                      </div>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
                           {errors.state && (
                             <p className="mt-1 text-sm text-red-600">{errors.state.message as string}</p>
                           )}
                         </div>
-                        <div>
+                        
+                        {/* Neighborhood Dropdown */}
+                        <div className="relative" style={{ zIndex: 998, overflow: 'visible' }}>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Neighborhood (Optional)</label>
-                          <input
-                            {...register('neighbourhood')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                            placeholder="Neighborhood"
-                          />
+                          <div ref={neighborhoodDropdownRef} className="relative">
+                            <input
+                              ref={neighborhoodInputRef}
+                              {...register('neighbourhood')}
+                              type="text"
+                              autoComplete="off"
+                              value={neighborhoodQuery || watch('neighbourhood') || ''}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setNeighborhoodQuery(value);
+                                setValue('neighbourhood', value, { shouldValidate: false });
+                                setShowNeighborhoodDropdown(true);
+                              }}
+                              onFocus={() => {
+                                setShowNeighborhoodDropdown(true);
+                                // Fetch neighborhoods when focused if we have state
+                                if (!neighborhoodQuery || neighborhoodQuery.trim().length < 1) {
+                                  setIsLoadingNeighborhoods(true);
+                                  const params: any = { limit: 50 };
+                                  const stateValue = watch('state');
+                                  if (stateValue) {
+                                    params.state = stateValue;
+                                  }
+                                  
+                                  api.get('/locations/neighborhoods', { params })
+                                    .then(response => {
+                                      if (response.data.success && response.data.neighborhoods) {
+                                        setNeighborhoodSuggestions(response.data.neighborhoods);
+                                      }
+                                    })
+                                    .catch(error => {
+                                      console.error('Failed to fetch neighborhoods:', error);
+                                      setNeighborhoodSuggestions([]);
+                                    })
+                                    .finally(() => {
+                                      setIsLoadingNeighborhoods(false);
+                                    });
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (!showNeighborhoodDropdown || neighborhoodSuggestions.length === 0) {
+                                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                                    e.preventDefault();
+                                  }
+                                  return;
+                                }
+                                switch (e.key) {
+                                  case 'ArrowDown':
+                                    e.preventDefault();
+                                    setSelectedNeighborhoodIndex((prev) =>
+                                      prev < neighborhoodSuggestions.length - 1 ? prev + 1 : prev
+                                    );
+                                    break;
+                                  case 'ArrowUp':
+                                    e.preventDefault();
+                                    setSelectedNeighborhoodIndex((prev) => (prev > 0 ? prev - 1 : -1));
+                                    break;
+                                  case 'Enter':
+                                    e.preventDefault();
+                                    if (selectedNeighborhoodIndex >= 0 && selectedNeighborhoodIndex < neighborhoodSuggestions.length) {
+                                      handleNeighborhoodSelect(neighborhoodSuggestions[selectedNeighborhoodIndex]);
+                                    }
+                                    break;
+                                  case 'Escape':
+                                    setShowNeighborhoodDropdown(false);
+                                    break;
+                                }
+                              }}
+                              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                              placeholder="Select or type neighborhood..."
+                            />
+                            
+                            {/* Neighborhood Dropdown */}
+                            {showNeighborhoodDropdown && (
+                              <div className="absolute z-[10002] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                                {isLoadingNeighborhoods ? (
+                                  <div className="p-4 text-center text-gray-500">
+                                    <div className="inline-block animate-spin rounded-full h-5 w-5 border-b-2 border-orange-500"></div>
+                                    <span className="ml-2 text-sm">Searching...</span>
+                                  </div>
+                                ) : neighborhoodSuggestions.length > 0 ? (
+                                  <ul className="py-1">
+                                    {neighborhoodSuggestions.map((neighborhood, index) => (
+                                      <li
+                                        key={`${neighborhood.neighbourhood}-${neighborhood.city}-${index}`}
+                                        onClick={() => handleNeighborhoodSelect(neighborhood)}
+                                        onMouseEnter={() => setSelectedNeighborhoodIndex(index)}
+                                        className={`px-4 py-2 cursor-pointer transition-colors ${
+                                          index === selectedNeighborhoodIndex
+                                            ? 'bg-orange-50 border-l-4 border-orange-500'
+                                            : 'hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        <div className="flex items-start gap-2">
+                                          <FiMapPin className="w-4 h-4 text-orange-500 mt-0.5 flex-shrink-0" />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="text-gray-900 font-medium">
+                                              {neighborhood.neighbourhood}
+                                            </div>
+                                            {(neighborhood.city || neighborhood.state) && (
+                                              <div className="text-xs text-gray-500 mt-0.5">
+                                                {[neighborhood.city, neighborhood.state].filter(Boolean).join(', ')}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <div className="p-4 text-center text-gray-500 text-sm">
+                                    {neighborhoodQuery && neighborhoodQuery.trim().length >= 1
+                                      ? 'No neighborhoods found. Try a different search.'
+                                      : currentState
+                                      ? 'Start typing to search neighborhoods...'
+                                      : 'Select a state first to search neighborhoods.'}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                       
