@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { useCreateAd, useFreeAdsStatus, useCreateAdPostingOrder, useVerifyAdPostingPayment, useAdLimitStatus } from '@/hooks/useAds';
@@ -8,7 +8,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { getSocket } from '@/lib/socket';
-import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage, FiUser, FiCamera, FiMapPin } from 'react-icons/fi';
+import { useGooglePlaces } from '@/hooks/useGooglePlaces';
+import { usePlacesAutocomplete } from '@/hooks/usePlacesAutocomplete';
+import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage, FiUser, FiCamera, FiMapPin, FiSearch, FiMap, FiHome } from 'react-icons/fi';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import ImageWithFallback from '@/components/ImageWithFallback';
@@ -62,8 +64,13 @@ export default function PostAdPage() {
   const [isAdLimitAlertDismissed, setIsAdLimitAlertDismissed] = useState(false);
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
   const [isPaymentVerified, setIsPaymentVerified] = useState(false); // Track if payment is verified
-  const [googlePlacesLoaded, setGooglePlacesLoaded] = useState(false);
+  const [showPhoneInAds, setShowPhoneInAds] = useState(true);
+  // Use shared Google Places hook (reuses script from home page)
+  const { googlePlacesLoaded } = useGooglePlaces();
+  const [locationInputMounted, setLocationInputMounted] = useState(false); // Track if location input is mounted
   const [currentStep, setCurrentStep] = useState(1);
+  // Map coordinates state
+  const [mapCoordinates, setMapCoordinates] = useState<{ lat: number; lng: number } | null>(null);
   // Location Autocomplete (Typeahead) states
   const [locationQuery, setLocationQuery] = useState('');
   const [locationSuggestions, setLocationSuggestions] = useState<any[]>([]);
@@ -94,20 +101,23 @@ export default function PostAdPage() {
   const locationAutocompleteRef = useRef<HTMLInputElement>(null);
   const autocompleteInstanceRef = useRef<any>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markerRef = useRef<any>(null);
   
   // 4. Custom hooks and useQuery hooks
   const createAd = useCreateAd();
-  const { data: freeAdsStatus } = useFreeAdsStatus();
-  const { data: adLimitStatus, isLoading: isLoadingAdLimit } = useAdLimitStatus(isAuthenticated);
+  const { data: freeAdsStatus } = useFreeAdsStatus(isAuthenticated);
+  const { data: adLimitStatus, isLoading: isLoadingAdLimit } = useAdLimitStatus(user?.id);
   
   // Also fetch business package status as fallback for button text
   const { data: businessPackageStatus } = useQuery({
-    queryKey: ['business-package', 'status'],
+    queryKey: ['business-package', 'status', user?.id],
     queryFn: async () => {
       const response = await api.get('/business-package/status');
       return response.data;
     },
-    enabled: isAuthenticated,
+    enabled: !!user?.id,
     staleTime: 10 * 1000,
     refetchOnMount: true,
   });
@@ -116,6 +126,13 @@ export default function PostAdPage() {
   const verifyPayment = useVerifyAdPostingPayment();
   
   const TOTAL_STEPS = 8; // Category & Subcategory (combined), Brand, Specs, Title/Description, Image, Price, Location
+
+  // Sync "show phone in ads" preference from user profile (default true)
+  useEffect(() => {
+    if (typeof user?.showPhone === 'boolean') {
+      setShowPhoneInAds(user.showPhone);
+    }
+  }, [user?.showPhone]);
   
   // Get premium offers (public endpoint for users) - must be after useState hooks
   const { data: premiumSettings, isLoading: isLoadingOffers } = useQuery({
@@ -132,22 +149,29 @@ export default function PostAdPage() {
         const premiumTypes = ['TOP', 'FEATURED', 'BUMP_UP', 'URGENT'];
         
         premiumTypes.forEach((type) => {
-          const price = offersData.offerPrices?.[type] || offersData.prices?.[type] || 0;
+          const originalPrice = offersData.prices?.[type] || 0;
+          const offerPrice = offersData.offerPrices?.[type];
+          // Use offer price if available (discounted), otherwise use regular price
+          const finalPrice = offerPrice && offerPrice < originalPrice ? offerPrice : originalPrice;
           const duration = offersData.durations?.[type] || 7;
           
-          if (price > 0) {
+          if (finalPrice > 0) {
             offersArray.push({
               id: type,
               type: type,
               name: type === 'TOP' ? 'Top Ad' : 
                     type === 'FEATURED' ? 'Featured Ad' : 
-                    type === 'BUMP_UP' ? 'Bump Up' : 'Urgent Ad',
-              description: type === 'TOP' ? 'Get your ad featured at the top of search results' :
-                           type === 'FEATURED' ? 'Highlight your ad with featured badge' :
+                    type === 'BUMP_UP' ? 'Bump Up' : 
+                    type === 'URGENT' ? 'Mark as Urgent' : 'Urgent Ad',
+              description: type === 'TOP' ? 'Stand out with a bright badge and priority search ranking' :
+                           type === 'FEATURED' ? 'Stay at the top of the category for 7 days' :
                            type === 'BUMP_UP' ? 'Bump your ad to the top of listings' :
+                           type === 'URGENT' ? 'Stand out with a bright badge and priority search ranking' :
                            'Mark your ad as urgent for priority placement',
-              price: price,
+              price: finalPrice, // Price from backend (already in correct format, not cents)
+              originalPrice: originalPrice, // Original price for comparison
               duration: duration,
+              hasOffer: !!(offerPrice && offerPrice < originalPrice),
             });
           }
         });
@@ -409,193 +433,312 @@ export default function PostAdPage() {
     return () => clearTimeout(timer);
   }, [currentStep, scrollToStep]);
 
-  // Load Google Places API script
-  useEffect(() => {
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-    if (!apiKey) {
-      console.warn('Google Maps API key not found. Location autocomplete will not work.');
+  // Google Places script loading is handled by shared useGooglePlaces hook
+  // This reuses the same script that's already working on the home page
+  // No duplicate script loads - script is shared across all components
+
+  // Handle place selection from autocomplete
+  const handlePlaceSelect = useCallback((place: any) => {
+    if (!place.address_components) {
       return;
     }
 
-    // Check if script is already loaded
-    if (typeof window !== 'undefined' && window.google && window.google.maps && window.google.maps.places) {
-      setGooglePlacesLoaded(true);
-      return;
+    // Update the input field with formatted address
+    if (locationAutocompleteRef.current && place.formatted_address) {
+      locationAutocompleteRef.current.value = place.formatted_address;
     }
 
-    // Check if script is already in the DOM
-    const existingScript = document.querySelector('script[src*="places"]');
-    if (existingScript) {
-      existingScript.addEventListener('load', () => {
-        setGooglePlacesLoaded(true);
-      });
-      return;
-    }
+    // Parse address components
+    let state = '';
+    let city = '';
+    let neighbourhood = '';
 
-    // Load Google Places API script
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
-    script.async = true;
-    script.defer = true;
-    script.onload = () => {
-      console.log('✅ Google Places API loaded successfully');
-      setGooglePlacesLoaded(true);
-    };
-    script.onerror = () => {
-      console.error('❌ Failed to load Google Places API');
-      toast.error('Failed to load location search. Please refresh the page.');
-    };
-    document.head.appendChild(script);
-  }, []);
+    for (const component of place.address_components) {
+      const types = component.types;
 
-  // Initialize Google Places Autocomplete when Google Places API is loaded
-  useEffect(() => {
-    if (!googlePlacesLoaded || !locationAutocompleteRef.current) {
-      return;
-    }
-
-    // Clear existing autocomplete if any
-    if (autocompleteInstanceRef.current && typeof window !== 'undefined' && window.google) {
-      window.google.maps.event.clearInstanceListeners(autocompleteInstanceRef.current);
-    }
-
-    if (typeof window === 'undefined' || !window.google || !window.google.maps || !window.google.maps.places) {
-      console.warn('⚠️ Google Places API not available');
-      return;
-    }
-
-    console.log('🔧 Initializing Google Places Autocomplete...');
-
-    // Create autocomplete instance
-    const autocomplete = new window.google.maps.places.Autocomplete(
-      locationAutocompleteRef.current,
-      {
-        // Restrict to India for better results
-        componentRestrictions: { country: 'in' },
-        // Allow all place types (addresses, cities, establishments, etc.)
-        fields: ['place_id', 'geometry', 'formatted_address', 'address_components'],
-        types: ['geocode', 'establishment'], // Include both addresses and places
+      if (types.includes('administrative_area_level_1')) {
+        state = component.long_name;
+      } else if (types.includes('locality') || types.includes('administrative_area_level_2')) {
+        city = component.long_name;
+      } else if (types.includes('sublocality') || types.includes('sublocality_level_1')) {
+        neighbourhood = component.long_name;
+      } else if (types.includes('neighborhood') && !neighbourhood) {
+        neighbourhood = component.long_name;
       }
-    );
+    }
 
-    console.log('✅ Google Places Autocomplete initialized');
+    // Auto-populate form fields
+    if (state) {
+      setValue('state', state);
+      setStateQuery(state);
+    }
+    if (city) {
+      setValue('city', city);
+    }
+    if (neighbourhood) {
+      setValue('neighbourhood', neighbourhood);
+      setNeighborhoodQuery(neighbourhood);
+    }
 
-    // Function to ensure dropdown z-index is set
-    const ensureDropdownZIndex = () => {
-      const pacContainer = document.querySelector('.pac-container') as HTMLElement;
-      if (pacContainer) {
-        pacContainer.style.zIndex = '9999';
-        pacContainer.style.position = 'absolute';
-      }
-    };
+    // Update location query state
+    if (city) {
+      setLocationQuery(city);
+    } else if (place.formatted_address) {
+      setLocationQuery(place.formatted_address);
+    }
 
-    // Set z-index immediately
-    ensureDropdownZIndex();
-
-    // Watch for dropdown appearance using MutationObserver
-    const observer = new MutationObserver(() => {
-      ensureDropdownZIndex();
-    });
-
-    // Observe the document body for changes
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-
-    // Also set z-index on input focus (when dropdown is likely to appear)
-    const handleFocus = () => {
-      ensureDropdownZIndex();
-      // Also check after a short delay to catch the dropdown when it appears
-      setTimeout(ensureDropdownZIndex, 100);
-    };
-
+    // Update autocomplete input
     if (locationAutocompleteRef.current) {
-      locationAutocompleteRef.current.addEventListener('focus', handleFocus);
-    }
-
-    autocompleteInstanceRef.current = autocomplete;
-
-    // Handle place selection
-    autocomplete.addListener('place_changed', () => {
-      const place = autocomplete.getPlace();
-      
-      if (!place.address_components) {
-        return;
-      }
-
-      // Update the input field with formatted address
-      if (locationAutocompleteRef.current && place.formatted_address) {
+      if (city) {
+        locationAutocompleteRef.current.value = city;
+      } else if (place.formatted_address) {
         locationAutocompleteRef.current.value = place.formatted_address;
       }
+    }
 
-      // Parse address components
-      let state = '';
-      let city = '';
-      let neighbourhood = '';
+    // Update map coordinates if geometry is available
+    if (place.geometry && place.geometry.location) {
+      const lat = typeof place.geometry.location.lat === 'function' 
+        ? place.geometry.location.lat() 
+        : place.geometry.location.lat;
+      const lng = typeof place.geometry.location.lng === 'function' 
+        ? place.geometry.location.lng() 
+        : place.geometry.location.lng;
+      
+      // Validate coordinates are numbers
+      if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+        setMapCoordinates({ lat, lng });
+      }
+    }
 
-      for (const component of place.address_components) {
-        const types = component.types;
+    // Hide location dropdown after Google Places selection
+    setShowLocationDropdown(false);
+    setLocationSuggestions([]);
 
-        if (types.includes('administrative_area_level_1')) {
-          state = component.long_name;
-        } else if (types.includes('locality') || types.includes('administrative_area_level_2')) {
-          city = component.long_name;
-        } else if (types.includes('sublocality') || types.includes('sublocality_level_1')) {
-          neighbourhood = component.long_name;
-        } else if (types.includes('neighborhood') && !neighbourhood) {
-          neighbourhood = component.long_name;
+    if (state || city || neighbourhood) {
+      toast.success('Location information auto-filled successfully!');
+    }
+  }, [setValue, setStateQuery, setNeighborhoodQuery, setLocationQuery, setMapCoordinates, setShowLocationDropdown, setLocationSuggestions]);
+
+  // Use shared autocomplete hook (reuses same logic from home page)
+  // MANDATORY: Input DOM ready check is built into the hook
+  // Prevents multiple initializations - hook handles all guards
+  const { autocompleteInstance, isInitialized: autocompleteInitialized } = usePlacesAutocomplete(
+    locationAutocompleteRef,
+    {
+      country: 'in',
+      bounds: {
+        southwest: { lat: 28.4, lng: 77.0 },
+        northeast: { lat: 28.8, lng: 77.4 }
+      },
+      types: ['geocode', 'establishment'],
+      fields: ['place_id', 'geometry', 'formatted_address', 'address_components', 'name', 'types'],
+      onPlaceSelect: handlePlaceSelect
+    }
+  );
+
+  // Store autocomplete instance reference
+  useEffect(() => {
+    if (autocompleteInstance) {
+      autocompleteInstanceRef.current = autocompleteInstance;
+    }
+  }, [autocompleteInstance]);
+  
+  // Initialize map when coordinates are available and valid
+  useEffect(() => {
+    // Guard: Map coordinates must be valid numbers
+    if (!mapCoordinates || 
+        typeof mapCoordinates.lat !== 'number' || 
+        typeof mapCoordinates.lng !== 'number' ||
+        isNaN(mapCoordinates.lat) || 
+        isNaN(mapCoordinates.lng)) {
+      return;
+    }
+    
+    // Guard: Map ref must exist
+    if (!mapRef.current) {
+      return;
+    }
+    
+    // Guard: Google Maps must be available
+    if (typeof window === 'undefined' || !window.google?.maps?.Map) {
+      console.warn('⚠️ Google Maps API not available yet');
+      return;
+    }
+    
+    // Guard: Map container must have dimensions
+    const mapElement = mapRef.current;
+    if (!mapElement.offsetWidth || !mapElement.offsetHeight) {
+      console.warn('⚠️ Map container has no dimensions, waiting...');
+      // Retry after a short delay
+      const timer = setTimeout(() => {
+        if (mapElement.offsetWidth && mapElement.offsetHeight) {
+          // Retry initialization
+          if (!mapInstanceRef.current) {
+            // Will be handled by next effect run
+          }
         }
-      }
-
-      // Auto-populate form fields
-      if (state) {
-        setValue('state', state);
-        setStateQuery(state);
-      }
-      if (city) {
-        setValue('city', city);
-      }
-      if (neighbourhood) {
-        setValue('neighbourhood', neighbourhood);
-        setNeighborhoodQuery(neighbourhood);
-      }
-
-      // Update location query state for typeahead
-      if (city) {
-        setLocationQuery(city);
-      } else if (place.formatted_address) {
-        setLocationQuery(place.formatted_address);
-      }
-
-      // Also update the autocomplete input with city name or formatted address
-      if (locationAutocompleteRef.current) {
-        if (city) {
-          locationAutocompleteRef.current.value = city;
-        } else if (place.formatted_address) {
-          locationAutocompleteRef.current.value = place.formatted_address;
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+    
+    // Guard: Prevent multiple initializations
+    if (mapInstanceRef.current) {
+      // Update existing map center and marker
+      try {
+        mapInstanceRef.current.setCenter({ lat: mapCoordinates.lat, lng: mapCoordinates.lng });
+        if (markerRef.current) {
+          markerRef.current.setPosition({ lat: mapCoordinates.lat, lng: mapCoordinates.lng });
         }
+      } catch (error) {
+        console.error('Error updating map:', error);
       }
+      return;
+    }
+    
+    try {
+      // Function to hide Google Maps attribution
+      const hideGoogleAttribution = () => {
+        try {
+          const attributionSelectors = [
+            '.gm-style-cc',
+            '.gm-style-cc a',
+            'a[href*="google.com/maps"]',
+            'a[href*="maps.google.com"]',
+            '.gm-bundled-control',
+            '.gm-style-cc > div',
+            '.gm-style-cc > div > a',
+            '[title*="Google"]',
+            '[aria-label*="Google"]'
+          ];
+          
+          attributionSelectors.forEach(selector => {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach((el: any) => {
+              if (el) {
+                el.style.display = 'none';
+                el.style.visibility = 'hidden';
+                el.style.opacity = '0';
+                el.style.height = '0';
+                el.style.width = '0';
+                el.style.overflow = 'hidden';
+              }
+            });
+          });
+        } catch (error) {
+          // Silently fail
+        }
+      };
 
-      // Hide location dropdown after Google Places selection
-      setShowLocationDropdown(false);
-      setLocationSuggestions([]);
+      // Create new map instance with error handling
+      const map = new window.google.maps.Map(mapElement, {
+        center: { lat: mapCoordinates.lat, lng: mapCoordinates.lng },
+        zoom: 15,
+        mapTypeControl: true,
+        streetViewControl: true,
+        fullscreenControl: true,
+        zoomControl: true,
+        disableDefaultUI: false,
+        gestureHandling: 'cooperative',
+      });
 
-      if (state || city || neighbourhood) {
-        toast.success('Location information auto-filled successfully!');
+      // Hide attribution immediately and periodically
+      hideGoogleAttribution();
+      setTimeout(hideGoogleAttribution, 100);
+      setTimeout(hideGoogleAttribution, 500);
+      setTimeout(hideGoogleAttribution, 1000);
+      setTimeout(hideGoogleAttribution, 2000);
+      
+      // Wait for map to be ready before adding marker
+      window.google.maps.event.addListenerOnce(map, 'idle', () => {
+        // Hide attribution again after map loads
+        hideGoogleAttribution();
+        setTimeout(hideGoogleAttribution, 500);
+        setTimeout(hideGoogleAttribution, 1000);
+        try {
+          // Create draggable marker
+          markerRef.current = new window.google.maps.Marker({
+            position: { lat: mapCoordinates.lat, lng: mapCoordinates.lng },
+            map: map,
+            draggable: true,
+            title: 'Ad Location',
+            animation: window.google.maps.Animation.DROP,
+          });
+          
+          // Update coordinates when marker is dragged
+          markerRef.current.addListener('dragend', (e: any) => {
+            try {
+              const newLat = e.latLng.lat();
+              const newLng = e.latLng.lng();
+              if (typeof newLat === 'number' && typeof newLng === 'number' && !isNaN(newLat) && !isNaN(newLng)) {
+                setMapCoordinates({ lat: newLat, lng: newLng });
+              }
+            } catch (error) {
+              console.error('Error updating coordinates from marker drag:', error);
+            }
+          });
+          
+          // Add info window
+          const infoWindow = new window.google.maps.InfoWindow({
+            content: `
+              <div style="padding: 8px;">
+                <strong>Ad Location</strong><br>
+                <small>Lat: ${mapCoordinates.lat.toFixed(6)}, Lng: ${mapCoordinates.lng.toFixed(6)}</small>
+              </div>
+            `
+          });
+          
+          markerRef.current.addListener('click', () => {
+            try {
+              if (markerRef.current) {
+                infoWindow.open(map, markerRef.current);
+              }
+            } catch (error) {
+              console.error('Error opening info window:', error);
+            }
+          });
+
+          // Hide attribution after marker is added
+          setTimeout(() => {
+            hideGoogleAttribution();
+          }, 500);
+          
+          console.log('✅ Map initialized successfully');
+        } catch (error) {
+          console.error('❌ Error creating marker:', error);
+          toast.error('Failed to create map marker. Please try again.');
+        }
+      });
+      
+      mapInstanceRef.current = map;
+    } catch (error: any) {
+      console.error('❌ Error initializing Google Maps:', error);
+      const errorMessage = error?.message || 'Unknown error';
+      
+      // Check for common error messages
+      if (errorMessage.includes('InvalidKeyMapError') || errorMessage.includes('ApiNotActivatedMapError')) {
+        toast.error('Google Maps API key is invalid or not activated. Please check your API key configuration.');
+      } else if (errorMessage.includes('RefererNotAllowedMapError')) {
+        toast.error('Google Maps API key domain restrictions are blocking this request.');
+      } else {
+        toast.error('Failed to load Google Maps. Please refresh the page or check your internet connection.');
       }
-    });
-
+    }
+  }, [mapCoordinates]);
+  
+  // Cleanup function (separate effect)
+  useEffect(() => {
     return () => {
       if (autocompleteInstanceRef.current && typeof window !== 'undefined' && window.google) {
+        try {
         window.google.maps.event.clearInstanceListeners(autocompleteInstanceRef.current);
+        } catch (e) {
+          // Ignore cleanup errors
       }
-      if (locationAutocompleteRef.current) {
-        locationAutocompleteRef.current.removeEventListener('focus', handleFocus);
+        autocompleteInstanceRef.current = null;
       }
-      observer.disconnect();
     };
-  }, [googlePlacesLoaded, setValue]);
+  }, []);
 
   // Location Autocomplete (Typeahead) - Debounced search
   useEffect(() => {
@@ -720,44 +863,22 @@ export default function PostAdPage() {
     }
   };
 
-  // Store all states for filtering
-  const [allStates, setAllStates] = useState<string[]>([]);
-
-  // Fetch all states on mount
-  useEffect(() => {
-    const fetchStates = async () => {
-      try {
-        const response = await api.get('/locations/states');
-        if (response.data.success && response.data.states) {
-          setAllStates(response.data.states);
-          setStateSuggestions(response.data.states);
-        }
-      } catch (error) {
-        console.error('Failed to fetch states:', error);
-      }
-    };
-    fetchStates();
-  }, []);
-
-  // Filter states based on query
+  // Filter states based on query (removed /api/locations/states call)
   useEffect(() => {
     if (!stateQuery || stateQuery.trim().length === 0) {
-      // Show all states if query is empty
-      setStateSuggestions(allStates);
+      // Clear suggestions if query is empty
+      setStateSuggestions([]);
       return;
     }
 
     const searchTimeout = setTimeout(() => {
-      const query = stateQuery.trim().toLowerCase();
-      const filtered = allStates.filter((state: string) =>
-        state.toLowerCase().includes(query)
-      );
-      setStateSuggestions(filtered);
-      setShowStateDropdown(true);
+      // States will be populated from location autocomplete or manual entry
+      // No need to fetch all states upfront
+      setShowStateDropdown(false);
     }, 200);
 
     return () => clearTimeout(searchTimeout);
-  }, [stateQuery, allStates]);
+  }, [stateQuery]);
 
   // Watch state value for neighborhood filtering
   const currentState = watch('state');
@@ -937,6 +1058,7 @@ export default function PostAdPage() {
       const condition3 = (hasActiveBusinessPackage && !hasAdsRemaining);
       const anyConditionTrue = condition1 || condition2 || condition3;
       
+      if (process.env.NODE_ENV === 'development') {
       console.log('🔍 Premium Options Display Check:', {
         isLoadingAdLimit,
         hasAdLimitStatus: !!adLimitStatus,
@@ -952,42 +1074,30 @@ export default function PostAdPage() {
         condition3_businessPackageNoAds: condition3,
         anyConditionTrue,
         shouldShowPremiumOptions,
-        'FINAL RESULT': shouldShowPremiumOptions ? '✅ WILL SHOW' : '❌ WILL NOT SHOW',
-        'Full adLimitStatus': adLimitStatus
-      });
-      
-      // If conditions are met but shouldShowPremiumOptions is false, log why
-      if (anyConditionTrue && !shouldShowPremiumOptions) {
-        console.error('⚠️ CONDITIONS MET BUT NOT SHOWING!', {
-          reason: isLoadingAdLimit ? 'Still loading' : !adLimitStatus ? 'No adLimitStatus' : 'Unknown',
-          isLoadingAdLimit,
-          hasAdLimitStatus: !!adLimitStatus
+          'FINAL RESULT': shouldShowPremiumOptions ? '✅ WILL SHOW' : '❌ WILL NOT SHOW'
         });
       }
+      
+      // Removed: This is normal async flow, not an error
+      // Conditions may be met but UI not showing due to loading states - this is expected behavior
     }
   }, [isLoadingAdLimit, adLimitStatus, hasFreeAdsRemaining, hasActiveBusinessPackage, hasAdsRemaining, adsRemaining, shouldShowPremiumOptions]);
 
   // Debug log
   useEffect(() => {
     if (!isLoadingAdLimit && adLimitStatus) {
+      if (process.env.NODE_ENV === 'development') {
       console.log('📦 Business Package Status:', {
         hasActiveBusinessPackage,
         activePackagesCount: adLimitStatus.activePackagesCount,
         adsRemaining: adLimitStatus.adsRemaining,
         hasAdsRemaining,
-        totalAdsAllowed: adLimitStatus.totalAdsAllowed,
-        adsUsed: adLimitStatus.adsUsed,
         hasFreeAdsRemaining,
         freeAdsRemaining: adLimitStatus.freeAdsRemaining,
-        freeAdsLimit: adLimitStatus.freeAdsLimit,
-        premiumSlotsAvailable: adLimitStatus.premiumSlotsAvailable, // Deprecated
-        packages: adLimitStatus.packages,
         firstPackageType: adLimitStatus.packages?.[0]?.packageType,
-        shouldShowPremiumOptions,
-        condition1: !hasFreeAdsRemaining,
-        condition2: !hasActiveBusinessPackage,
-        condition3: (hasActiveBusinessPackage && !hasAdsRemaining)
+          shouldShowPremiumOptions
       });
+      }
     }
   }, [adLimitStatus, isLoadingAdLimit, hasActiveBusinessPackage, hasAdsRemaining, hasFreeAdsRemaining, shouldShowPremiumOptions]);
 
@@ -1017,14 +1127,19 @@ export default function PostAdPage() {
   const requiresPayment = hasPremiumFeatures || requiresPaymentBeforePosting;
 
   // Compute button text based on premium features and business package
-  const getButtonText = () => {
+  // Memoized to prevent infinite re-renders - depends only on primitive values
+  const buttonText = useMemo(() => {
+    // Safe fallback: if adLimitStatus not yet available, return default
+    if (!adLimitStatus) {
+      return 'Post Ad';
+    }
+    
     // Try to get package name from adLimitStatus first, then fallback to businessPackageStatus
     let packageType = adLimitStatus?.packages?.[0]?.packageType;
     
     // Fallback: if adLimitStatus doesn't have packages, try businessPackageStatus
     if (!packageType && businessPackageStatus?.packages && businessPackageStatus.packages.length > 0) {
       packageType = businessPackageStatus.packages[0]?.packageType;
-      console.log('🔘 Using fallback package type from businessPackageStatus:', packageType);
     }
     
     // Also check if we have active packages from businessPackageStatus
@@ -1046,17 +1161,6 @@ export default function PostAdPage() {
     
     if (hasPremiumFeatures) {
       if (actuallyHasPackage) {
-        console.log('🔘 Button text computed (Premium + Package):', { 
-          packageType, 
-          packageName, 
-          hasActiveBusinessPackage,
-          hasPackageFromStatus,
-          actuallyHasPackage,
-          hasPremiumFeatures,
-          packages: adLimitStatus?.packages,
-          businessPackages: businessPackageStatus?.packages,
-          activePackagesCount: adLimitStatus?.activePackagesCount || businessPackageStatus?.packages?.length
-        });
         return `Post Ad (Using ${packageName})`;
       } else {
         return 'Continue to Payment';
@@ -1064,25 +1168,36 @@ export default function PostAdPage() {
     } else {
       // Even for regular ads, show package name if business package is active
       if (actuallyHasPackage) {
-        console.log('🔘 Button text computed (Regular + Package):', { 
-          packageType, 
-          packageName, 
-          hasActiveBusinessPackage,
-          hasPackageFromStatus,
-          actuallyHasPackage,
-          hasPremiumFeatures,
-          packages: adLimitStatus?.packages,
-          businessPackages: businessPackageStatus?.packages,
-          activePackagesCount: adLimitStatus?.activePackagesCount || businessPackageStatus?.packages?.length
-        });
         return `Post Ad (Using ${packageName})`;
       } else {
         return 'Post Ad (Free)';
       }
     }
-  };
+  }, [
+    // Only primitive values and stable references
+    // Extract primitive values from adLimitStatus
+    adLimitStatus?.packages?.[0]?.packageType,
+    adLimitStatus?.activePackagesCount,
+    adLimitStatus?.success,
+    isLoadingAdLimit,
+    // Extract primitive values from businessPackageStatus
+    businessPackageStatus?.hasActivePackage,
+    businessPackageStatus?.packages?.length,
+    businessPackageStatus?.packages?.[0]?.packageType,
+    // hasActiveBusinessPackage is computed from isLoadingAdLimit and adLimitStatus primitives above
+    hasActiveBusinessPackage,
+    // hasPremiumFeatures is computed from selectedPremium and isUrgent
+    hasPremiumFeatures,
+    selectedPremium,
+    isUrgent
+  ]);
 
-  const buttonText = getButtonText();
+  // Log button text changes in useEffect (only in development)
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development' && buttonText) {
+      console.log('🔘 Button text:', buttonText);
+    }
+  }, [buttonText]);
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -1120,14 +1235,47 @@ export default function PostAdPage() {
     setIsDetectingLocation(true);
     try {
       const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
-        });
+        navigator.geolocation.getCurrentPosition(
+          resolve,
+          (error) => {
+            // Better error handling for geolocation
+            let errorMessage = 'Failed to detect location. Please enter location manually.';
+            switch (error.code) {
+              case error.PERMISSION_DENIED:
+                errorMessage = 'Location access denied. Please enable location permissions.';
+                break;
+              case error.POSITION_UNAVAILABLE:
+                errorMessage = 'Location information unavailable. Please try again.';
+                break;
+              case error.TIMEOUT:
+                errorMessage = 'Location request timed out. Please try again.';
+                break;
+            }
+            reject(new Error(errorMessage));
+          },
+          {
+            enableHighAccuracy: false, // Changed to false for faster response
+            timeout: 20000, // Increased timeout
+            maximumAge: 300000, // Accept cached position up to 5 minutes
+          }
+        );
       });
 
       const { latitude, longitude } = position.coords;
+
+      // Validate coordinates are numbers
+      if (typeof latitude !== 'number' || typeof longitude !== 'number' || isNaN(latitude) || isNaN(longitude)) {
+        toast.error('Invalid location coordinates. Please try again or enter location manually.', { duration: 5000 });
+        setIsDetectingLocation(false);
+        return;
+      }
+
+      // Validate coordinate ranges
+      if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+        toast.error('Invalid location coordinates. Please try again or enter location manually.', { duration: 5000 });
+        setIsDetectingLocation(false);
+        return;
+      }
 
       // Call geocoding API to detect location
       console.log('📍 Calling geocoding API with coordinates:', { latitude, longitude });
@@ -1151,6 +1299,11 @@ export default function PostAdPage() {
 
       if (response.data.success) {
         const { detectedLocation } = response.data;
+
+        // Update map coordinates with detected location
+        if (typeof latitude === 'number' && typeof longitude === 'number' && !isNaN(latitude) && !isNaN(longitude)) {
+          setMapCoordinates({ lat: latitude, lng: longitude });
+        }
 
         // Auto-populate state, city, neighbourhood from detected location
         if (detectedLocation) {
@@ -1186,12 +1339,13 @@ export default function PostAdPage() {
           setShowLocationDropdown(false);
           
           if (detectedLocation.state || detectedLocation.city || detectedLocation.neighbourhood) {
-            toast.success('Location information auto-filled successfully!');
+            toast.success('Location detected and auto-filled successfully!');
           } else {
             toast.success('Location detected but no detailed information available');
           }
         } else {
-          toast.error('Location detected but no address details found. Please enter location manually.');
+          // Even if no detailed location, update map with coordinates
+          toast.success('Location coordinates detected. Map updated.');
         }
       } else {
         const errorMsg = response.data?.message || 'Failed to detect location';
@@ -1392,6 +1546,7 @@ export default function PostAdPage() {
             formData.append('state', data.state);
             formData.append('city', data.city);
             if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
+            formData.append('showPhone', String(showPhoneInAds));
             
             if (data.attributes && Object.keys(data.attributes).length > 0) {
               formData.append('attributes', JSON.stringify(data.attributes));
@@ -1460,6 +1615,7 @@ export default function PostAdPage() {
     formData.append('state', data.state);
     formData.append('city', data.city);
     if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
+    formData.append('showPhone', String(showPhoneInAds));
     
     // DON'T add premium features to initial submission if business package is active and free ads remain
     // Premium features will be applied after payment is collected (only if user selected them and doesn't have free ads)
@@ -1631,6 +1787,7 @@ export default function PostAdPage() {
           if (adFormData.state) formData.append('state', adFormData.state);
           if (adFormData.city) formData.append('city', adFormData.city);
           if (adFormData.neighbourhood) formData.append('neighbourhood', adFormData.neighbourhood);
+          formData.append('showPhone', String(showPhoneInAds));
           formData.append('paymentOrderId', paymentOrder.razorpayOrder.id);
           
           // IMPORTANT: Add premium features to formData so backend detects it as premium ad
@@ -1725,14 +1882,26 @@ export default function PostAdPage() {
     return null;
   }
 
+  // FIX: Don't block entire UI - allow form to render so autocomplete can initialize
+  // Location input must always render (not dependent on adLimitStatus)
+  // Only disable submit button when adLimitStatus is not ready
+  const canSubmit = !isLoadingAdLimit && adLimitStatus !== null;
+
   return (
     <div className="min-h-screen bg-[#faf9f7]" style={{ margin: 0, padding: 0 }}>
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
         <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">Post your Ad</h1>
-          <p className="text-gray-600 text-lg">Fill in the details to sell your item quickly</p>
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">Post Your Ad</h1>
+          <p className="text-gray-600 text-lg">Complete the details below to reach thousands of potential buyers.</p>
         </div>
+
+        {/* Loading indicator for ad limits (non-blocking) */}
+        {isLoadingAdLimit && (
+          <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <p className="text-sm text-blue-800">Loading ad limits...</p>
+          </div>
+        )}
 
         {/* Ad Limit Alert - Only show if not dismissed */}
         {!isLoadingAdLimit && adLimitStatus?.hasLimit && !adLimitStatus?.canPost && !isAdLimitAlertDismissed && (
@@ -2003,7 +2172,8 @@ export default function PostAdPage() {
                     <span className="text-white text-xl font-bold">1</span>
                   </div>
                   <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Choose a category</h2>
+                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Choose a Category</h2>
+                    <p className="text-sm text-gray-600 mb-4">Select where your item fits best</p>
                     <div className="space-y-4">
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Main Category</label>
@@ -2064,7 +2234,8 @@ export default function PostAdPage() {
                     <span className="text-white text-xl font-bold">2</span>
                   </div>
                   <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Include some details</h2>
+                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Include some details</h2>
+                    <p className="text-sm text-gray-600 mb-4">Be descriptive to attract the right buyers</p>
                     <div className="space-y-4">
                       <div>
                         <div className="flex items-center justify-between mb-2">
@@ -2140,7 +2311,8 @@ export default function PostAdPage() {
                     <span className="text-white text-xl font-bold">3</span>
                   </div>
                   <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-2">Upload photos</h2>
+                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Upload photos</h2>
+                    <p className="text-sm text-gray-600 mb-4">The first photo will be your main cover image</p>
                     <p className="text-sm text-gray-600 mb-4">Add up to 12 photos. First photo will be your cover.</p>
                     <div className="grid grid-cols-4 gap-4">
                       <label className="block">
@@ -2196,7 +2368,7 @@ export default function PostAdPage() {
                 </div>
               </div>
 
-              {/* Section 5: Confirm your location */}
+              {/* Section 5: Location */}
               <div 
                 ref={(el) => { stepRefs.current[6] = el; }}
                 className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
@@ -2207,358 +2379,202 @@ export default function PostAdPage() {
                     <span className="text-white text-xl font-bold">5</span>
                   </div>
                   <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Confirm your location</h2>
-                    <div className="space-y-4">
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <label className="block text-sm font-medium text-gray-700">City/Neighborhood</label>
+                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Location</h2>
+                    <p className="text-sm text-gray-600 mb-4">Help buyers find your item locally</p>
+                    
+                    <div className="space-y-6">
+                      {/* Search Address Section with Auto Detect */}
+                      <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                        <div className="flex items-center justify-between mb-3">
+                          <label className="block text-sm font-semibold text-gray-800 flex items-center gap-2">
+                            <FiSearch className="w-4 h-4 text-gray-600" />
+                            Search Address
+                          </label>
                           <button
                             type="button"
                             onClick={detectLocation}
                             disabled={isDetectingLocation}
-                            className="text-sm px-3 py-1.5 bg-orange-100 text-orange-700 rounded-lg hover:bg-orange-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
                           >
                             {isDetectingLocation ? (
                               <>
-                                <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-orange-700"></div>
-                                Detecting...
+                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                <span>Detecting...</span>
                               </>
                             ) : (
                               <>
                                 <FiNavigation className="w-4 h-4" />
-                                Auto Detect
+                                <span>Auto Detect</span>
                               </>
                             )}
                           </button>
                         </div>
                         <div className="relative" style={{ zIndex: 1000 }}>
+                          {/* CRITICAL: Input MUST always be rendered - NEVER conditionally hidden */}
                           <input
-                            ref={locationAutocompleteRef}
+                            id="location-input"
+                            ref={(el) => {
+                              locationAutocompleteRef.current = el;
+                              const isMounted = !!el;
+                              setLocationInputMounted(isMounted);
+                              if (isMounted) {
+                                console.log('✅ Location input mounted in DOM');
+                              }
+                            }}
                             type="text"
-                            {...register('city', { required: 'City is required' })}
                             autoComplete="off"
-                            value={locationQuery || watch('city') || ''}
+                            value={locationQuery || ''}
                             onChange={(e) => {
                               const value = e.target.value;
                               setLocationQuery(value);
-                              setValue('city', value, { shouldValidate: false });
-                              if (value.length >= 2) {
-                                setShowLocationDropdown(true);
-                              } else {
-                                setShowLocationDropdown(false);
-                                setLocationSuggestions([]);
-                              }
+                              // Hide autocomplete dropdown if less than 3 characters
+                              setTimeout(() => {
+                                const pacContainer = document.querySelector('.pac-container') as HTMLElement;
+                                if (pacContainer && value.trim().length < 3) {
+                                  pacContainer.style.display = 'none';
+                                }
+                              }, 50);
                             }}
-                            onFocus={() => {
-                              if (locationSuggestions.length > 0 || locationQuery.length >= 2) {
-                                setShowLocationDropdown(true);
-                              }
-                            }}
-                            onKeyDown={handleLocationKeyDown}
-                            className={`w-full pl-10 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
-                              errors.city ? 'border-red-500' : 'border-gray-300'
-                            }`}
-                            placeholder="Type an address or location..."
+                            className="w-full pl-11 pr-4 py-3.5 bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-all shadow-sm"
+                            placeholder="Start typing your city or area..."
                           />
-                          <FiMapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
-                          
-                          {/* Location Autocomplete Dropdown */}
-                          {showLocationDropdown && (locationSuggestions.length > 0 || isLoadingLocations) && (
-                            <div 
-                              ref={locationDropdownRef}
-                              className="absolute z-[10001] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto"
-                            >
-                              {isLoadingLocations ? (
-                                <div className="p-4 text-center text-gray-500">
-                                  <div className="inline-block animate-spin rounded-full h-5 w-5 border-b-2 border-orange-500"></div>
-                                  <span className="ml-2 text-sm">Searching locations...</span>
-                                </div>
-                              ) : (
-                                <ul className="py-1">
-                                  {locationSuggestions.map((location, index) => (
-                                    <li
-                                      key={location.id || index}
-                                      onClick={() => handleLocationSelect(location)}
-                                      onMouseEnter={() => setSelectedLocationIndex(index)}
-                                      className={`px-4 py-3 cursor-pointer transition-colors ${
-                                        index === selectedLocationIndex
-                                          ? 'bg-orange-50 border-l-4 border-orange-500'
-                                          : 'hover:bg-gray-50'
-                                      }`}
-                                    >
-                                      <div className="flex items-start gap-3">
-                                        <FiMapPin className="w-5 h-5 text-orange-500 mt-0.5 flex-shrink-0" />
-                                        <div className="flex-1 min-w-0">
-                                          <div className="font-medium text-gray-900 truncate">
-                                            {location.name || location.city || 'Unknown Location'}
-                                          </div>
-                                          <div className="text-sm text-gray-500 mt-0.5">
-                                            {[
-                                              location.neighbourhood,
-                                              location.city,
-                                              location.state,
-                                              location.pincode
-                                            ]
-                                              .filter(Boolean)
-                                              .join(', ')}
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
-                            </div>
-                          )}
+                          <FiSearch className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
                         </div>
-                        {errors.city && (
-                          <p className="mt-1 text-sm text-red-600">{errors.city.message as string}</p>
-                        )}
                         {googlePlacesLoaded && (
-                          <p className="mt-1 text-xs text-gray-500">
-                            Start typing to search for an address. Select from suggestions to auto-fill location fields.
+                          <p className="mt-2 text-xs text-gray-600 flex items-center gap-1">
+                            <FiInfo className="w-3 h-3" />
+                            Type at least 3 characters to see suggestions. Select from suggestions to auto-fill fields below.
                           </p>
                         )}
                       </div>
-                      
-                      {/* Additional location fields (auto-filled by autocomplete) */}
+
+                      {/* City and Neighborhood Grid */}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* State Dropdown */}
-                        <div className="relative" style={{ zIndex: 999 }}>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">State</label>
-                          <div ref={stateDropdownRef}>
-                            <input
-                              ref={stateInputRef}
-                              {...register('state', { required: 'State is required' })}
-                              type="text"
-                              autoComplete="off"
-                              value={stateQuery || watch('state') || ''}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                setStateQuery(value);
-                                setValue('state', value, { shouldValidate: false });
-                                setShowStateDropdown(true);
-                              }}
-                              onFocus={() => {
-                                if (stateSuggestions.length > 0) {
-                                  setShowStateDropdown(true);
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (!showStateDropdown || stateSuggestions.length === 0) {
-                                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                                    e.preventDefault();
-                                  }
-                                  return;
-                                }
-                                switch (e.key) {
-                                  case 'ArrowDown':
-                                    e.preventDefault();
-                                    setSelectedStateIndex((prev) =>
-                                      prev < stateSuggestions.length - 1 ? prev + 1 : prev
-                                    );
-                                    break;
-                                  case 'ArrowUp':
-                                    e.preventDefault();
-                                    setSelectedStateIndex((prev) => (prev > 0 ? prev - 1 : -1));
-                                    break;
-                                  case 'Enter':
-                                    e.preventDefault();
-                                    if (selectedStateIndex >= 0 && selectedStateIndex < stateSuggestions.length) {
-                                      handleStateSelect(stateSuggestions[selectedStateIndex]);
-                                    }
-                                    break;
-                                  case 'Escape':
-                                    setShowStateDropdown(false);
-                                    break;
-                                }
-                              }}
-                              className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
-                                errors.state ? 'border-red-500' : 'border-gray-300'
-                              }`}
-                              placeholder="Select or type state..."
-                            />
-                            
-                            {/* State Dropdown */}
-                            {showStateDropdown && stateSuggestions.length > 0 && (
-                              <div className="absolute z-[10001] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto">
-                                <ul className="py-1">
-                                  {stateSuggestions.map((state, index) => (
-                                    <li
-                                      key={state}
-                                      onClick={() => handleStateSelect(state)}
-                                      onMouseEnter={() => setSelectedStateIndex(index)}
-                                      className={`px-4 py-2 cursor-pointer transition-colors ${
-                                        index === selectedStateIndex
-                                          ? 'bg-orange-50 border-l-4 border-orange-500'
-                                          : 'hover:bg-gray-50'
-                                      }`}
-                                    >
-                                      <div className="flex items-center gap-2">
-                                        <FiMapPin className="w-4 h-4 text-orange-500 flex-shrink-0" />
-                                        <span className="text-gray-900">{state}</span>
-                                      </div>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                          </div>
-                          {errors.state && (
-                            <p className="mt-1 text-sm text-red-600">{errors.state.message as string}</p>
+                        {/* City Field */}
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                            <FiMapPin className="w-4 h-4 text-orange-500" />
+                            City <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            {...register('city', { required: 'City is required' })}
+                            value={watch('city') || ''}
+                            onChange={(e) => {
+                              setValue('city', e.target.value, { shouldValidate: true });
+                            }}
+                            className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-all ${
+                              errors.city ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-white hover:border-orange-300'
+                            }`}
+                            placeholder="Enter city name"
+                          />
+                          {errors.city && (
+                            <p className="mt-1.5 text-sm text-red-600 flex items-center gap-1">
+                              <FiAlertCircle className="w-4 h-4" />
+                              {errors.city.message as string}
+                            </p>
                           )}
                         </div>
-                        
-                        {/* Neighborhood Dropdown */}
-                        <div className="relative" style={{ zIndex: 998, overflow: 'visible' }}>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">Neighborhood (Optional)</label>
-                          <div ref={neighborhoodDropdownRef} className="relative">
-                            <input
-                              ref={neighborhoodInputRef}
-                              {...register('neighbourhood')}
-                              type="text"
-                              autoComplete="off"
-                              value={neighborhoodQuery || watch('neighbourhood') || ''}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                setNeighborhoodQuery(value);
-                                setValue('neighbourhood', value, { shouldValidate: false });
-                                setShowNeighborhoodDropdown(true);
-                              }}
-                              onFocus={() => {
-                                setShowNeighborhoodDropdown(true);
-                                // Fetch neighborhoods when focused if we have state
-                                if (!neighborhoodQuery || neighborhoodQuery.trim().length < 1) {
-                                  setIsLoadingNeighborhoods(true);
-                                  const params: any = { limit: 50 };
-                                  const stateValue = watch('state');
-                                  if (stateValue) {
-                                    params.state = stateValue;
-                                  }
-                                  
-                                  api.get('/locations/neighborhoods', { params })
-                                    .then(response => {
-                                      if (response.data.success && response.data.neighborhoods) {
-                                        setNeighborhoodSuggestions(response.data.neighborhoods);
-                                      }
-                                    })
-                                    .catch(error => {
-                                      console.error('Failed to fetch neighborhoods:', error);
-                                      setNeighborhoodSuggestions([]);
-                                    })
-                                    .finally(() => {
-                                      setIsLoadingNeighborhoods(false);
-                                    });
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (!showNeighborhoodDropdown || neighborhoodSuggestions.length === 0) {
-                                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                                    e.preventDefault();
-                                  }
-                                  return;
-                                }
-                                switch (e.key) {
-                                  case 'ArrowDown':
-                                    e.preventDefault();
-                                    setSelectedNeighborhoodIndex((prev) =>
-                                      prev < neighborhoodSuggestions.length - 1 ? prev + 1 : prev
-                                    );
-                                    break;
-                                  case 'ArrowUp':
-                                    e.preventDefault();
-                                    setSelectedNeighborhoodIndex((prev) => (prev > 0 ? prev - 1 : -1));
-                                    break;
-                                  case 'Enter':
-                                    e.preventDefault();
-                                    if (selectedNeighborhoodIndex >= 0 && selectedNeighborhoodIndex < neighborhoodSuggestions.length) {
-                                      handleNeighborhoodSelect(neighborhoodSuggestions[selectedNeighborhoodIndex]);
-                                    }
-                                    break;
-                                  case 'Escape':
-                                    setShowNeighborhoodDropdown(false);
-                                    break;
-                                }
-                              }}
-                              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                              placeholder="Select or type neighborhood..."
-                            />
-                            
-                            {/* Neighborhood Dropdown */}
-                            {showNeighborhoodDropdown && (
-                              <div className="absolute z-[10002] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto">
-                                {isLoadingNeighborhoods ? (
-                                  <div className="p-4 text-center text-gray-500">
-                                    <div className="inline-block animate-spin rounded-full h-5 w-5 border-b-2 border-orange-500"></div>
-                                    <span className="ml-2 text-sm">Searching...</span>
-                                  </div>
-                                ) : neighborhoodSuggestions.length > 0 ? (
-                                  <ul className="py-1">
-                                    {neighborhoodSuggestions.map((neighborhood, index) => (
-                                      <li
-                                        key={`${neighborhood.neighbourhood}-${neighborhood.city}-${index}`}
-                                        onClick={() => handleNeighborhoodSelect(neighborhood)}
-                                        onMouseEnter={() => setSelectedNeighborhoodIndex(index)}
-                                        className={`px-4 py-2 cursor-pointer transition-colors ${
-                                          index === selectedNeighborhoodIndex
-                                            ? 'bg-orange-50 border-l-4 border-orange-500'
-                                            : 'hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        <div className="flex items-start gap-2">
-                                          <FiMapPin className="w-4 h-4 text-orange-500 mt-0.5 flex-shrink-0" />
-                                          <div className="flex-1 min-w-0">
-                                            <div className="text-gray-900 font-medium">
-                                              {neighborhood.neighbourhood}
-                                            </div>
-                                            {(neighborhood.city || neighborhood.state) && (
-                                              <div className="text-xs text-gray-500 mt-0.5">
-                                                {[neighborhood.city, neighborhood.state].filter(Boolean).join(', ')}
-                                              </div>
-                                            )}
-                                          </div>
-                                        </div>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                ) : (
-                                  <div className="p-4 text-center text-gray-500 text-sm">
-                                    {neighborhoodQuery && neighborhoodQuery.trim().length >= 1
-                                      ? 'No neighborhoods found. Try a different search.'
-                                      : currentState
-                                      ? 'Start typing to search neighborhoods...'
-                                      : 'Select a state first to search neighborhoods.'}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
+
+                        {/* Neighborhood Field */}
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                            <FiHome className="w-4 h-4 text-orange-500" />
+                            Neighborhood
+                          </label>
+                          <input
+                            type="text"
+                            {...register('neighbourhood')}
+                            value={neighborhoodQuery || watch('neighbourhood') || ''}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setNeighborhoodQuery(value);
+                              setValue('neighbourhood', value, { shouldValidate: false });
+                            }}
+                            className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-all ${
+                              errors.neighbourhood ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-white hover:border-orange-300'
+                            }`}
+                            placeholder="Enter neighborhood or area"
+                          />
+                          {errors.neighbourhood && (
+                            <p className="mt-1.5 text-sm text-red-600 flex items-center gap-1">
+                              <FiAlertCircle className="w-4 h-4" />
+                              {errors.neighbourhood.message as string}
+                            </p>
+                          )}
                         </div>
                       </div>
-                      
-                      {/* Map placeholder */}
-                      <div className="mt-4 bg-gray-100 rounded-lg h-64 flex items-center justify-center border border-gray-200">
-                        <div className="text-center text-gray-500">
-                          <FiMapPin className="w-8 h-8 mx-auto mb-2" />
-                          <p className="text-sm">Map View</p>
+
+                      {/* Map View Section */}
+                      <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                        <div className="flex items-center gap-2 mb-3">
+                          <FiMap className="w-5 h-5 text-gray-600" />
+                          <label className="block text-sm font-semibold text-gray-800">Map View</label>
                         </div>
+                        {mapCoordinates && 
+                         typeof mapCoordinates.lat === 'number' && 
+                         typeof mapCoordinates.lng === 'number' &&
+                         !isNaN(mapCoordinates.lat) &&
+                         !isNaN(mapCoordinates.lng) ? (
+                          <div className="rounded-lg overflow-hidden border border-gray-200 shadow-md bg-white map-container-hide-attribution" style={{ height: '400px', minHeight: '300px', position: 'relative' }}>
+                            <div 
+                              ref={mapRef}
+                              style={{ width: '100%', height: '100%' }}
+                            />
+                            <div className="absolute top-3 left-3 z-10 bg-white rounded-full p-2.5 shadow-xl border border-orange-200">
+                              <FiMapPin className="w-5 h-5 text-orange-600" />
+                            </div>
+                            <div className="absolute bottom-3 right-3 z-10 bg-white/95 backdrop-blur-sm rounded-lg px-3 py-2 shadow-lg border border-gray-200">
+                              <p className="text-xs font-mono text-gray-700">
+                                <span className="font-semibold">Lat:</span> {mapCoordinates.lat.toFixed(6)}
+                                <span className="mx-2">|</span>
+                                <span className="font-semibold">Lng:</span> {mapCoordinates.lng.toFixed(6)}
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded-lg border border-gray-200 bg-gray-50 shadow-sm" style={{ height: '300px' }}>
+                            <div className="h-full flex flex-col items-center justify-center p-6">
+                              <div className="bg-orange-100 rounded-full p-4 mb-4">
+                                <FiMapPin className="w-10 h-10 text-orange-500" />
+                              </div>
+                              <p className="text-sm font-medium text-gray-700 mb-1">No location selected</p>
+                              <p className="text-xs text-gray-500 text-center max-w-xs">
+                                Search for an address above or select from autocomplete suggestions to view the map
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                        {mapCoordinates && 
+                         typeof mapCoordinates.lat === 'number' && 
+                         typeof mapCoordinates.lng === 'number' &&
+                         !isNaN(mapCoordinates.lat) &&
+                         !isNaN(mapCoordinates.lng) && (
+                          <div className="mt-3 flex items-start gap-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                            <FiInfo className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
+                            <p className="text-xs text-blue-800">
+                              <span className="font-semibold">Tip:</span> Drag the marker on the map to fine-tune your location.
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Section 5: Review your details */}
+              {/* Section 6: Review your details */}
               <div 
                 ref={(el) => { stepRefs.current[7] = el; }}
                 className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
               >
                 <div className="flex items-start gap-4 mb-6">
                   <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xl font-bold">5</span>
+                    <span className="text-white text-xl font-bold">6</span>
                   </div>
                   <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-4">Review your details</h2>
+                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Review your details</h2>
+                    <p className="text-sm text-gray-600 mb-4">Confirm your contact information</p>
                     {user && (
                       <div className="space-y-4">
                         <div className="flex items-center gap-3">
@@ -2584,12 +2600,13 @@ export default function PostAdPage() {
                           <label className="flex items-center gap-3 cursor-pointer">
                             <input
                               type="checkbox"
-                              defaultChecked
+                              checked={showPhoneInAds}
+                              onChange={(e) => setShowPhoneInAds(e.target.checked)}
                               className="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
                             />
                             <div>
                               <p className="text-sm font-medium text-gray-900">Show my phone number in ads</p>
-                              <p className="text-xs text-gray-500">Buyers can contact you directly</p>
+                              <p className="text-xs text-gray-500">Buyers can contact you directly via call or SMS</p>
                             </div>
                           </label>
                         </div>
@@ -2609,25 +2626,21 @@ export default function PostAdPage() {
                     <span className="text-white text-xl font-bold">7</span>
                   </div>
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <h2 className="text-xl font-semibold text-gray-900">Premium Features (Optional)</h2>
-                      <span className="bg-blue-500 text-white text-xs font-semibold px-2 py-0.5 rounded">NEW</span>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h2 className="text-xl font-semibold text-gray-900">Boost your Ad</h2>
+                      <span className="bg-green-500 text-white text-xs font-semibold px-2 py-0.5 rounded">NEW</span>
                     </div>
+                    <p className="text-sm text-gray-600 mb-4">Get up to 10x more views by promoting your ad</p>
                     
                     {/* Info message when business package is active and free ads remain */}
-                    {hasActiveBusinessPackage && hasFreeAdsRemaining && (
+                    {hasFreeAdsRemaining && (
                       <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-                        <div className="flex items-start gap-3">
-                          <FiInfo className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
-                          <div>
-                            <p className="text-sm font-medium text-green-800 mb-1">
-                              You have {freeAdsRemaining} free ad{freeAdsRemaining !== 1 ? 's' : ''} remaining
-                            </p>
-                            <p className="text-sm text-green-700">
-                              Your ads will be posted using your free ads. Premium features are available but not required. You can post your ad now without any payment.
-                            </p>
-                          </div>
-                        </div>
+                        <p className="text-sm font-medium text-green-800 mb-1">
+                          You have {freeAdsRemaining} free ad{freeAdsRemaining !== 1 ? 's' : ''} remaining
+                        </p>
+                        <p className="text-sm text-green-700">
+                          Your ad will be posted using your free credit. Premium features are optional but recommended for faster sales.
+                        </p>
                       </div>
                     )}
                     
@@ -2649,38 +2662,48 @@ export default function PostAdPage() {
                           </div>
                         ) : Array.isArray(premiumSettings) && premiumSettings.length > 0 ? (
                           <>
-                            <p className="text-sm text-gray-600 mb-3">
-                              <strong>Select ONE premium type:</strong> Choose the premium feature that best suits your ad. Each type has different visibility benefits.
-                            </p>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="space-y-3">
                               {premiumSettings.map((offer: any) => (
-                                <button
+                                <label
                                   key={offer.id || offer.type}
-                                  type="button"
-                                  disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
-                                  onClick={() => {
-                                    if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
-                                    // Radio button behavior: always select (don't toggle off)
-                                    setSelectedPremium(offer.type);
-                                  }}
-                                  className={`relative p-4 border-2 rounded-lg text-left transition-all ${
+                                  className={`flex items-start gap-3 p-4 border-2 rounded-lg transition-all ${
                                     selectedPremium === offer.type
-                                      ? 'border-orange-500 bg-orange-50 ring-2 ring-orange-200'
+                                      ? 'border-blue-500 bg-blue-50'
                                       : 'border-gray-200 hover:border-gray-300'
                                   } ${hasActiveBusinessPackage && hasFreeAdsRemaining ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                                 >
-                                  {selectedPremium === offer.type && (
-                                    <div className="absolute top-2 right-2">
-                                      <FiCheckCircle className="w-6 h-6 text-orange-500" />
-                                    </div>
-                                  )}
-                                  <div className="font-semibold text-gray-900 mb-1">{offer.name || offer.type}</div>
-                                  <div className="text-sm text-gray-600 mb-2">{offer.description || 'Enhance your ad visibility'}</div>
-                                  <div className="text-lg font-bold text-orange-600">₹{offer.price || 0}</div>
-                                  {offer.duration && (
-                                    <div className="text-xs text-gray-500 mt-1">Duration: {offer.duration} days</div>
-                                  )}
-                                </button>
+                                  <input
+                                    type="radio"
+                                    name="premiumFeature"
+                                    checked={selectedPremium === offer.type}
+                                    disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
+                                    onChange={() => {
+                                      if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
+                                      setSelectedPremium(offer.type);
+                                    }}
+                                    className="w-5 h-5 text-blue-600 border-gray-300 focus:ring-blue-500 mt-0.5"
+                                  />
+                                  <div className="flex-1">
+                                    <div className="font-semibold text-gray-900 mb-1">{offer.name || offer.type}</div>
+                                    <div className="text-sm text-gray-600">{offer.description || 'Enhance your ad visibility'}</div>
+                                    {offer.hasOffer && offer.originalPrice && (
+                                      <div className="mt-1 flex items-center gap-2">
+                                        <span className="text-xs text-gray-400 line-through">${offer.originalPrice.toFixed(2)}</span>
+                                        <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded">Special Offer</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="text-right">
+                                    {offer.hasOffer && offer.originalPrice ? (
+                                      <div>
+                                        <div className="text-lg font-bold text-gray-900">${(offer.price || 0).toFixed(2)}</div>
+                                        <div className="text-xs text-gray-400 line-through">${offer.originalPrice.toFixed(2)}</div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-lg font-bold text-gray-900">${(offer.price || 0).toFixed(2)}</div>
+                                    )}
+                                  </div>
+                                </label>
                               ))}
                             </div>
                             {selectedPremium && (
@@ -2704,34 +2727,32 @@ export default function PostAdPage() {
                       </>
                     )}
                     
-                    {/* Urgent Badge Option */}
-                    <div className="mt-4">
-                      <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${
-                        hasActiveBusinessPackage && hasFreeAdsRemaining 
-                          ? 'opacity-50 cursor-not-allowed border-gray-200' 
-                          : 'cursor-pointer hover:bg-gray-50 border-gray-200'
-                      }`}>
-                        <input
-                          type="checkbox"
-                          checked={isUrgent}
-                          disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
-                          onChange={(e) => {
-                            if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
-                            setIsUrgent(e.target.checked);
-                          }}
-                          className="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
-                        />
-                        <div className="flex-1">
-                          <div className="font-semibold text-gray-900">Mark as Urgent</div>
-                          <div className="text-sm text-gray-600">Get priority placement in search results</div>
-                        </div>
-                        {Array.isArray(premiumSettings) && premiumSettings.find((o: any) => o.type === 'URGENT') && (
-                          <div className="text-lg font-bold text-orange-600">
-                            ₹{premiumSettings.find((o: any) => o.type === 'URGENT')?.price || 0}
+                    {/* Urgent Badge Option - Only show if not already in premiumSettings */}
+                    {!Array.isArray(premiumSettings) || !premiumSettings.find((o: any) => o.type === 'URGENT') ? (
+                      <div className="mt-4">
+                        <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${
+                          hasActiveBusinessPackage && hasFreeAdsRemaining 
+                            ? 'opacity-50 cursor-not-allowed border-gray-200' 
+                            : 'cursor-pointer hover:bg-gray-50 border-gray-200'
+                        }`}>
+                          <input
+                            type="checkbox"
+                            checked={isUrgent}
+                            disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
+                            onChange={(e) => {
+                              if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
+                              setIsUrgent(e.target.checked);
+                            }}
+                            className="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+                          />
+                          <div className="flex-1">
+                            <div className="font-semibold text-gray-900">Mark as Urgent</div>
+                            <div className="text-sm text-gray-600">Stand out with a bright badge and priority search ranking</div>
                           </div>
-                        )}
-                      </label>
-                    </div>
+                          <div className="text-lg font-bold text-gray-900">$12.99</div>
+                        </label>
+                      </div>
+                    ) : null}
                     
                     {(selectedPremium || isUrgent) && !hasActiveBusinessPackage && !hasFreeAdsRemaining && (
                       <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
@@ -2755,10 +2776,11 @@ export default function PostAdPage() {
                 <button
                   type="submit"
                   disabled={
+                    !canSubmit ||
                     createAd.isPending || 
                     createPaymentOrder.isPending
                   }
-                  className="px-8 py-3 bg-orange-500 text-white rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+                  className="px-8 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
                 >
                   {createAd.isPending || createPaymentOrder.isPending ? (
                     <>
@@ -2767,7 +2789,7 @@ export default function PostAdPage() {
                     </>
                   ) : (
                     <>
-                      Post Now
+                      Post Ad Now
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
@@ -2940,6 +2962,7 @@ export default function PostAdPage() {
                             if (adFormData.state) formData.append('state', adFormData.state);
                             if (adFormData.city) formData.append('city', adFormData.city);
                             if (adFormData.neighbourhood) formData.append('neighbourhood', adFormData.neighbourhood);
+                            formData.append('showPhone', String(showPhoneInAds));
                             
                             if (adFormData.attributes && Object.keys(adFormData.attributes).length > 0) {
                               formData.append('attributes', JSON.stringify(adFormData.attributes));

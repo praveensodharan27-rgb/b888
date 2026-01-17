@@ -15,10 +15,82 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Ensure all text is visible by default */
+  body {
+    color: #111827; /* Dark gray for readability */
+  }
+
+  /* Fix text visibility in main content */
+  main {
+    color: #111827;
+  }
+
+  /* Ensure headings are visible */
+  h1, h2, h3, h4, h5, h6 {
+    color: #111827;
+  }
+
+  /* Ensure paragraphs are visible */
+  p {
+    color: #374151; /* Slightly lighter gray for body text */
+  }
+
+  /* Ensure readable text on white/light backgrounds */
+  .bg-white, .bg-gray-50, .bg-gray-100 {
+    color: #111827;
+  }
+
+  /* Ensure readable text on dark backgrounds */
+  .bg-gray-900, .bg-gray-800, .bg-slate-900 {
+    color: #ffffff;
+  }
+
+  /* Make primary buttons blue */
+  button.bg-primary-600,
+  button[class*="bg-primary"] {
+    background-color: #2563eb !important; /* blue-600 */
+  }
+
+  button.bg-primary-600:hover,
+  button[class*="bg-primary"]:hover {
+    background-color: #1d4ed8 !important; /* blue-700 */
+  }
+
+  /* Make orange/red buttons blue */
+  button[class*="bg-orange"],
+  button[class*="from-orange"],
+  button[class*="to-orange"] {
+    background-color: #2563eb !important; /* blue-600 */
+    background-image: none !important;
+  }
+
+  button[class*="bg-orange"]:hover,
+  button[class*="from-orange"]:hover,
+  button[class*="to-orange"]:hover {
+    background-color: #1d4ed8 !important; /* blue-700 */
+  }
+
+  /* Ensure button text is white on blue background */
+  button.bg-blue-600,
+  button.bg-primary-600,
+  button[class*="bg-blue"],
+  button[class*="bg-primary"] {
+    color: #ffffff !important;
+  }
+  
+  /* Add padding-top only for pages that need it (not post-ad page) */
+  body:not(.no-navbar-padding) {
+    padding-top: 80px;
   }
 
   html {
     scroll-behavior: smooth;
+    margin: 0;
+    padding: 0;
   }
 
   .font-display {
@@ -97,6 +169,78 @@
   animation: spin 1s linear infinite;
 }
 
+/* Google Places Autocomplete dropdown styling */
+.pac-container {
+  background-color: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  font-family: inherit;
+  margin-top: 0.25rem;
+  z-index: 9999 !important;
+  overflow: hidden;
+}
+
+.pac-item {
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  border-top: 1px solid #e5e7eb;
+  font-size: 0.875rem;
+  color: #111827;
+}
+
+.pac-item:first-child {
+  border-top: none;
+}
+
+.pac-item:hover,
+.pac-item-selected {
+  background-color: #f3f4f6;
+}
+
+.pac-icon {
+  margin-right: 0.75rem;
+  width: 1rem;
+  height: 1rem;
+}
+
+.pac-item-query {
+  font-size: 0.875rem;
+  color: #111827;
+  padding-right: 0.5rem;
+}
+
+.pac-matched {
+  font-weight: 600;
+  color: #2563eb;
+}
+
+/* Ensure autocomplete dropdown is above other elements */
+.pac-container {
+  position: absolute !important;
+  z-index: 10000 !important;
+}
+
+/* Hide Google Maps attribution "Powered by Google" */
+.gm-style-cc,
+.gm-style-cc a,
+a[href*="google.com/maps"],
+a[href*="maps.google.com"],
+.gm-bundled-control,
+.gm-style-cc > div,
+.gm-style-cc > div > a,
+.gm-style-cc > div > div,
+[title*="Google"],
+[aria-label*="Google"],
+.gm-style-cc[style*="display"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  height: 0 !important;
+  width: 0 !important;
+  overflow: hidden !important;
+}
+
 /* Fade in animation for splash screen */
 @keyframes fadeIn {
   from {
@@ -109,5 +253,19 @@
 
 .animate-fadeIn {
   animation: fadeIn 0.3s ease-in-out;
+}
+
+/* Placeholder fade animation for search bar */
+@keyframes fadePlaceholder {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.placeholder-animate-fade::placeholder {
+  animation: fadePlaceholder 2s ease-in-out infinite;
 }
 

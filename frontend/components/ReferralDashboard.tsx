@@ -50,7 +50,7 @@ export default function ReferralDashboard() {
       if (navigator.share) {
         try {
           await navigator.share({
-            title: 'Join SellIt and Get Rewards!',
+            title: 'Join and Get Rewards!',
             text: `Sign up using my referral code and we both get rewards! Use code: ${data.referralCode}`,
             url: data.referralLink
           });

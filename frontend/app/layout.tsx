@@ -2,33 +2,7 @@ import type { Metadata } from 'next';
 import { Plus_Jakarta_Sans } from 'next/font/google';
 import './globals.css';
 import { Providers } from './providers';
-import dynamic from 'next/dynamic';
-import { Toaster } from 'react-hot-toast';
-import { ConditionalNavbar, ConditionalFooter } from '@/components/ConditionalNav';
-
-const InterstitialAdWrapper = dynamic(() => import('@/components/InterstitialAdWrapper'), {
-  ssr: false // Don't SSR ads
-});
-
-const PushNotificationPrompt = dynamic(() => import('@/components/PushNotificationPrompt'), {
-  ssr: false // Client-side only
-});
-
-const SplashScreen = dynamic(() => import('@/components/SplashScreen'), {
-  ssr: false // Client-side only
-});
-
-const GoogleTranslateProvider = dynamic(
-  () => import('@/components/GoogleTranslateProvider').catch((error) => {
-    console.error('Failed to load GoogleTranslateProvider:', error);
-    // Return a fallback component that just renders children
-    return { default: ({ children }: { children: React.ReactNode }) => <>{children}</> };
-  }),
-  {
-    ssr: false, // Client-side only to prevent hydration issues
-    loading: () => null // Don't show loading state, just render children
-  }
-);
+import AppClientRoot from '@/components/AppClientRoot';
 
 const plusJakartaSans = Plus_Jakarta_Sans({ 
   subsets: ['latin'],
@@ -52,6 +26,11 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const splashImageUrl = process.env.NEXT_PUBLIC_SPLASH_IMAGE_URL || '';
+  const splashLinkUrl = process.env.NEXT_PUBLIC_SPLASH_LINK_URL;
+  const splashDuration = parseInt(process.env.NEXT_PUBLIC_SPLASH_DURATION || '0');
+  const splashEnabled = process.env.NEXT_PUBLIC_SPLASH_ENABLED === 'true';
+
   return (
     <html lang="en" className="light">
       <head>
@@ -59,23 +38,16 @@ export default function RootLayout({
         <link href="https://fonts.googleapis.com" rel="preconnect" />
         <link href="https://fonts.gstatic.com" rel="preconnect" crossOrigin="anonymous" />
       </head>
-      <body className={`${plusJakartaSans.variable} font-display bg-background-light text-slate-900`} style={{ overflowX: 'hidden' }}>
+      <body className={`${plusJakartaSans.variable} font-display bg-background-light text-gray-900`} style={{ overflowX: 'hidden', margin: 0, padding: 0, color: '#111827' }}>
         <Providers>
-          <GoogleTranslateProvider>
-            <ConditionalNavbar />
-            <main className="min-h-screen">{children}</main>
-            <ConditionalFooter />
-            <InterstitialAdWrapper />
-            <PushNotificationPrompt />
-            <SplashScreen
-              imageUrl={process.env.NEXT_PUBLIC_SPLASH_IMAGE_URL || ''}
-              link={process.env.NEXT_PUBLIC_SPLASH_LINK_URL}
-              duration={parseInt(process.env.NEXT_PUBLIC_SPLASH_DURATION || '0')}
-              showOnLoad={process.env.NEXT_PUBLIC_SPLASH_ENABLED === 'true'}
-              storageKey="splash_screen_shown"
-            />
-            <Toaster position="top-right" />
-          </GoogleTranslateProvider>
+          <AppClientRoot
+            splashImageUrl={splashImageUrl}
+            splashLinkUrl={splashLinkUrl}
+            splashDuration={Number.isFinite(splashDuration) ? splashDuration : 0}
+            splashEnabled={splashEnabled}
+          >
+            {children}
+          </AppClientRoot>
         </Providers>
       </body>
     </html>

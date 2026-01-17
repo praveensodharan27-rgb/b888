@@ -3,31 +3,58 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
-import AdCard from '@/components/AdCard';
+import AdCardOLX from '@/components/AdCardOLX';
 import Link from 'next/link';
 import { FiEdit, FiTrash2, FiPlus } from 'react-icons/fi';
 import { useDeleteAd, useAds } from '@/hooks/useAds';
 import { useState, useEffect } from 'react';
 import PremiumFeatureButton from '@/components/PremiumFeatureButton';
+import ConfirmModal from '@/components/ConfirmModal';
 
 export default function MyAdsPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [mounted, setMounted] = useState(false);
   const [deletingAdId, setDeletingAdId] = useState<string | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    ad: any | null;
+  }>({
+    isOpen: false,
+    ad: null,
+  });
   const deleteAd = useDeleteAd();
 
-  const handleDelete = (ad: any) => {
-    if (window.confirm(`Are you sure you want to delete "${ad.title}"?\n\nThis action cannot be undone.`)) {
-      setDeletingAdId(ad.id);
-      deleteAd.mutate(ad.id, {
+  const handleDeleteClick = (ad: any) => {
+    setConfirmModal({
+      isOpen: true,
+      ad: ad,
+    });
+  };
+
+  const handleConfirmDelete = () => {
+    if (confirmModal.ad) {
+      const adId = confirmModal.ad.id;
+      setDeletingAdId(adId);
+      deleteAd.mutate(adId, {
         onSuccess: () => {
+          console.log('Ad deleted successfully:', adId);
           setDeletingAdId(null);
+          setConfirmModal({ isOpen: false, ad: null });
         },
-        onError: () => {
+        onError: (error: any) => {
+          console.error('Error deleting ad:', error);
           setDeletingAdId(null);
+          // Don't close modal on error so user can see the error message
+          // setConfirmModal({ isOpen: false, ad: null });
         }
       });
+    }
+  };
+
+  const handleCloseModal = () => {
+    if (!deleteAd.isPending) {
+      setConfirmModal({ isOpen: false, ad: null });
     }
   };
 
@@ -114,16 +141,16 @@ export default function MyAdsPage() {
 
       {isLoading ? (
         <div className="text-center py-12">
-          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
           <p className="mt-4 text-gray-500">Loading your ads...</p>
         </div>
       ) : (
         <>
           {data?.ads && data.ads.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
               {data.ads.map((ad: any, index: number) => (
                 <div key={ad.id} className="relative">
-                  <AdCard ad={ad} priority={index < 6} />
+                  <AdCardOGNOX ad={ad} />
                   <div className="absolute top-2 left-2 flex gap-2 z-10">
                     <span
                       className={`px-2 py-1 rounded text-xs font-semibold ${
@@ -154,17 +181,13 @@ export default function MyAdsPage() {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        handleDelete(ad);
+                        handleDeleteClick(ad);
                       }}
                       disabled={deletingAdId === ad.id || deleteAd.isPending}
                       className="bg-red-500 text-white p-2 rounded hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       title="Delete Ad"
                     >
-                      {deletingAdId === ad.id ? (
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                      ) : (
-                        <FiTrash2 className="w-4 h-4" />
-                      )}
+                      <FiTrash2 className="w-4 h-4" />
                     </button>
                   </div>
                   {/* Premium Feature Buttons */}
@@ -217,9 +240,9 @@ export default function MyAdsPage() {
               <p className="mt-2 text-gray-500 text-sm">Loading related ads...</p>
             </div>
           ) : relatedAds.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
               {relatedAds.map((ad: any) => (
-                <AdCard key={ad.id} ad={ad} />
+                <AdCardOGNOX key={ad.id} ad={ad} />
               ))}
             </div>
           ) : (
@@ -235,6 +258,19 @@ export default function MyAdsPage() {
           )}
         </div>
       )}
+
+      {/* Confirmation Modal */}
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        onClose={handleCloseModal}
+        onConfirm={handleConfirmDelete}
+        title="Delete Ad"
+        message={`Are you sure you want to delete "${confirmModal.ad?.title}"?\n\nThis action cannot be undone.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        type="danger"
+        isLoading={deleteAd.isPending}
+      />
     </div>
   );
 }

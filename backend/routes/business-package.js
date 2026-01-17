@@ -140,11 +140,11 @@ router.get('/status', authenticate, async (req, res) => {
   try {
     const now = new Date();
     
-    // Get ALL active business packages (not just one)
+    // Get ALL active business packages (not just one, accept both 'paid' and 'verified')
     const activePackages = await prisma.businessPackage.findMany({
       where: {
         userId: req.user.id,
-        status: 'paid',
+        status: { in: ['paid', 'verified'] },
         expiresAt: {
           gt: now
         }
@@ -285,7 +285,13 @@ router.post('/order',
 
       const price = settings?.prices?.[packageType];
       const duration = settings?.durations?.[packageType];
-      const maxAds = settings?.maxAds?.[packageType] || 0;
+      // Default maxAds if not in settings (fallback to defaults)
+      const defaultMaxAds = {
+        MAX_VISIBILITY: 5,
+        SELLER_PLUS: 7,
+        SELLER_PRIME: 12
+      };
+      const maxAds = settings?.maxAds?.[packageType] || defaultMaxAds[packageType] || 0;
 
       if (!price || !duration) {
         console.error('❌ Invalid package configuration:', {
@@ -300,6 +306,19 @@ router.post('/order',
         return res.status(400).json({ 
           success: false, 
           message: `Invalid package type "${packageType}" or package not configured. Price: ${price}, Duration: ${duration}` 
+        });
+      }
+
+      // Validate maxAds is set (should not be 0)
+      if (maxAds === 0) {
+        console.error('❌ maxAds is 0 for package:', {
+          packageType,
+          maxAds,
+          settingsMaxAds: settings?.maxAds
+        });
+        return res.status(400).json({ 
+          success: false, 
+          message: `Package configuration error: maxAds is 0. Please contact support.` 
         });
       }
 
@@ -394,6 +413,33 @@ router.post('/order',
           message: 'Failed to create order in database. Please try again.',
           error: process.env.NODE_ENV === 'development' ? dbError.message : undefined
         });
+      }
+
+      // Also create PaymentOrder record for payment processor
+      try {
+        await prisma.paymentOrder.create({
+          data: {
+            userId: req.user.id,
+            orderId: razorpayOrder.id,
+            amount: amount, // Amount in paise
+            currency: 'INR',
+            status: 'created',
+            notes: JSON.stringify({
+              userId: req.user.id,
+              type: 'BUSINESS_PACKAGE',
+              order_type: 'business_package',
+              purpose: 'business_package',
+              packageType: packageType,
+              packageId: businessPackage.id
+            }),
+            isTestOrder: process.env.NODE_ENV !== 'production'
+          }
+        });
+        console.log('✅ PaymentOrder record created for business package:', razorpayOrder.id);
+      } catch (paymentOrderError) {
+        console.error('❌ Error creating PaymentOrder record:', paymentOrderError);
+        // Don't fail the request, but log the error
+        // Payment processor can still work with BusinessPackage record
       }
 
       // Ensure RAZORPAY_KEY_ID is available
@@ -538,48 +584,130 @@ router.post('/verify',
         return res.status(403).json({ success: false, message: 'Not authorized' });
       }
 
-      if (businessPackage.status === 'paid') {
-        console.log('ℹ️ Payment already verified for order:', cleanOrderId);
-        return res.json({ success: true, message: 'Payment already verified', package: businessPackage });
-      }
-
-      // Calculate expiration date
-      const startDate = new Date();
-      const expiresAt = new Date(startDate);
-      expiresAt.setDate(expiresAt.getDate() + businessPackage.duration);
-
-      // Update business package
-      console.log('💳 Updating business package:', {
-        packageId: businessPackage.id,
-        paymentId: cleanPaymentId,
-        startDate,
-        expiresAt
-      });
-
-      let updatedPackage;
+      // Use central payment processor
+      const { processPaymentVerification } = require('../services/paymentProcessor');
+      
+      // Convert amount to paise (businessPackage.amount is in INR, but payment processor expects paise)
+      const amountInPaise = Math.round((businessPackage.amount || businessPackage.price || 0) * 100);
+      
+      let result;
       try {
-        updatedPackage = await prisma.businessPackage.update({
-          where: { id: businessPackage.id },
-          data: {
-            razorpayPaymentId: cleanPaymentId,
-            status: 'paid',
-            startDate,
-            expiresAt
-          }
+        result = await processPaymentVerification({
+          orderId: cleanOrderId,
+          paymentId: cleanPaymentId,
+          signature: cleanSignature,
+          userId: req.user.id,
+          amount: amountInPaise,
+          orderType: 'business_package'
         });
-        console.log('✅ Business package updated successfully:', updatedPackage.id);
-      } catch (updateError) {
-        console.error('❌ Database error updating business package:', updateError);
-        console.error('Update error details:', {
-          message: updateError.message,
-          code: updateError.code,
-          meta: updateError.meta
+        console.log('✅ Payment verification result:', {
+          success: result.success,
+          serviceActivated: result.activation?.serviceActivated,
+          state: result.state
+        });
+      } catch (paymentError) {
+        console.error('❌ Payment verification error:', paymentError);
+        console.error('Payment error details:', {
+          message: paymentError.message,
+          stack: paymentError.stack
         });
         return res.status(500).json({ 
           success: false, 
-          message: 'Failed to activate package. Please contact support.',
-          error: process.env.NODE_ENV === 'development' ? updateError.message : undefined
+          message: paymentError.message || 'Payment verification failed. Please contact support.',
+          error: process.env.NODE_ENV === 'development' ? paymentError.message : undefined
         });
+      }
+
+      // Ensure activation was successful
+      const serviceActivated = result.activation?.serviceActivated || false;
+      
+      // Get updated package (activation service already updated it)
+      let updatedPackage;
+      try {
+        updatedPackage = await prisma.businessPackage.findUnique({
+          where: { id: businessPackage.id }
+        });
+        
+        if (!updatedPackage) {
+          console.error('❌ Business package not found after activation:', businessPackage.id);
+          return res.status(404).json({ 
+            success: false, 
+            message: 'Business package not found. Please contact support.'
+          });
+        }
+        
+        console.log('✅ Business package activation confirmed:', {
+          id: updatedPackage.id,
+          status: updatedPackage.status,
+          expiresAt: updatedPackage.expiresAt
+        });
+      } catch (fetchError) {
+        console.error('❌ Database error fetching business package:', fetchError);
+        console.error('Fetch error details:', {
+          message: fetchError.message,
+          code: fetchError.code,
+          meta: fetchError.meta,
+          businessPackageId: businessPackage.id
+        });
+        
+        // If activation succeeded but we can't fetch the package, return success with warning
+        if (serviceActivated) {
+          console.warn('⚠️ Activation succeeded but package fetch failed - returning success');
+          // Continue with response using original businessPackage data
+          updatedPackage = businessPackage;
+        } else {
+          return res.status(500).json({ 
+            success: false, 
+            message: 'Payment verified but failed to activate package. Please contact support with order ID: ' + cleanOrderId,
+            error: process.env.NODE_ENV === 'development' ? fetchError.message : undefined,
+            paymentVerified: true,
+            serviceActivated: false,
+            orderId: cleanOrderId
+          });
+        }
+      }
+
+      // Save to UserBusinessPackage table for purchase history
+      try {
+        const now = new Date();
+        const expiresAt = updatedPackage.expiresAt || (updatedPackage.startDate ? new Date(new Date(updatedPackage.startDate).getTime() + updatedPackage.duration * 24 * 60 * 60 * 1000) : null);
+        
+        // Determine status: active, exhausted, or expired
+        let packageStatus = 'active';
+        if (expiresAt && expiresAt < now) {
+          packageStatus = 'expired';
+        } else if (updatedPackage.adsUsed >= updatedPackage.totalAdsAllowed) {
+          packageStatus = 'exhausted';
+        }
+
+        // Create UserBusinessPackage record (never overwrite - always create new)
+        const userBusinessPackage = await prisma.userBusinessPackage.create({
+          data: {
+            userId: req.user.id,
+            packageType: updatedPackage.packageType,
+            amount: updatedPackage.amount,
+            purchaseTime: updatedPackage.createdAt || now,
+            expiresAt: expiresAt,
+            totalAds: updatedPackage.totalAdsAllowed || 0,
+            usedAds: updatedPackage.adsUsed || 0,
+            allowedCategories: [], // Can be populated from package settings if needed
+            razorpayOrderId: updatedPackage.razorpayOrderId,
+            razorpayPaymentId: updatedPackage.razorpayPaymentId,
+            status: packageStatus
+          }
+        });
+        
+        console.log('✅ Saved to UserBusinessPackage table:', {
+          id: userBusinessPackage.id,
+          packageType: userBusinessPackage.packageType,
+          status: userBusinessPackage.status,
+          totalAds: userBusinessPackage.totalAds,
+          usedAds: userBusinessPackage.usedAds
+        });
+      } catch (userPkgError) {
+        console.error('❌ Error saving to UserBusinessPackage table:', userPkgError);
+        // Don't fail the request if this fails - it's for history tracking
+        console.warn('⚠️ Continuing despite UserBusinessPackage save error');
       }
 
       // Get package name for notification
@@ -590,18 +718,19 @@ router.post('/verify',
       };
 
       // Create notification
+      const expiresAt = updatedPackage.expiresAt || result.activation?.activationDetails?.expiresAt;
       const notification = await prisma.notification.create({
         data: {
           userId: req.user.id,
           title: 'Business Package Activated',
-          message: `Your ${packageNames[businessPackage.packageType] || 'Business'} Package has been activated for ${businessPackage.duration} days. It expires on ${expiresAt.toLocaleDateString()}.`,
+          message: `Your ${packageNames[businessPackage.packageType] || 'Business'} Package has been activated for ${businessPackage.duration} days.${expiresAt ? ` It expires on ${new Date(expiresAt).toLocaleDateString()}.` : ''}`,
           type: 'business_package_activated',
           link: '/profile'
         }
       });
 
       // Emit real-time notification via Socket.IO
-      const { emitNotification } = require('../socket/socket');
+      const { emitNotification, emitAdQuotaUpdate } = require('../socket/socket');
       emitNotification(req.user.id, {
         id: notification.id,
         title: notification.title,
@@ -612,10 +741,141 @@ router.post('/verify',
         createdAt: notification.createdAt
       });
 
+      // Emit real-time quota update after package purchase
+      try {
+        const { checkAndResetUserQuota } = require('../services/monthlyQuotaReset');
+        await checkAndResetUserQuota(req.user.id);
+        
+        // Get updated quota
+        const updatedUser = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          select: {
+            freeAdsRemaining: true,
+            freeAdsUsedThisMonth: true,
+            lastFreeAdsResetDate: true
+          }
+        });
+
+        const now = new Date();
+        // Get ALL purchased packages (active and exhausted) for complete display
+        const allBusinessPackages = await prisma.businessPackage.findMany({
+          where: {
+            userId: req.user.id,
+            status: { in: ['paid', 'verified'] }
+          },
+          select: {
+            id: true,
+            packageType: true,
+            totalAdsAllowed: true,
+            adsUsed: true,
+            createdAt: true,
+            expiresAt: true
+          },
+          orderBy: { createdAt: 'asc' }
+        });
+        
+        // Separate active and exhausted packages
+        const activeBusinessPackages = allBusinessPackages.filter(pkg => pkg.expiresAt > now);
+
+        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        nextMonth.setHours(0, 0, 0, 0);
+
+        const packageNames = {
+          MAX_VISIBILITY: 'Max Visibility',
+          SELLER_PLUS: 'Seller Plus',
+          SELLER_PRIME: 'Seller Prime'
+        };
+
+        const quotaData = {
+          monthlyFreeAds: {
+            total: 2,
+            used: updatedUser?.freeAdsUsedThisMonth || 0,
+            remaining: updatedUser?.freeAdsRemaining || 0,
+            resetAt: nextMonth.toISOString()
+          },
+          packages: allBusinessPackages.map(pkg => {
+            const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+            const isExpired = pkg.expiresAt <= now;
+            const isExhausted = remaining === 0 && !isExpired;
+            return {
+              packageId: pkg.id,
+              packageName: `${packageNames[pkg.packageType] || pkg.packageType} Package`,
+              packageType: pkg.packageType,
+              totalAds: pkg.totalAdsAllowed || 0,
+              usedAds: pkg.adsUsed || 0,
+              adsRemaining: remaining,
+              isExhausted: isExhausted,
+              isExpired: isExpired,
+              status: isExpired ? 'EXPIRED' : (isExhausted ? 'EXHAUSTED' : 'ACTIVE'),
+              purchasedAt: pkg.createdAt,
+              expiresAt: pkg.expiresAt
+            };
+          })
+        };
+
+        // Emit quota update via socket
+        console.log('📡 Attempting to emit quota update via socket...', {
+          userId: req.user.id,
+          socketFunctionAvailable: typeof emitAdQuotaUpdate === 'function'
+        });
+        
+        if (typeof emitAdQuotaUpdate === 'function') {
+          emitAdQuotaUpdate(req.user.id, quotaData);
+          console.log('✅ Emitted real-time quota update after package purchase:', {
+            userId: req.user.id,
+            freeAds: quotaData.monthlyFreeAds?.remaining || 0,
+            packagesCount: quotaData.packages?.length || 0,
+            activePackages: quotaData.packages?.filter((p) => p.status === 'ACTIVE').length || 0,
+            exhaustedPackages: quotaData.packages?.filter((p) => p.status === 'EXHAUSTED').length || 0,
+            packages: quotaData.packages?.map((p) => ({
+              name: p.packageName,
+              remaining: p.adsRemaining,
+              status: p.status
+            }))
+          });
+        } else {
+          console.error('❌ emitAdQuotaUpdate function not available!');
+        }
+      } catch (socketError) {
+        console.error('⚠️ Error emitting quota update after purchase:', socketError);
+        console.error('Socket error details:', {
+          message: socketError.message,
+          stack: socketError.stack
+        });
+        // Don't fail the request if socket emit fails, but log it
+      }
+
+      // ✅ Return comprehensive response with activation confirmation
+      const activationConfirmed = result.activation?.serviceActivated || false;
+      const paymentVerified = result.success !== false;
+      
       res.json({ 
-        success: true, 
-        message: 'Business package activated successfully',
-        package: updatedPackage
+        success: true,
+        paymentVerified: paymentVerified,
+        activationConfirmed: activationConfirmed,
+        message: activationConfirmed 
+          ? 'Payment successful and package activated' 
+          : paymentVerified 
+            ? 'Payment successful but activation pending' 
+            : 'Payment verified',
+        isDuplicate: result.isDuplicate || false,
+        serviceActivated: activationConfirmed,
+        activationDetails: result.activation?.activationDetails || null,
+        state: result.state || (activationConfirmed ? 'activated' : 'verified'),
+        payment: {
+          paymentId: cleanPaymentId,
+          orderId: cleanOrderId,
+          amount: businessPackage.price,
+          status: 'paid'
+        },
+        package: {
+          id: updatedPackage.id,
+          packageType: updatedPackage.packageType,
+          status: updatedPackage.status,
+          isActive: updatedPackage.isActive,
+          expiresAt: updatedPackage.expiresAt,
+          activatedAt: updatedPackage.activatedAt
+        }
       });
     } catch (error) {
       console.error('❌ Verify business package payment error:', error);

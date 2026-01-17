@@ -99,7 +99,7 @@ model OTP {
 }
 
 model Category {
-  id              String        @id @default(auto()) @map("_id") @db.ObjectId
+  id              String               @id @default(auto()) @map("_id") @db.ObjectId
   name            String
   slug            String
   icon            String?
@@ -107,15 +107,17 @@ model Category {
   description     String?
   metaTitle       String?
   metaDescription String?
-  order           Int           @default(0)
-  isActive        Boolean       @default(true)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  order           Int                  @default(0)
+  isActive        Boolean              @default(true)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
   adPostingPrice  Float?
   ads             Ad[]
   banners         Banner[]
   subcategories   Subcategory[]
   offers          Offer[]
+  clusters        AdCluster[]
+  searchPatterns  SearchQueryPattern[]
 
   @@unique([slug])
   @@map("categories")
@@ -141,29 +143,35 @@ model Subcategory {
 }
 
 model Location {
-  id            String   @id @default(auto()) @map("_id") @db.ObjectId
-  name          String
-  slug          String
-  state         String?
-  city          String?
-  pincode       String?
-  latitude      Float?
-  longitude     Float?
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  neighbourhood String?
-  ads           Ad[]
-  banners       Banner[]
-  users         User[]
+  id             String               @id @default(auto()) @map("_id") @db.ObjectId
+  name           String
+  slug           String
+  state          String?
+  city           String?
+  pincode        String?
+  latitude       Float?
+  longitude      Float?
+  isActive       Boolean              @default(true)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  neighbourhood  String?
+  ads            Ad[]
+  banners        Banner[]
+  users          User[]
+  clusters       AdCluster[]
+  searchPatterns SearchQueryPattern[]
 
   @@unique([slug])
   @@index([state, city])
+  @@index([state]) // For state-wise queries
+  @@index([city]) // For city-wise queries
+  @@index([neighbourhood]) // For local area queries
+  @@index([name]) // For alphabetical sorting and search
   @@map("locations")
 }
 
 model Ad {
-  id               String           @id @default(auto()) @map("_id") @db.ObjectId
+  id               String              @id @default(auto()) @map("_id") @db.ObjectId
   title            String
   slug             String?
   description      String
@@ -172,39 +180,39 @@ model Ad {
   discount         Float?
   condition        String?
   images           String[]
-  status           AdStatus         @default(PENDING)
-  isPremium        Boolean          @default(false)
+  status           AdStatus            @default(PENDING)
+  isPremium        Boolean             @default(false)
   premiumType      PremiumType?
   premiumExpiresAt DateTime?
-  views            Int              @default(0)
+  views            Int                 @default(0)
   featuredAt       DateTime?
   bumpedAt         DateTime?
   postedAt         DateTime? // When ad was actually posted (after approval)
   expiresAt        DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-  userId           String           @db.ObjectId
-  categoryId       String           @db.ObjectId
-  subcategoryId    String?          @db.ObjectId
-  locationId       String?          @db.ObjectId
-  isUrgent         Boolean          @default(false)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  userId           String              @db.ObjectId
+  categoryId       String              @db.ObjectId
+  subcategoryId    String?             @db.ObjectId
+  locationId       String?             @db.ObjectId
+  isUrgent         Boolean             @default(false)
   attributes       Json?
   state            String?
   city             String?
   neighbourhood    String?
   exactLocation    String?
-  moderationStatus String?          @default("pending")
+  moderationStatus String?             @default("pending")
   moderationFlags  Json?
   rejectionReason  String?
-  autoRejected     Boolean          @default(false)
+  autoRejected     Boolean             @default(false)
   // Package type used for ranking/visibility (string enum; NEVER send numbers from code)
   // NORMAL = free ads, MAX_VISIBILITY = Basic, SELLER_PLUS = Pro, SELLER_PRIME = Enterprise
   packageType      BusinessPackageType @default(NORMAL)
-  lastShownAt      DateTime?        // For rotation fairness
-  category         Category         @relation(fields: [categoryId], references: [id])
-  location         Location?        @relation(fields: [locationId], references: [id])
-  subcategory      Subcategory?     @relation(fields: [subcategoryId], references: [id])
-  user             User             @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  lastShownAt      DateTime? // For rotation fairness
+  category         Category            @relation(fields: [categoryId], references: [id])
+  location         Location?           @relation(fields: [locationId], references: [id])
+  subcategory      Subcategory?        @relation(fields: [subcategoryId], references: [id])
+  user             User                @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   adPostingOrders  AdPostingOrder[]
   chatRooms        ChatRoom[]
   favorites        Favorite[]
@@ -866,4 +874,97 @@ model ClaimedOffer {
   @@index([offerId])
   @@index([claimedAt])
   @@map("claimed_offers")
+}
+
+// Search Intelligence & Clustering System Models
+
+model AdCluster {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  clusterKey      String   @unique // Unique identifier for the cluster (e.g., "cars-kochi-under-5lakh")
+  clusterType     String // 'category', 'location', 'price', 'attribute', 'intent', 'combined'
+  level           Int // 1=Category, 2=Location, 3=Attributes, 4=Intent
+  categoryId      String?  @db.ObjectId
+  locationId      String?  @db.ObjectId
+  state           String?
+  city            String?
+  minPrice        Float?
+  maxPrice        Float?
+  attributes      Json? // Category-specific attributes (brand, model, year, etc.)
+  intent          String? // 'buy', 'sell', 'price', 'location', 'urgency'
+  adIds           String[] // Array of ad IDs in this cluster
+  adCount         Int      @default(0)
+  searchQueries   String[] // Common search queries that match this cluster
+  popularityScore Float    @default(0) // Based on views, searches, clicks
+  lastUpdated     DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  category       Category?            @relation(fields: [categoryId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  location       Location?            @relation(fields: [locationId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  lists          AutoList[]
+  searchPatterns SearchQueryPattern[]
+
+  @@index([clusterType])
+  @@index([level])
+  @@index([categoryId])
+  @@index([locationId])
+  @@index([state, city])
+  @@index([popularityScore])
+  @@index([lastUpdated])
+  @@map("ad_clusters")
+}
+
+model AutoList {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  slug            String   @unique // SEO-friendly URL slug
+  title           String // SEO title
+  metaTitle       String // Full SEO meta title
+  metaDescription String // SEO meta description
+  description     String? // List description
+  clusterId       String   @db.ObjectId
+  adIds           String[] // Current ad IDs in this list (auto-updated)
+  adCount         Int      @default(0)
+  keywords        String[] // SEO keywords
+  searchVolume    Int      @default(0) // Estimated search volume
+  isActive        Boolean  @default(true)
+  priority        Int      @default(0) // Higher priority = more important
+  lastUpdated     DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cluster AdCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([clusterId])
+  @@index([isActive])
+  @@index([priority])
+  @@index([searchVolume])
+  @@index([lastUpdated])
+  @@map("auto_lists")
+}
+
+model SearchQueryPattern {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  pattern         String // Search pattern (e.g., "car under 5 lakh")
+  normalizedQuery String // Normalized version
+  categoryId      String?  @db.ObjectId
+  locationId      String?  @db.ObjectId
+  priceIntent     String? // 'under', 'below', 'cheap', 'budget', 'affordable'
+  locationIntent  String? // 'near me', 'in [city]', 'kerala', etc.
+  searchCount     Int      @default(0) // How many times this query was searched
+  clusterId       String?  @db.ObjectId
+  lastSearched    DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  category Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  location Location?  @relation(fields: [locationId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  cluster  AdCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([pattern])
+  @@index([normalizedQuery])
+  @@index([categoryId])
+  @@index([locationId])
+  @@index([searchCount])
+  @@index([lastSearched])
+  @@map("search_query_patterns")
 }

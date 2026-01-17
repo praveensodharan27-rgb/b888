@@ -32,6 +32,19 @@ export default function ProfilePage() {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
+  // Fetch full profile data with business package and quota info
+  const { data: profileData, isLoading: isLoadingProfile } = useQuery({
+    queryKey: ['user-profile', user?.id],
+    queryFn: async () => {
+      const response = await api.get('/user/profile');
+      return response.data.user;
+    },
+    enabled: !!user,
+    staleTime: 5 * 1000, // 5 seconds - faster updates
+    refetchOnWindowFocus: true,
+    refetchOnMount: true, // Refetch when component mounts
+  });
+
   useEffect(() => {
     if (!isLoading && !user) {
       router.push('/login');
@@ -338,15 +351,199 @@ export default function ProfilePage() {
                     </div>
                   </div>
 
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 bg-pink-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <FiFileText className="w-5 h-5 text-pink-600" />
+                  {/* Free Ads Section - Always Visible */}
+                  {profileData && (
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <FiFileText className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Free Ads (Monthly)</div>
+                        <div className="text-gray-900 font-medium">
+                          {isLoadingProfile ? 'Loading...' : (
+                            <>
+                              <span className={profileData.freeAdsRemaining > 0 ? 'text-blue-600' : 'text-gray-400'}>
+                                {profileData.freeAdsRemaining || 0} Remaining
+                              </span>
+                              <div className="text-xs text-gray-500 mt-1">
+                                {profileData.freeAdsUsedThisMonth || 0} / {profileData.freeAdsLimit || 2} used this month
+                              </div>
+                              {profileData?.nextResetDate && (
+                                <div className="text-xs text-gray-400 mt-0.5">
+                                  Resets: {new Date(profileData.nextResetDate).toLocaleDateString()}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <div>
-                      <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Free Ads</div>
-                      <div className="text-gray-900 font-medium">2 Available</div>
+                  )}
+
+                  {/* Business Package Ads - Always Visible if user has any packages */}
+                  {profileData?.businessPackage && (
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <FiBriefcase className="w-5 h-5 text-green-600" />
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Business Package Ads</div>
+                        <div className="text-gray-900 font-medium">
+                          {isLoadingProfile ? 'Loading...' : (
+                            <>
+                              <span className={profileData.businessPackage.businessAdsRemaining > 0 ? 'text-green-600' : 'text-orange-600'}>
+                                {profileData.businessPackage.businessAdsRemaining || 0} Remaining
+                              </span>
+                              <div className="text-xs text-gray-500 mt-1">
+                                {profileData.businessPackage.totalPurchased || 0} Total Purchase{profileData.businessPackage.totalPurchased !== 1 ? 's' : ''} • {profileData.businessPackage.activeCount || 0} Active Package{profileData.businessPackage.activeCount !== 1 ? 's' : ''}
+                              </div>
+                              {/* Sell Box Style: Show ALL packages (active + exhausted + expired) with full details */}
+                              {(profileData.businessPackage.allPackages || profileData.businessPackage.activePackages) && 
+                               (profileData.businessPackage.allPackages?.length > 0 || profileData.businessPackage.activePackages?.length > 0) ? (
+                                <div className="mt-2 space-y-2 max-h-64 overflow-y-auto">
+                                  {(profileData.businessPackage.allPackages || profileData.businessPackage.activePackages).map((pkg: any, index: number) => {
+                                    const remaining = pkg.adsRemaining || 0;
+                                    const used = pkg.usedAds || pkg.adsUsed || 0;
+                                    const total = pkg.totalAds || pkg.totalAdsAllowed || 0;
+                                    const isExhausted = pkg.isExhausted || (remaining === 0 && total > 0 && !pkg.isExpired);
+                                    const isExpired = pkg.isExpired || pkg.status === 'EXPIRED';
+                                    const isActive = !isExhausted && !isExpired && remaining > 0;
+                                    const isOldestWithAds = index === 0 && isActive; // First package (oldest) with ads
+                                    const packageName = pkg.packageName || pkg.packageType?.replace('_', ' ') || 'Package';
+                                    
+                                    return (
+                                      <div 
+                                        key={pkg.id || pkg.packageId} 
+                                        className={`text-xs p-2.5 rounded border ${
+                                          isActive 
+                                            ? 'bg-green-50 border-green-300' 
+                                            : isExhausted 
+                                              ? 'bg-orange-50 border-orange-300' 
+                                              : isExpired
+                                                ? 'bg-gray-50 border-gray-300'
+                                                : 'bg-blue-50 border-blue-200'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between mb-1.5">
+                                          <span className={`font-semibold ${
+                                            isActive ? 'text-green-700' : isExhausted ? 'text-orange-700' : isExpired ? 'text-gray-600' : 'text-blue-700'
+                                          }`}>
+                                            {packageName}
+                                          </span>
+                                          <div className="flex items-center gap-1">
+                                            {isOldestWithAds && (
+                                              <span className="px-1.5 py-0.5 bg-blue-600 text-white text-xs rounded font-bold">
+                                                USING
+                                              </span>
+                                            )}
+                                            {isExhausted && (
+                                              <span className="px-1.5 py-0.5 bg-orange-600 text-white text-xs rounded font-bold">
+                                                EXHAUSTED
+                                              </span>
+                                            )}
+                                            {isExpired && (
+                                              <span className="px-1.5 py-0.5 bg-gray-600 text-white text-xs rounded font-bold">
+                                                EXPIRED
+                                              </span>
+                                            )}
+                                            {isActive && !isOldestWithAds && (
+                                              <span className="font-bold text-green-600">
+                                                {remaining} left
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 mb-1.5">
+                                          <div>
+                                            <span className="text-gray-500">Ads: </span>
+                                            <span className="font-medium">{used}/{total}</span>
+                                            {isActive && (
+                                              <span className="text-green-600 ml-1 font-semibold">({remaining} remaining)</span>
+                                            )}
+                                          </div>
+                                          {pkg.amount && (
+                                            <div>
+                                              <span className="text-gray-500">Amount: </span>
+                                              <span className="font-medium">₹{pkg.amount}</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                        {pkg.purchasedAt && (
+                                          <div className="text-gray-500 mb-1">
+                                            <span className="text-gray-400">Purchased: </span>
+                                            {new Date(pkg.purchasedAt).toLocaleDateString('en-IN', { 
+                                              day: 'numeric', 
+                                              month: 'short', 
+                                              year: 'numeric',
+                                              hour: '2-digit',
+                                              minute: '2-digit'
+                                            })}
+                                          </div>
+                                        )}
+                                        {pkg.expiresAt && (
+                                          <div className={`text-xs mb-1.5 ${
+                                            isExpired ? 'text-gray-500' : 'text-gray-600'
+                                          }`}>
+                                            <span className="text-gray-400">{isExpired ? 'Expired: ' : 'Expires: '}</span>
+                                            {new Date(pkg.expiresAt).toLocaleDateString('en-IN', { 
+                                              day: 'numeric', 
+                                              month: 'short', 
+                                              year: 'numeric'
+                                            })}
+                                          </div>
+                                        )}
+                                        {/* Progress bar */}
+                                        {total > 0 && (
+                                          <div className="mt-1.5">
+                                            <div className="w-full bg-gray-200 rounded-full h-1.5">
+                                              <div 
+                                                className={`h-1.5 rounded-full transition-all ${
+                                                  isActive ? 'bg-green-500' : isExhausted ? 'bg-orange-400' : 'bg-gray-400'
+                                                }`}
+                                                style={{ width: `${Math.min(100, (used / total) * 100)}%` }}
+                                              />
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="text-xs text-gray-400 italic mt-1">
+                                  No business packages purchased
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
+
+                  {/* Total Remaining Ads */}
+                  {profileData && (
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <FiTrendingUp className="w-5 h-5 text-indigo-600" />
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Total Ads Available</div>
+                        <div className="text-gray-900 font-medium text-lg">
+                          {isLoadingProfile ? 'Loading...' : (
+                            <>
+                              {profileData.businessPackage?.totalRemaining || 
+                               (profileData.businessPackage?.businessAdsRemaining || 0) + (profileData.freeAdsRemaining || 0) || 
+                               0}
+                            </>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          {profileData.businessPackage?.businessAdsRemaining || 0} from packages + {profileData.freeAdsRemaining || 0} free
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="flex items-start gap-3">
                     <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">

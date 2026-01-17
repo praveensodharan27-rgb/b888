@@ -377,7 +377,7 @@ export default function ChatPage() {
 
   if (!isAuthenticated) {
     return (
-      <div className="container mx-auto px-4 py-8 text-center">
+      <div className="w-full px-4 py-8 text-center">
         <p className="text-gray-600">Please login to access chat</p>
       </div>
     );

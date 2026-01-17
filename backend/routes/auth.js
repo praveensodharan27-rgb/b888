@@ -485,7 +485,9 @@ router.post('/login',
           isVerified: true,
           referralCode: true,
           provider: true,
-          providerId: true
+          providerId: true,
+          isDeactivated: true,
+          deactivatedAt: true
         }
       });
 
@@ -494,7 +496,16 @@ router.post('/login',
         return res.status(401).json({ success: false, message: 'Invalid credentials' });
       }
       
-      console.log('User found:', { id: user.id, email: user.email, hasPassword: !!user.password });
+      console.log('User found:', { id: user.id, email: user.email, hasPassword: !!user.password, isDeactivated: user.isDeactivated });
+
+      // Check if user account is deactivated
+      if (user.isDeactivated) {
+        console.error('Login failed: Account is deactivated', { userId: user.id, deactivatedAt: user.deactivatedAt });
+        return res.status(403).json({ 
+          success: false, 
+          message: 'Your account has been deactivated. Please contact support.' 
+        });
+      }
 
       if (!user.password) {
         return res.status(401).json({ 
@@ -503,7 +514,23 @@ router.post('/login',
         });
       }
 
-      const isPasswordValid = await bcrypt.compare(password, user.password);
+      // Validate password
+      if (!password || typeof password !== 'string' || password.trim().length === 0) {
+        console.error('Login failed: Password is required');
+        return res.status(400).json({ success: false, message: 'Password is required' });
+      }
+
+      let isPasswordValid = false;
+      try {
+        isPasswordValid = await bcrypt.compare(password, user.password);
+      } catch (bcryptError) {
+        console.error('Login failed: Password comparison error', bcryptError);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Authentication error. Please try again.' 
+        });
+      }
+
       if (!isPasswordValid) {
         console.error('Login failed: Invalid password for user', user.email || user.phone);
         return res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -791,6 +818,67 @@ router.get('/me', authenticate, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to get user info' });
   }
 });
+
+// Refresh token
+router.post('/refresh-token', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const newToken = generateToken(userId);
+    
+    res.json({
+      success: true,
+      token: newToken,
+      message: 'Token refreshed successfully'
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(500).json({ success: false, message: 'Failed to refresh token' });
+  }
+});
+
+// Change password (alternative endpoint)
+router.post('/change-password',
+  authenticate,
+  [
+    body('currentPassword').notEmpty().withMessage('Current password is required'),
+    body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { currentPassword, newPassword } = req.body;
+
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { password: true }
+      });
+
+      if (!user.password) {
+        return res.status(400).json({ success: false, message: 'Password not set' });
+      }
+
+      const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+      if (!isPasswordValid) {
+        return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+      }
+
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { password: hashedPassword }
+      });
+
+      res.json({ success: true, message: 'Password updated successfully' });
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({ success: false, message: 'Failed to change password' });
+    }
+  }
+);
 
 module.exports = router;
 

@@ -59,12 +59,12 @@ async function expireAds() {
       console.log(`   - ${ad.id}: "${ad.title}" (expired: ${ad.expiresAt?.toISOString()})`);
     });
 
-    // Mark all expired ads as EXPIRED and create notifications
+    // Mark all expired ads as INACTIVE and create notifications
     for (const ad of expiredAds) {
-      // Update ad status
+      // Update ad status to INACTIVE
       await prisma.ad.update({
         where: { id: ad.id },
-        data: { status: 'EXPIRED' }
+        data: { status: 'INACTIVE' }
       });
 
       // Create notification for ad owner
@@ -90,7 +90,7 @@ async function expireAds() {
       });
     }
 
-    console.log(`✅ Marked ${expiredAds.length} ad(s) as EXPIRED and sent notifications`);
+    console.log(`✅ Marked ${expiredAds.length} ad(s) as INACTIVE and sent notifications`);
     console.log(`\n✨ Expiration check complete!\n`);
     
     return {

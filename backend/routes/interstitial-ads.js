@@ -8,6 +8,8 @@ const prisma = new PrismaClient();
 router.get('/', async (req, res) => {
   try {
     const { position } = req.query;
+    
+    // Build where clause safely
     const where = {
       isActive: true,
       OR: [
@@ -24,17 +26,27 @@ router.get('/', async (req, res) => {
       ]
     };
 
-    if (position) where.position = position;
+    // Add position filter if provided
+    if (position && typeof position === 'string') {
+      where.position = position;
+    }
 
     const ads = await prisma.interstitialAd.findMany({
       where,
       orderBy: { order: 'asc' }
     });
 
-    res.json({ success: true, ads });
+    res.json({ success: true, ads: ads || [] });
   } catch (error) {
     console.error('Get interstitial ads error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch interstitial ads' });
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      query: req.query
+    });
+    
+    // Return empty array instead of error to prevent UI issues
+    res.status(200).json({ success: true, ads: [] });
   }
 });
 

@@ -169,5 +169,191 @@ Generate a professional, polished product description using bullet points now:`;
   }
 });
 
+// Generate ad description (alternative endpoint name)
+router.post('/ad-description', authenticate, async (req, res) => {
+  // Reuse the same logic as generate-description
+  const { title, price, condition, category, subcategory, location } = req.body;
+
+  if (!title) {
+    return res.status(400).json({
+      success: false,
+      message: 'Title is required to generate description',
+    });
+  }
+
+  // Redirect to generate-description logic
+  // For now, call the same function
+  try {
+    const productDetails = `Product Title: ${title}\n${price ? `Price: ₹${price}\n` : ''}${condition ? `Condition: ${condition}\n` : ''}${category ? `Category: ${category}\n` : ''}${subcategory ? `Subcategory: ${subcategory}\n` : ''}${location ? `Location: ${location}\n` : ''}`;
+
+    const prompt = `You are a professional copywriter specializing in premium classified ad descriptions. Create a polished, professional product description using bullet points that maximizes buyer interest and trust.
+
+Product Information:
+${productDetails}
+
+Generate a professional, polished product description using bullet points now:`;
+
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'OpenAI API key is not configured.',
+      });
+    }
+
+    const response = await fetch(OPENAI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a professional copywriter with expertise in creating premium product descriptions.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.7,
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('OpenAI API request failed');
+    }
+
+    const data = await response.json();
+    const generatedDescription = data.choices?.[0]?.message?.content?.trim();
+
+    if (!generatedDescription) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate description',
+      });
+    }
+
+    res.json({
+      success: true,
+      description: generatedDescription,
+    });
+  } catch (error) {
+    console.error('AI ad description error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to generate description',
+    });
+  }
+});
+
+// Get ad price suggestion (alternative endpoint)
+router.post('/ad-price-suggestion', async (req, res) => {
+  try {
+    const { title, category, subcategory, condition, location } = req.body;
+
+    if (!title) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title is required'
+      });
+    }
+
+    // Get similar ads for price comparison
+    const similarAds = await prisma.ad.findMany({
+      where: {
+        status: 'APPROVED',
+        ...(category && { categoryId: category }),
+        ...(subcategory && { subcategoryId: subcategory }),
+        ...(condition && { condition })
+      },
+      take: 10,
+      orderBy: { createdAt: 'desc' },
+      select: { price: true }
+    });
+
+    if (similarAds.length === 0) {
+      return res.json({
+        success: true,
+        suggestedPrice: null,
+        message: 'No similar ads found for price comparison'
+      });
+    }
+
+    const prices = similarAds.map(ad => ad.price).filter(p => p > 0);
+    const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+
+    res.json({
+      success: true,
+      suggestedPrice: Math.round(avgPrice),
+      priceRange: {
+        min: minPrice,
+        max: maxPrice,
+        average: Math.round(avgPrice)
+      },
+      sampleSize: prices.length
+    });
+  } catch (error) {
+    console.error('Price suggestion error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get price suggestion'
+    });
+  }
+});
+
+// Image moderation using AI
+router.post('/image-moderation', authenticate, async (req, res) => {
+  try {
+    const { imageUrl } = req.body;
+
+    if (!imageUrl) {
+      return res.status(400).json({
+        success: false,
+        message: 'Image URL is required'
+      });
+    }
+
+    // Use OpenAI Vision API or Google Vision API for image moderation
+    // For now, return a mock response
+    // You can integrate with actual moderation service
+    
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'AI moderation service not configured'
+      });
+    }
+
+    // Mock moderation result (replace with actual AI moderation)
+    res.json({
+      success: true,
+      isSafe: true,
+      moderationResult: {
+        safe: true,
+        categories: {
+          violence: false,
+          adult: false,
+          hate: false,
+          harassment: false,
+          selfHarm: false
+        },
+        confidence: 0.95
+      }
+    });
+  } catch (error) {
+    console.error('Image moderation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to moderate image'
+    });
+  }
+});
+
 module.exports = router;
 

@@ -10,8 +10,9 @@ const env = {
   PORT: parseInt(process.env.PORT || '5000', 10),
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3000',
 
-  // Database
-  DATABASE_URL: process.env.DATABASE_URL,
+  // Database - MongoDB
+  DATABASE_URL: process.env.DATABASE_URL || process.env.MONGO_URI || 'mongodb+srv://b888:NQEbkx2JWyBNJz7Z@cluster0.cj9oi8t.mongodb.net/olx_app?retryWrites=true&w=majority&appName=Cluster0',
+  MONGO_URI: process.env.MONGO_URI || process.env.DATABASE_URL || 'mongodb+srv://b888:NQEbkx2JWyBNJz7Z@cluster0.cj9oi8t.mongodb.net/olx_app?retryWrites=true&w=majority&appName=Cluster0',
 
   // JWT
   JWT_SECRET: process.env.JWT_SECRET || 'your-secret-key-change-in-production',

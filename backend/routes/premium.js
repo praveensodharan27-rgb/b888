@@ -19,7 +19,11 @@ const getPremiumSettings = async () => {
       return parsed;
     }
   } catch (error) {
-    console.error('Error loading premium settings from database:', error);
+    // Only log if it's not a connection error (connection errors are expected when MongoDB is unavailable)
+    if (error.code !== 'P2010' && !error.message?.includes('Server selection timeout')) {
+      console.error('Error loading premium settings from database:', error);
+    }
+    // Connection errors are silently handled - fallback to environment variables
   }
   
   // Fallback to environment variables

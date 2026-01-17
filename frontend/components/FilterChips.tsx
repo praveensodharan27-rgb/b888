@@ -77,7 +77,10 @@ export default function FilterChips({ filters, onRemove, onClearAll }: FilterChi
     return null;
   }
 
-  const handleRemove = (key: string) => {
+  const handleRemove = (key: string, e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    
     if (key === 'price') {
       // Remove both min and max price
       onRemove('minPrice');
@@ -93,22 +96,33 @@ export default function FilterChips({ filters, onRemove, onClearAll }: FilterChi
       {chips.map((chip) => (
         <div
           key={chip.key}
-          className="inline-flex items-center gap-2 px-3 py-1.5 bg-primary-100 text-primary-800 rounded-full text-sm font-medium"
+          className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-100 text-blue-800 rounded-full text-sm font-medium cursor-default"
         >
-          <span className="text-xs text-primary-600">{chip.label}:</span>
+          <span className="text-xs text-blue-600 font-medium">{chip.label}:</span>
           <span className="max-w-[200px] truncate">{chip.value}</span>
           <button
-            onClick={() => handleRemove(chip.key)}
-            className="ml-1 hover:bg-primary-200 rounded-full p-0.5 transition-colors"
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleRemove(chip.key, e);
+            }}
+            className="ml-1 hover:bg-blue-200 active:bg-blue-300 rounded-full p-1 transition-colors flex-shrink-0 flex items-center justify-center"
             aria-label={`Remove ${chip.label} filter`}
+            title={`Remove ${chip.label} filter`}
           >
-            <FiX className="w-3.5 h-3.5" />
+            <FiX className="w-4 h-4 text-blue-700" />
           </button>
         </div>
       ))}
       {onClearAll && chips.length > 1 && (
         <button
-          onClick={onClearAll}
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onClearAll();
+          }}
           className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-colors"
         >
           Clear All

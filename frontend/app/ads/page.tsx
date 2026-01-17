@@ -1,11 +1,13 @@
 'use client';
 
-import { useState, Suspense, useEffect } from 'react';
+import { useState, Suspense, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useInfiniteAds } from '@/hooks/useInfiniteAds';
 import dynamic from 'next/dynamic';
 import AdCardOLX from '@/components/AdCardOLX';
 import EmptyState from '@/components/EmptyState';
+import { useGoogleLocation } from '@/hooks/useGoogleLocation';
+import { useLocationPersistence } from '@/hooks/useLocationPersistence';
 
 // Lazy load heavy components
 const Filters = dynamic(() => import('@/components/Filters'), {
@@ -29,72 +31,149 @@ import { dummyAds } from '@/lib/dummyData';
 function AdsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const [filters, setFilters] = useState<{
-    limit: number;
-    category?: string;
-    subcategory?: string;
+  const { location: persistedLocation } = useLocationPersistence();
+  const { location: googleLocation } = useGoogleLocation();
+  
+  // Load persisted location on mount (legacy - keeping for backward compatibility)
+  const [persistedLocationState, setPersistedLocationState] = useState<{
     location?: string;
-    minPrice?: string;
-    maxPrice?: string;
-    search?: string;
-    condition?: string;
-    sort?: 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
     latitude?: string;
     longitude?: string;
     radius?: string;
-  }>({
-    limit: 20,
-    category: searchParams.get('category') || undefined,
-    subcategory: searchParams.get('subcategory') || undefined,
-    location: searchParams.get('location') || undefined,
-    minPrice: searchParams.get('minPrice') || undefined,
-    maxPrice: searchParams.get('maxPrice') || undefined,
-    search: searchParams.get('search') || undefined,
-    condition: searchParams.get('condition') || undefined,
-    sort: (searchParams.get('sort') || 'newest') as 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped',
-    latitude: searchParams.get('latitude') || undefined,
-    longitude: searchParams.get('longitude') || undefined,
-    radius: searchParams.get('radius') || '50',
-  });
+  } | null>(null);
+  
+  // Legacy location loading - now using hooks above
+  useEffect(() => {
+    // CRITICAL: Only run this on /ads page, not when navigating away
+    // This prevents interfering with navigation to home page
+    const currentPath = typeof window !== 'undefined' ? window.location.pathname : '';
+    if (currentPath !== '/ads') {
+      return; // Don't run if not on /ads page
+    }
+    
+    // Load persisted location from localStorage for backward compatibility
+    try {
+      const storedLocation = localStorage.getItem('selected_location');
+      const storedCoords = localStorage.getItem('selected_location_coords');
+      
+      if (storedLocation) {
+        const locationData = JSON.parse(storedLocation);
+        let coords = null;
+        if (storedCoords) {
+          coords = JSON.parse(storedCoords);
+        }
+        
+        const persisted = {
+          location: locationData.slug,
+        };
+        
+        if (coords && coords.latitude && coords.longitude) {
+          persisted.latitude = String(coords.latitude);
+          persisted.longitude = String(coords.longitude);
+          persisted.radius = '50';
+        }
+        
+        setPersistedLocationState(persisted);
+        
+        // Update URL if location not already in URL (preserve other params)
+        // CRITICAL: Only update if still on /ads page (check again after async operations)
+        // Use setTimeout to ensure this doesn't interfere with navigation
+        setTimeout(() => {
+          const stillOnAdsPage = typeof window !== 'undefined' && window.location.pathname === '/ads';
+          if (stillOnAdsPage && !searchParams.get('location')) {
+            const newParams = new URLSearchParams(searchParams.toString());
+            newParams.set('location', persisted.location);
+            if (persisted.latitude && persisted.longitude) {
+              newParams.set('latitude', persisted.latitude);
+              newParams.set('longitude', persisted.longitude);
+              newParams.set('radius', persisted.radius || '50');
+            }
+            router.replace(`/ads?${newParams.toString()}`, { scroll: false });
+          }
+        }, 100); // Small delay to allow navigation to complete first
+      }
+    } catch (error) {
+      console.error('Error loading persisted location:', error);
+    }
+  }, []); // Run only once on mount - don't include searchParams/router to avoid re-runs
 
   const [isFiltersExpanded, setIsFiltersExpanded] = useState(true);
+  
+  // Track if we're updating URL internally to prevent infinite loops
+  const isUpdatingUrlRef = useRef(false);
 
-  // Sync URL searchParams to filters state when URL changes
-  useEffect(() => {
-    const categoryFromUrl = searchParams.get('category') || undefined;
-    const subcategoryFromUrl = searchParams.get('subcategory') || undefined;
-    const locationFromUrl = searchParams.get('location') || undefined;
-    const minPriceFromUrl = searchParams.get('minPrice') || undefined;
-    const maxPriceFromUrl = searchParams.get('maxPrice') || undefined;
-    const searchFromUrl = searchParams.get('search') || undefined;
-    const conditionFromUrl = searchParams.get('condition') || undefined;
-    const sortFromUrl = (searchParams.get('sort') || 'newest') as 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
+  // Derive filters directly from searchParams using useMemo (single source of truth)
+  // This prevents infinite loops by not using useEffect to sync URL to state
+  // Get individual search param values for dependency array (prevents infinite loops)
+  const locationParam = searchParams.get('location');
+  const latitudeParam = searchParams.get('latitude');
+  const longitudeParam = searchParams.get('longitude');
+  const radiusParam = searchParams.get('radius');
+  const categoryParam = searchParams.get('category');
+  const subcategoryParam = searchParams.get('subcategory');
+  const minPriceParam = searchParams.get('minPrice');
+  const maxPriceParam = searchParams.get('maxPrice');
+  const searchParam = searchParams.get('search');
+  const conditionParam = searchParams.get('condition');
+  const sortParam = searchParams.get('sort');
+  
+  const filters = useMemo(() => {
+    const locationFromUrl = locationParam || persistedLocation?.slug || persistedLocationState?.location || undefined;
+    const categoryFromUrl = categoryParam || undefined;
+    const subcategoryFromUrl = subcategoryParam || undefined;
+    const minPriceFromUrl = minPriceParam || undefined;
+    const maxPriceFromUrl = maxPriceParam || undefined;
+    const searchFromUrl = searchParam || undefined;
+    const conditionFromUrl = conditionParam || undefined;
+    const sortFromUrl = (sortParam || 'newest') as 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
     
-    // Update filters from URL - this will trigger a refetch via React Query
-    setFilters({
+    // Priority: Google location (city/state) > URL params > persisted location
+    const cityFromGoogle = googleLocation?.city;
+    const stateFromGoogle = googleLocation?.state;
+    const latFromGoogle = googleLocation?.lat;
+    const lngFromGoogle = googleLocation?.lng;
+    
+    // Always include persisted location coordinates if available and location is set
+    const latitudeFromUrl = latitudeParam || latFromGoogle || (locationFromUrl && (persistedLocation?.latitude || persistedLocationState?.latitude)) || undefined;
+    const longitudeFromUrl = longitudeParam || lngFromGoogle || (locationFromUrl && (persistedLocation?.longitude || persistedLocationState?.longitude)) || undefined;
+    const radiusFromUrl = radiusParam || (locationFromUrl && (persistedLocationState?.radius)) || '50';
+    
+    const result = {
       limit: 20,
       category: categoryFromUrl,
       subcategory: subcategoryFromUrl,
       location: locationFromUrl,
+      city: cityFromGoogle, // Add city from Google location
+      state: stateFromGoogle, // Add state from Google location
       minPrice: minPriceFromUrl,
       maxPrice: maxPriceFromUrl,
       search: searchFromUrl,
       condition: conditionFromUrl,
       sort: sortFromUrl,
-      latitude: searchParams.get('latitude') || undefined,
-      longitude: searchParams.get('longitude') || undefined,
-      radius: searchParams.get('radius') || '50',
-    });
+      latitude: latitudeFromUrl,
+      longitude: longitudeFromUrl,
+      radius: radiusFromUrl,
+    };
+    
+    // Debug: Log filter changes (only if location is set)
+    if (result.location) {
+      console.log('🔍 Filters updated (with location):', {
+        location: result.location,
+        latitude: result.latitude,
+        longitude: result.longitude,
+        radius: result.radius,
+        hasCoordinates: !!(result.latitude && result.longitude),
+        allFilters: result
+      });
+    }
+    
+    return result;
   }, [
-    searchParams.get('category'),
-    searchParams.get('subcategory'),
-    searchParams.get('location'),
-    searchParams.get('minPrice'),
-    searchParams.get('maxPrice'),
-    searchParams.get('search'),
-    searchParams.get('condition'),
-    searchParams.get('sort'),
-  ]); // Re-run when any search param changes
+    locationParam, latitudeParam, longitudeParam, radiusParam,
+    categoryParam, subcategoryParam, minPriceParam, maxPriceParam,
+    searchParam, conditionParam, sortParam,
+    persistedLocation, persistedLocationState, googleLocation // Include Google location in dependencies
+  ]); // Depend on individual params to detect changes
 
   // Use infinite scroll (lazy loading) for better performance
   const infiniteQuery = useInfiniteAds(filters);
@@ -142,31 +221,102 @@ function AdsPageContent() {
     }
   }, [isIntersecting, hasNextPage, isLoading, fetchNextPage]);
 
-  const handleFilterChange = (newFilters: any) => {
-    const updatedFilters = { ...filters, ...newFilters };
+  // Debounce timer ref for batching filter changes
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingFiltersRef = useRef<any>(null);
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Debounced filter change handler to batch API calls
+  const handleFilterChange = useCallback((newFilters: any) => {
+    // Update pending filters (accumulate changes)
+    pendingFiltersRef.current = { ...pendingFiltersRef.current, ...newFilters };
     
-    // IMPORTANT: If search keyword exists, remove category and subcategory filters (search overrides category)
-    if (updatedFilters.search && updatedFilters.search.trim()) {
-      updatedFilters.category = '';
-      updatedFilters.subcategory = '';
+    // Clear existing timer
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
     }
     
-    setFilters(updatedFilters);
-    
-    // Update URL with new filters - only include non-empty values
-    const params = new URLSearchParams();
-    Object.entries(updatedFilters).forEach(([key, value]) => {
-      if (value && value !== '' && key !== 'limit') {
-        params.append(key, String(value));
+    // Set new timer to batch changes (300ms debounce)
+    debounceTimerRef.current = setTimeout(() => {
+      if (!pendingFiltersRef.current) return;
+      
+      const newFiltersToApply = pendingFiltersRef.current;
+      pendingFiltersRef.current = null;
+      
+      // Mark that we're updating URL internally
+      isUpdatingUrlRef.current = true;
+      
+      // Merge with current filters from searchParams
+      const updatedFilters = { ...filters, ...newFiltersToApply };
+      
+      // IMPORTANT: If search keyword exists, remove category and subcategory filters (search overrides category)
+      if (updatedFilters.search && updatedFilters.search.trim()) {
+        updatedFilters.category = '';
+        updatedFilters.subcategory = '';
       }
-    });
-    const queryString = params.toString();
-    router.push(queryString ? `/ads?${queryString}` : '/ads', { scroll: false });
-  };
+      
+      // IMPORTANT: Preserve persisted location unless explicitly cleared
+      // Location should persist across filter changes, searches, etc.
+      if (persistedLocation?.location && !newFiltersToApply.hasOwnProperty('location')) {
+        updatedFilters.location = persistedLocation.location;
+        if (persistedLocation.latitude && persistedLocation.longitude) {
+          updatedFilters.latitude = persistedLocation.latitude;
+          updatedFilters.longitude = persistedLocation.longitude;
+          updatedFilters.radius = persistedLocation.radius || '50';
+        }
+      }
+      
+      // Update URL with new filters - only include non-empty values
+      const params = new URLSearchParams();
+      Object.entries(updatedFilters).forEach(([key, value]) => {
+        if (value && value !== '' && key !== 'limit') {
+          params.append(key, String(value));
+        }
+      });
+      
+      // Ensure persisted location is always in URL if available (unless explicitly cleared)
+      if (persistedLocation?.location && !newFiltersToApply.hasOwnProperty('location') && !params.has('location')) {
+        params.set('location', persistedLocation.location);
+        if (persistedLocation.latitude && persistedLocation.longitude) {
+          params.set('latitude', persistedLocation.latitude);
+          params.set('longitude', persistedLocation.longitude);
+          params.set('radius', persistedLocation.radius || '50');
+        }
+      }
+      
+      const queryString = params.toString();
+      // Use replace instead of push to update URL immediately without adding to history
+      router.replace(queryString ? `/ads?${queryString}` : '/ads', { scroll: false });
+      
+      // Reset flag after a brief delay to allow URL update to complete
+      setTimeout(() => {
+        isUpdatingUrlRef.current = false;
+      }, 100);
+    }, 200); // 200ms debounce for batching API calls (reduced for better UX)
+  }, [filters, persistedLocation, router]);
 
   const handleRemoveFilter = (key: string) => {
     // Remove the filter by setting it to empty string
     // handleFilterChange will automatically exclude empty values from URL
+    // IMPORTANT: If location is explicitly removed, clear it from localStorage too
+    if (key === 'location') {
+      try {
+        localStorage.removeItem('selected_location');
+        localStorage.removeItem('selected_location_coords');
+        setPersistedLocation(null);
+      } catch (error) {
+        console.error('Error clearing location from localStorage:', error);
+      }
+    }
+    
     if (key === 'price') {
       // Price filter removes both min and max
       handleFilterChange({ minPrice: '', maxPrice: '' });
@@ -176,14 +326,15 @@ function AdsPageContent() {
   };
 
   const handleClearAllFilters = () => {
+    // Clear all filters EXCEPT location (location persists)
     handleFilterChange({
       category: '',
       subcategory: '',
-      location: '',
       minPrice: '',
       maxPrice: '',
       condition: '',
       search: '',
+      // Note: location is NOT cleared - it persists
     });
   };
 
@@ -278,6 +429,16 @@ function AdsPageContent() {
                   Retry
                 </button>
               </div>
+            ) : adsData.ads.length === 0 ? (
+              <div className="bg-white rounded-lg shadow-sm p-8">
+                <EmptyState
+                  title="No ads found"
+                  message="We couldn't find any ads matching your criteria. Try adjusting your filters or clearing them to see more results."
+                  icon="search"
+                  actionLabel="Clear All Filters"
+                  onAction={handleClearAllFilters}
+                />
+              </div>
             ) : (
               <>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
@@ -285,13 +446,6 @@ function AdsPageContent() {
                     <AdCardOLX key={ad.id} ad={ad} />
                   ))}
                 </div>
-
-                {adsData.ads.length === 0 && (
-                  <div className="text-center py-12">
-                    <p className="text-gray-500 text-lg">No ads found</p>
-                    <p className="text-gray-400 text-sm mt-2">Try adjusting your filters</p>
-                  </div>
-                )}
 
                 {/* Lazy Loading - Infinite Scroll Trigger */}
                 <div ref={loadMoreRef} className="py-8">

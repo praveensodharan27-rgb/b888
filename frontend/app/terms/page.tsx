@@ -68,7 +68,7 @@ export default function TermsOfService() {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-slate-950 text-white">
       {/* Hero */}
       <div className="bg-gradient-to-r from-gray-900 to-gray-800 text-white py-16">
         <div className="container mx-auto px-4">
@@ -77,11 +77,11 @@ export default function TermsOfService() {
               <FiFileText className="w-12 h-12" />
               <h1 className="text-5xl font-bold">Terms of Service</h1>
             </div>
-            <p className="text-xl text-gray-300 mb-6">
-              Last updated: December 4, 2024
+            <p className="text-xl text-white mb-6">
+              Last updated: January 2026
             </p>
             <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
-              <p className="text-sm text-gray-200">
+              <p className="text-sm text-white">
                 Please read these terms carefully before using SellIt. By using our platform, you agree to be bound by these terms.
               </p>
             </div>
@@ -92,14 +92,14 @@ export default function TermsOfService() {
       <div className="container mx-auto px-4 py-12">
         <div className="max-w-4xl mx-auto">
           {/* Quick Links */}
-          <div className="bg-white rounded-xl shadow-md p-6 mb-8">
-            <h3 className="font-bold text-gray-900 mb-4">Quick Navigation</h3>
+          <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-md p-6 mb-8">
+            <h3 className="font-bold text-white mb-4">Quick Navigation</h3>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {sections.slice(0, 6).map((section, idx) => (
                 <a
                   key={idx}
                   href={`#section-${idx}`}
-                  className="text-sm text-blue-600 hover:text-blue-700 hover:underline"
+                  className="text-sm text-white hover:underline"
                 >
                   {section.title}
                 </a>
@@ -108,24 +108,24 @@ export default function TermsOfService() {
           </div>
 
           {/* Terms Content */}
-          <div className="bg-white rounded-xl shadow-md p-8 mb-8">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-md p-8 mb-8">
             <div className="space-y-8">
               {sections.map((section, idx) => (
                 <div key={idx} id={`section-${idx}`} className="scroll-mt-24">
-                  <h2 className="text-2xl font-bold text-gray-900 mb-4">{section.title}</h2>
-                  <p className="text-gray-700 leading-relaxed">{section.content}</p>
+                  <h2 className="text-2xl font-bold text-white mb-4">{section.title}</h2>
+                  <p className="text-white leading-relaxed">{section.content}</p>
                 </div>
               ))}
             </div>
           </div>
 
           {/* Important Notice */}
-          <div className="bg-yellow-50 border-l-4 border-yellow-500 rounded-lg p-6 mb-8">
+          <div className="bg-yellow-950/30 border border-yellow-900/40 border-l-4 border-yellow-500 rounded-lg p-6 mb-8">
             <div className="flex items-start gap-3">
-              <FiAlertCircle className="w-6 h-6 text-yellow-600 flex-shrink-0 mt-1" />
+              <FiAlertCircle className="w-6 h-6 text-yellow-400 flex-shrink-0 mt-1" />
               <div>
-                <h3 className="font-bold text-yellow-900 mb-2">Important Notice</h3>
-                <p className="text-sm text-yellow-800">
+                <h3 className="font-bold text-white mb-2">Important Notice</h3>
+                <p className="text-sm text-white">
                   These terms constitute a legally binding agreement between you and SellIt. If you do not agree with any part of these terms, you must not use our services. For questions or concerns, please contact our legal team at legal@sellit.com.
                 </p>
               </div>
@@ -136,35 +136,35 @@ export default function TermsOfService() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <Link
               href="/privacy"
-              className="bg-white rounded-xl shadow-md p-6 hover:shadow-xl transition-all hover:-translate-y-1"
+              className="bg-slate-900 border border-slate-800 rounded-xl shadow-md p-6 hover:shadow-xl transition-all hover:-translate-y-1"
             >
-              <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4">
-                <FiShield className="w-6 h-6 text-blue-600" />
+              <div className="w-12 h-12 bg-slate-800 rounded-lg flex items-center justify-center mb-4">
+                <FiShield className="w-6 h-6 text-white" />
               </div>
-              <h3 className="font-bold text-gray-900 mb-2">Privacy Policy</h3>
-              <p className="text-sm text-gray-600">Learn how we protect your data</p>
+              <h3 className="font-bold text-white mb-2">Privacy Policy</h3>
+              <p className="text-sm text-white">Learn how we protect your data</p>
             </Link>
 
             <Link
               href="/help"
-              className="bg-white rounded-xl shadow-md p-6 hover:shadow-xl transition-all hover:-translate-y-1"
+              className="bg-slate-900 border border-slate-800 rounded-xl shadow-md p-6 hover:shadow-xl transition-all hover:-translate-y-1"
             >
-              <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4">
-                <FiFileText className="w-6 h-6 text-green-600" />
+              <div className="w-12 h-12 bg-slate-800 rounded-lg flex items-center justify-center mb-4">
+                <FiFileText className="w-6 h-6 text-white" />
               </div>
-              <h3 className="font-bold text-gray-900 mb-2">Help Center</h3>
-              <p className="text-sm text-gray-600">Find answers to your questions</p>
+              <h3 className="font-bold text-white mb-2">Help Center</h3>
+              <p className="text-sm text-white">Find answers to your questions</p>
             </Link>
 
             <Link
               href="/contact"
-              className="bg-white rounded-xl shadow-md p-6 hover:shadow-xl transition-all hover:-translate-y-1"
+              className="bg-slate-900 border border-slate-800 rounded-xl shadow-md p-6 hover:shadow-xl transition-all hover:-translate-y-1"
             >
-              <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4">
-                <FiMessageCircle className="w-6 h-6 text-purple-600" />
+              <div className="w-12 h-12 bg-slate-800 rounded-lg flex items-center justify-center mb-4">
+                <FiMessageCircle className="w-6 h-6 text-white" />
               </div>
-              <h3 className="font-bold text-gray-900 mb-2">Contact Us</h3>
-              <p className="text-sm text-gray-600">Get in touch with our team</p>
+              <h3 className="font-bold text-white mb-2">Contact Us</h3>
+              <p className="text-sm text-white">Get in touch with our team</p>
             </Link>
           </div>
         </div>

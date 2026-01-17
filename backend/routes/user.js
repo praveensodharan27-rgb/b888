@@ -122,6 +122,10 @@ router.get('/public/:userId', async (req, res) => {
 // Get user profile
 router.get('/profile', authenticate, async (req, res) => {
   try {
+    // Check and reset monthly quota if needed
+    const { checkAndResetUserQuota } = require('../services/monthlyQuotaReset');
+    await checkAndResetUserQuota(req.user.id);
+
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: {
@@ -136,6 +140,9 @@ router.get('/profile', authenticate, async (req, res) => {
         provider: true,
         providerId: true,
         freeAdsUsed: true,
+        freeAdsRemaining: true,
+        freeAdsUsedThisMonth: true,
+        lastFreeAdsResetDate: true,
         createdAt: true,
         locationId: true,
         location: {
@@ -157,7 +164,138 @@ router.get('/profile', authenticate, async (req, res) => {
     });
 
     const FREE_ADS_LIMIT = 2;
-    const freeAdsRemaining = Math.max(0, FREE_ADS_LIMIT - (user?.freeAdsUsed || 0));
+    const now = new Date();
+    
+    // Sell Box Style LOGIC: Get ALL UserBusinessPackages (purchase history with full details)
+    const allUserBusinessPackages = await prisma.userBusinessPackage.findMany({
+      where: {
+        userId: req.user.id
+      },
+      orderBy: { purchaseTime: 'asc' } // Oldest purchased first
+    });
+
+    // Also get BusinessPackage for backward compatibility
+    const allBusinessPackages = await prisma.businessPackage.findMany({
+      where: {
+        userId: req.user.id,
+        status: { in: ['paid', 'verified'] }
+      },
+      select: {
+        id: true,
+        packageType: true,
+        totalAdsAllowed: true,
+        adsUsed: true,
+        premiumSlotsTotal: true,
+        premiumSlotsUsed: true,
+        expiresAt: true,
+        createdAt: true
+      }
+    });
+
+    // Use UserBusinessPackage if available, otherwise BusinessPackage
+    const packagesToUse = allUserBusinessPackages.length > 0 ? allUserBusinessPackages : allBusinessPackages;
+    
+    // Get active business packages (not expired)
+    const activeBusinessPackages = packagesToUse.filter(pkg => {
+      if ('expiresAt' in pkg && pkg.expiresAt) {
+        return new Date(pkg.expiresAt) > now;
+      }
+      if ('expiresAt' in pkg && !pkg.expiresAt) {
+        return true; // No expiry date
+      }
+      return false;
+    });
+    
+    // Separate active (with remaining ads) and exhausted packages
+    const packagesWithAds = activeBusinessPackages.filter(pkg => {
+      if ('totalAds' in pkg) {
+        // UserBusinessPackage format
+        const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+        return remaining > 0 && pkg.status === 'active';
+      } else {
+        // BusinessPackage format
+        const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+        return remaining > 0;
+      }
+    });
+    
+    const exhaustedPackages = activeBusinessPackages.filter(pkg => {
+      if ('totalAds' in pkg) {
+        // UserBusinessPackage format
+        const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+        return remaining === 0 || pkg.status === 'exhausted';
+      } else {
+        // BusinessPackage format
+        const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+        return remaining === 0;
+      }
+    });
+    
+    console.log('📦 /user/profile - Business packages (Sell Box style):', {
+      userId: req.user.id,
+      allPackagesCount: packagesToUse.length,
+      userBusinessPackagesCount: allUserBusinessPackages.length,
+      legacyBusinessPackagesCount: allBusinessPackages.length,
+      activePackagesCount: activeBusinessPackages.length,
+      packagesWithAdsCount: packagesWithAds.length,
+      exhaustedPackagesCount: exhaustedPackages.length,
+      packages: packagesToUse.map(pkg => {
+        if ('totalAds' in pkg) {
+          const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+          return {
+            id: pkg.id,
+            packageType: pkg.packageType,
+            totalAds: pkg.totalAds,
+            usedAds: pkg.usedAds,
+            remaining: remaining,
+            status: pkg.status,
+            purchasedAt: pkg.purchaseTime,
+            expiresAt: pkg.expiresAt
+          };
+        } else {
+          const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+          return {
+            id: pkg.id,
+            packageType: pkg.packageType,
+            totalAdsAllowed: pkg.totalAdsAllowed,
+            adsUsed: pkg.adsUsed,
+            remaining: remaining,
+            status: remaining === 0 ? 'EXHAUSTED' : 'ACTIVE',
+            expiresAt: pkg.expiresAt
+          };
+        }
+      })
+    });
+    
+    // Calculate business ads remaining from active packages (only those with remaining ads)
+    const businessAdsRemaining = packagesWithAds.reduce((sum, pkg) => {
+      if ('totalAds' in pkg) {
+        // UserBusinessPackage format
+        const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+        console.log(`   Package ${pkg.id}: ${pkg.totalAds || 0} - ${pkg.usedAds || 0} = ${remaining}`);
+        return sum + remaining;
+      } else {
+        // BusinessPackage format
+        const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+        console.log(`   Package ${pkg.id}: ${pkg.totalAdsAllowed || 0} - ${pkg.adsUsed || 0} = ${remaining}`);
+        return sum + remaining;
+      }
+    }, 0);
+    
+    console.log('📊 /user/profile - Business ads remaining:', businessAdsRemaining);
+    
+    // Free ads are only available AFTER all business package ads are used
+    const freeAdsRemaining = user?.freeAdsRemaining ?? FREE_ADS_LIMIT;
+    const freeAdsUsed = user?.freeAdsUsedThisMonth || 0; // Use monthly counter
+    
+    // Calculate next reset date (1st of next month)
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    nextMonth.setHours(0, 0, 0, 0);
+    
+    // Total remaining ads (business first, then free)
+    const totalRemaining = businessAdsRemaining > 0 
+      ? businessAdsRemaining 
+      : freeAdsRemaining;
 
     // Get follower and following counts
     const [followersCount, followingCount] = await Promise.all([
@@ -165,52 +303,273 @@ router.get('/profile', authenticate, async (req, res) => {
       prisma.follow.count({ where: { followerId: req.user.id } })
     ]);
 
-    // Get business package status for premium slots information
-    const now = new Date();
-    const activePackages = await prisma.businessPackage.findMany({
-      where: {
-        userId: req.user.id,
-        status: 'paid',
-        expiresAt: {
-          gt: now
-        }
-      },
-      select: {
-        id: true,
-        packageType: true,
-        premiumSlotsTotal: true,
-        premiumSlotsUsed: true,
-        expiresAt: true
-      }
-    });
+    // Get active packages for premium slots information
+    const activePackages = activeBusinessPackages.map(pkg => ({
+      id: pkg.id,
+      packageType: pkg.packageType,
+      expiresAt: pkg.expiresAt
+    }));
 
-    // Aggregate premium slots from all active packages
-    const totalPremiumSlots = activePackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsTotal || 0), 0);
-    const usedPremiumSlots = activePackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsUsed || 0), 0);
+    // Aggregate premium slots from all active packages (deprecated but kept for compatibility)
+    const totalPremiumSlots = activeBusinessPackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsTotal || 0), 0);
+    const usedPremiumSlots = activeBusinessPackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsUsed || 0), 0);
     const availablePremiumSlots = Math.max(0, totalPremiumSlots - usedPremiumSlots);
-    const hasActiveBusinessPackage = activePackages.length > 0;
 
     res.json({ 
       success: true, 
       user: {
         ...user,
-        freeAdsRemaining,
+        // Free ads information (monthly)
+        freeAdsRemaining: businessAdsRemaining > 0 ? 0 : freeAdsRemaining, // Only show if no business ads
+        freeAdsUsed,
+        freeAdsUsedThisMonth: freeAdsUsed, // Monthly counter
         freeAdsLimit: FREE_ADS_LIMIT,
-        followersCount,
-        followingCount,
-        // Business package premium slots information
+        // Monthly quota info
+        isMonthlyQuota: true,
+        nextResetDate: nextMonth.toISOString(),
+        lastResetDate: user?.lastFreeAdsResetDate?.toISOString() || null,
+        // Business package information
         businessPackage: {
-          hasActive: hasActiveBusinessPackage,
+          totalPurchased: allBusinessPackages.length, // Total packages purchased (all time)
+          activeCount: activeBusinessPackages.length, // Currently active packages (not expired)
+          packagesWithAdsCount: packagesWithAds.length, // Packages with remaining ads
+          exhaustedPackagesCount: exhaustedPackages.length, // Exhausted packages
+          businessAdsRemaining: businessAdsRemaining, // Always show actual count
+          totalRemaining: businessAdsRemaining + freeAdsRemaining, // Sum of both
+          hasActive: activeBusinessPackages.length > 0,
+          // Premium slots (deprecated but kept for compatibility)
           premiumSlotsTotal: totalPremiumSlots,
           premiumSlotsUsed: usedPremiumSlots,
           premiumSlotsAvailable: availablePremiumSlots,
-          activePackagesCount: activePackages.length
-        }
+          // ALL packages list (active + exhausted + expired) - Sell Box Style: Always show purchased packages with full details
+          allPackages: packagesToUse.map(pkg => {
+            if ('totalAds' in pkg) {
+              // UserBusinessPackage format - Full purchase details
+              const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+              const now = new Date();
+              const isExpired = pkg.expiresAt && new Date(pkg.expiresAt) <= now;
+              const isExhausted = remaining === 0 && !isExpired;
+              
+              return {
+                id: pkg.id,
+                packageId: pkg.id,
+                packageType: pkg.packageType,
+                packageName: `${pkg.packageType?.replace('_', ' ')} Package`,
+                totalAds: pkg.totalAds || 0,
+                totalAdsAllowed: pkg.totalAds || 0, // For compatibility
+                adsUsed: pkg.usedAds || 0,
+                usedAds: pkg.usedAds || 0, // For compatibility
+                adsRemaining: remaining,
+                isExhausted: isExhausted,
+                isExpired: isExpired,
+                status: isExpired ? 'EXPIRED' : (isExhausted ? 'EXHAUSTED' : 'ACTIVE'),
+                expiresAt: pkg.expiresAt,
+                purchasedAt: pkg.purchaseTime,
+                purchaseTime: pkg.purchaseTime,
+                amount: pkg.amount,
+                allowedCategories: pkg.allowedCategories || []
+              };
+            } else {
+              // BusinessPackage format (backward compatibility)
+              const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+              return {
+                id: pkg.id,
+                packageId: pkg.id,
+                packageType: pkg.packageType,
+                packageName: `${pkg.packageType?.replace('_', ' ')} Package`,
+                totalAds: pkg.totalAdsAllowed || 0,
+                totalAdsAllowed: pkg.totalAdsAllowed || 0,
+                adsUsed: pkg.adsUsed || 0,
+                usedAds: pkg.adsUsed || 0,
+                adsRemaining: remaining,
+                isExhausted: remaining === 0,
+                status: remaining === 0 ? 'EXHAUSTED' : 'ACTIVE',
+                expiresAt: pkg.expiresAt,
+                purchasedAt: pkg.createdAt,
+                purchaseTime: pkg.createdAt
+              };
+            }
+          }),
+          // Legacy: activePackages for backward compatibility
+          activePackages: activeBusinessPackages.map(pkg => {
+            if ('totalAds' in pkg) {
+              const remaining = (pkg.totalAds || 0) - (pkg.usedAds || 0);
+              return {
+                id: pkg.id,
+                packageType: pkg.packageType,
+                totalAdsAllowed: pkg.totalAds || 0,
+                adsUsed: pkg.usedAds || 0,
+                adsRemaining: remaining,
+                isExhausted: remaining === 0,
+                status: remaining === 0 ? 'EXHAUSTED' : 'ACTIVE',
+                expiresAt: pkg.expiresAt,
+                purchasedAt: pkg.purchaseTime
+              };
+            } else {
+              const remaining = (pkg.totalAdsAllowed || 0) - (pkg.adsUsed || 0);
+              return {
+                id: pkg.id,
+                packageType: pkg.packageType,
+                totalAdsAllowed: pkg.totalAdsAllowed || 0,
+                adsUsed: pkg.adsUsed || 0,
+                adsRemaining: remaining,
+                isExhausted: remaining === 0,
+                status: remaining === 0 ? 'EXHAUSTED' : 'ACTIVE',
+                expiresAt: pkg.expiresAt,
+                purchasedAt: pkg.createdAt
+              };
+            }
+          })
+        },
+        // Social counts
+        followersCount,
+        followingCount
       }
     });
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch profile' });
+  }
+});
+
+// Get user profile statistics
+router.get('/stats', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Get user basic info
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        avatar: true,
+        isVerified: true,
+        freeAdsUsed: true,
+        createdAt: true
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const FREE_ADS_LIMIT = 2;
+    const freeAdsRemaining = Math.max(0, FREE_ADS_LIMIT - (user.freeAdsUsed || 0));
+
+    // Get ad statistics
+    const [
+      totalAds,
+      activeAds,
+      pendingAds,
+      rejectedAds,
+      favoritesCount,
+      followersCount,
+      followingCount,
+      walletBalance
+    ] = await Promise.all([
+      prisma.ad.count({ where: { userId } }),
+      prisma.ad.count({ where: { userId, status: 'APPROVED' } }),
+      prisma.ad.count({ where: { userId, status: 'PENDING' } }),
+      prisma.ad.count({ where: { userId, status: 'REJECTED' } }),
+      prisma.favorite.count({ where: { userId } }),
+      prisma.follow.count({ where: { followingId: userId } }),
+      prisma.follow.count({ where: { followerId: userId } }),
+      prisma.wallet.findUnique({ where: { userId }, select: { balance: true } })
+        .then(wallet => wallet?.balance || 0)
+        .catch(() => 0)
+    ]);
+
+    // Get business package statistics
+    const now = new Date();
+    const activePackages = await prisma.businessPackage.findMany({
+      where: {
+        userId,
+        status: { in: ['paid', 'verified'] },
+        expiresAt: { gt: now }
+      },
+      select: {
+        premiumSlotsTotal: true,
+        premiumSlotsUsed: true
+      }
+    });
+
+    const totalPremiumSlots = activePackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsTotal || 0), 0);
+    const usedPremiumSlots = activePackages.reduce((sum, pkg) => sum + (pkg.premiumSlotsUsed || 0), 0);
+    const availablePremiumSlots = Math.max(0, totalPremiumSlots - usedPremiumSlots);
+
+    // Get payment order statistics
+    const [
+      totalPayments,
+      successfulPayments,
+      totalSpent
+    ] = await Promise.all([
+      prisma.paymentOrder.count({ where: { userId } }),
+      prisma.paymentOrder.count({ where: { userId, status: 'paid' } }),
+      prisma.paymentOrder.aggregate({
+        where: { userId, status: 'paid' },
+        _sum: { amount: true }
+      }).then(result => (result._sum.amount || 0) / 100) // Convert from paise to rupees
+    ]);
+
+    res.json({
+      success: true,
+      stats: {
+        // User info
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          avatar: user.avatar,
+          isVerified: user.isVerified,
+          createdAt: user.createdAt
+        },
+        // Ads statistics
+        ads: {
+          total: totalAds,
+          active: activeAds,
+          pending: pendingAds,
+          rejected: rejectedAds,
+          freeAdsUsed: user.freeAdsUsed || 0,
+          freeAdsRemaining,
+          freeAdsLimit: FREE_ADS_LIMIT
+        },
+        // Social statistics
+        social: {
+          followers: followersCount,
+          following: followingCount,
+          favorites: favoritesCount
+        },
+        // Business package statistics
+        businessPackage: {
+          hasActive: activePackages.length > 0,
+          activePackagesCount: activePackages.length,
+          premiumSlotsTotal: totalPremiumSlots,
+          premiumSlotsUsed: usedPremiumSlots,
+          premiumSlotsAvailable: availablePremiumSlots
+        },
+        // Wallet statistics
+        wallet: {
+          balance: walletBalance
+        },
+        // Payment statistics
+        payments: {
+          total: totalPayments,
+          successful: successfulPayments,
+          totalSpent: totalSpent
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get profile stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch profile statistics',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -585,7 +944,31 @@ router.get('/notifications', authenticate, async (req, res) => {
   }
 });
 
-// Mark notification as read
+// Mark notification as read (POST version)
+router.post('/notifications/read', authenticate, async (req, res) => {
+  try {
+    const { notificationId } = req.body;
+
+    if (!notificationId) {
+      return res.status(400).json({ success: false, message: 'Notification ID is required' });
+    }
+
+    await prisma.notification.updateMany({
+      where: {
+        id: notificationId,
+        userId: req.user.id
+      },
+      data: { isRead: true }
+    });
+
+    res.json({ success: true, message: 'Notification marked as read' });
+  } catch (error) {
+    console.error('Mark notification read error:', error);
+    res.status(500).json({ success: false, message: 'Failed to mark notification as read' });
+  }
+});
+
+// Mark notification as read (PUT version)
 router.put('/notifications/:id/read', authenticate, async (req, res) => {
   try {
     await prisma.notification.updateMany({
@@ -717,6 +1100,132 @@ router.get('/orders', authenticate, async (req, res) => {
   }
 });
 
+// Get invoice data as JSON (for frontend display)
+router.get('/orders/:orderId/invoice-data', authenticate, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { type } = req.query; // 'premium' or 'ad-posting'
+
+    let order;
+    if (type === 'premium') {
+      order = await prisma.premiumOrder.findUnique({
+        where: { id: orderId },
+        include: {
+          ad: {
+            select: {
+              id: true,
+              title: true,
+              price: true,
+              images: true
+            }
+          },
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true
+            }
+          }
+        }
+      });
+    } else {
+      order = await prisma.adPostingOrder.findUnique({
+        where: { id: orderId },
+        include: {
+          ad: {
+            select: {
+              id: true,
+              title: true,
+              price: true,
+              images: true
+            }
+          },
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true
+            }
+          }
+        }
+      });
+    }
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    if (order.userId !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    // Format invoice data
+    const orderDate = new Date(order.createdAt);
+    let itemDescription = '';
+    let itemQuantity = 1;
+    
+    if (type === 'premium') {
+      const typeLabels = {
+        TOP: 'Top Ad Premium',
+        FEATURED: 'Featured Ad Premium',
+        BUMP_UP: 'Bump Up Premium'
+      };
+      itemDescription = typeLabels[order.type] || 'Premium Ad Service';
+      if (order.ad) {
+        itemDescription += ` - ${order.ad.title}`;
+      }
+    } else {
+      itemDescription = 'Ad Posting Service';
+      if (order.ad) {
+        itemDescription += ` - ${order.ad.title}`;
+      }
+    }
+
+    const invoiceData = {
+      invoiceNumber: orderId,
+      date: orderDate.toLocaleDateString('en-IN', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      }),
+      billedTo: {
+        name: order.user.name || 'Customer',
+        email: order.user.email || '',
+        phone: order.user.phone || '',
+        address: '123 Anywhere St., Any City' // You can add address field later
+      },
+      from: {
+        name: 'SellIt Platform',
+        email: 'hello@reallygreatsite.com',
+        phone: '',
+        address: '123 Anywhere St., Any City'
+      },
+      items: [
+        {
+          description: itemDescription,
+          quantity: itemQuantity,
+          price: order.amount,
+          amount: order.amount
+        }
+      ],
+      total: order.amount,
+      paymentMethod: order.razorpayPaymentId ? 'Online Payment' : 'Cash',
+      note: 'Thank you for choosing us!',
+      orderDate: orderDate.toISOString(),
+      razorpayOrderId: order.razorpayOrderId || null,
+      razorpayPaymentId: order.razorpayPaymentId || null,
+      status: order.status
+    };
+
+    res.json({ success: true, invoice: invoiceData });
+  } catch (error) {
+    console.error('Get invoice data error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch invoice data' });
+  }
+});
+
 // Generate invoice PDF for an order
 router.get('/orders/:orderId/invoice', authenticate, async (req, res) => {
   try {
@@ -780,6 +1289,8 @@ router.get('/orders/:orderId/invoice', authenticate, async (req, res) => {
 
     // Generate PDF
     const PDFDocument = require('pdfkit');
+    const fs = require('fs');
+    const path = require('path');
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
 
     // Set response headers
@@ -789,57 +1300,94 @@ router.get('/orders/:orderId/invoice', authenticate, async (req, res) => {
     // Pipe PDF to response
     doc.pipe(res);
 
-    // Invoice Header
-    doc.fontSize(24).text('INVOICE', { align: 'center' });
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const margin = 50;
+
+    // Format invoice number (pad with zeros)
+    const invoiceNumber = String(orderId).padStart(6, '0');
+    const orderDate = new Date(order.createdAt);
+    const formattedDate = orderDate.toLocaleDateString('en-IN', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+
+    // Top section - Logo area (left) and Invoice number (right)
+    const logoPath = path.join(__dirname, '../frontend/public/logo.png');
+    let logoAdded = false;
+    
+    // Try to add logo if it exists
+    if (fs.existsSync(logoPath)) {
+      try {
+        doc.image(logoPath, margin, margin, { width: 120, height: 40, fit: [120, 40] });
+        logoAdded = true;
+      } catch (error) {
+        console.warn('Could not add logo to PDF:', error.message);
+      }
+    }
+    
+    // If logo wasn't added, show text placeholder
+    if (!logoAdded) {
+      doc.fontSize(8).text('SellIt', margin, margin);
+    }
+    
+    // Invoice number on the right
+    doc.fontSize(10).font('Helvetica-Bold').text(`NO. ${invoiceNumber}`, pageWidth - margin - 100, margin, { align: 'right' });
+    
+    // Invoice title - large and centered
+    doc.y = margin + (logoAdded ? 50 : 20);
+    doc.moveDown(logoAdded ? 1.5 : 2);
+    doc.fontSize(36).font('Helvetica-Bold').text('INVOICE', { align: 'center' });
+    
+    // Date below title
     doc.moveDown(0.5);
-    doc.fontSize(10).text(`Invoice #: ${orderId}`, { align: 'center' });
+    doc.fontSize(11).font('Helvetica').text(`Date: ${formattedDate}`, { align: 'center' });
     doc.moveDown(2);
 
-    // Company/Platform Info
-    doc.fontSize(12).text('SellIt Platform', { align: 'left' });
-    doc.fontSize(10).text('Online Marketplace', { align: 'left' });
-    doc.moveDown(1);
+    // Two columns: Billed to (left) and From (right)
+    const columnWidth = (pageWidth - 2 * margin) / 2;
+    const currentY = doc.y;
 
-    // Bill To
-    doc.fontSize(12).text('Bill To:', { underline: true });
-    doc.fontSize(10).text(order.user.name || 'Customer');
-    if (order.user.email) doc.text(order.user.email);
-    if (order.user.phone) doc.text(order.user.phone);
-    doc.moveDown(1);
+    // Billed to section (left) - with background
+    doc.rect(margin, currentY, columnWidth - 10, 70).fillAndStroke('#f9fafb', '#e5e7eb');
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#111827').text('Billed to:', margin + 8, currentY + 8);
+    doc.fontSize(10).font('Helvetica');
+    doc.fillColor('#1f2937').text(order.user.name || 'Customer', margin + 8, currentY + 22);
+    if (order.user.email) {
+      doc.text(order.user.email, margin + 8, currentY + 35);
+    }
+    if (order.user.phone) {
+      doc.text(order.user.phone, margin + 8, currentY + 48);
+    }
 
-    // Order Details
-    doc.fontSize(12).text('Order Details:', { underline: true });
-    doc.fontSize(10);
-    
-    const orderDate = new Date(order.createdAt);
-    doc.text(`Order Date: ${orderDate.toLocaleDateString('en-IN', { 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })}`);
-    
-    if (order.razorpayOrderId) {
-      doc.text(`Razorpay Order ID: ${order.razorpayOrderId}`);
-    }
-    if (order.razorpayPaymentId) {
-      doc.text(`Payment ID: ${order.razorpayPaymentId}`);
-    }
-    doc.text(`Status: ${order.status.toUpperCase()}`);
-    doc.moveDown(1);
+    // From section (right) - with orange background
+    doc.rect(margin + columnWidth + 10, currentY, columnWidth - 10, 70).fillAndStroke('#fff7ed', '#fed7aa');
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#111827').text('From:', margin + columnWidth + 18, currentY + 8);
+    doc.fontSize(10).font('Helvetica');
+    doc.fillColor('#1f2937').text('SellIt Platform', margin + columnWidth + 18, currentY + 22);
+    doc.text('123 Anywhere St., Any City', margin + columnWidth + 18, currentY + 35);
+    doc.text('hello@reallygreatsite.com', margin + columnWidth + 18, currentY + 48);
+
+    doc.y = currentY + 80;
+    doc.moveDown(1.5);
+    doc.fillColor('#000000'); // Reset fill color
 
     // Items Table
-    doc.fontSize(12).text('Items:', { underline: true });
-    doc.moveDown(0.5);
-
-    // Table header
     const tableTop = doc.y;
-    doc.fontSize(10);
-    doc.text('Description', 50, tableTop);
-    doc.text('Amount', 450, tableTop, { align: 'right' });
-    doc.moveTo(50, doc.y + 5).lineTo(550, doc.y + 5).stroke();
-    doc.moveDown(0.5);
+    const tableLeft = margin;
+    const tableRight = pageWidth - margin;
+    const tableWidth = tableRight - tableLeft;
+    
+    // Table header with gradient-like dark background
+    doc.rect(tableLeft, tableTop, tableWidth, 30).fill('#374151');
+    doc.fontSize(10).font('Helvetica-Bold');
+    doc.fillColor('#ffffff');
+    doc.text('Item', tableLeft + 10, tableTop + 10);
+    doc.text('Quantity', tableLeft + tableWidth * 0.4, tableTop + 10, { align: 'center' });
+    doc.text('Price', tableLeft + tableWidth * 0.65, tableTop + 10, { align: 'right' });
+    doc.text('Amount', tableRight - 10, tableTop + 10, { align: 'right' });
+    doc.fillColor('#000000'); // Reset for body
 
     // Item row
     let itemDescription = '';
@@ -860,23 +1408,69 @@ router.get('/orders/:orderId/invoice', authenticate, async (req, res) => {
       }
     }
 
-    doc.text(itemDescription, 50);
-    doc.text(`₹${order.amount.toLocaleString('en-IN')}`, 450, doc.y - 12, { align: 'right' });
-    doc.moveDown(1);
-
-    // Total
-    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
-    doc.moveDown(0.5);
-    doc.fontSize(12).font('Helvetica-Bold');
-    doc.text('Total Amount:', 350);
-    doc.text(`₹${order.amount.toLocaleString('en-IN')}`, 450, doc.y - 14, { align: 'right' });
-    doc.moveDown(2);
-
-    // Footer
+    const itemRowY = tableTop + 35;
+    // Alternate row background
+    doc.rect(tableLeft, itemRowY - 5, tableWidth, 25).fill('#f9fafb');
     doc.fontSize(10).font('Helvetica');
-    doc.text('Thank you for your business!', { align: 'center' });
-    doc.moveDown(0.5);
-    doc.text('This is a computer-generated invoice.', { align: 'center' });
+    doc.fillColor('#1f2937');
+    doc.text(itemDescription, tableLeft + 10, itemRowY);
+    doc.text('1', tableLeft + tableWidth * 0.4, itemRowY, { align: 'center' });
+    doc.text(`₹${order.amount.toLocaleString('en-IN')}`, tableLeft + tableWidth * 0.65, itemRowY, { align: 'right' });
+    doc.font('Helvetica-Bold');
+    doc.text(`₹${order.amount.toLocaleString('en-IN')}`, tableRight - 10, itemRowY, { align: 'right' });
+
+    doc.y = itemRowY + 30;
+    doc.font('Helvetica'); // Reset font
+
+    // Total section with orange background
+    doc.moveDown(1);
+    const totalY = doc.y;
+    const totalBoxWidth = 250;
+    const totalBoxLeft = tableRight - totalBoxWidth;
+    doc.rect(totalBoxLeft, totalY, totalBoxWidth, 50).fillAndStroke('#f97316', '#ea580c');
+    doc.fontSize(11).font('Helvetica-Bold');
+    doc.fillColor('#ffffff');
+    doc.text('Total', totalBoxLeft + 10, totalY + 10, { align: 'right' });
+    doc.fontSize(20);
+    doc.text(`₹${order.amount.toLocaleString('en-IN')}`, totalBoxLeft + 10, totalY + 25, { align: 'right' });
+    doc.fillColor('#000000'); // Reset
+
+    doc.y = totalY + 60;
+    doc.moveDown(1.5);
+
+    // Payment method and Note with blue background
+    const paymentMethod = order.razorpayPaymentId ? 'Online Payment' : 'Cash';
+    const infoBoxY = doc.y;
+    doc.rect(margin, infoBoxY, tableWidth, 50).fillAndStroke('#dbeafe', '#93c5fd');
+    doc.fontSize(10).font('Helvetica');
+    doc.fillColor('#1e40af');
+    doc.font('Helvetica-Bold').text('Payment method:', margin + 10, infoBoxY + 8);
+    doc.font('Helvetica').text(paymentMethod, margin + 10, infoBoxY + 22);
+    doc.moveTo(margin + 10, infoBoxY + 35).lineTo(tableRight - 10, infoBoxY + 35).stroke('#93c5fd');
+    doc.font('Helvetica-Bold').text('Note:', margin + 10, infoBoxY + 40);
+    doc.font('Helvetica').text('Thank you for choosing us!', margin + 10, infoBoxY + 52);
+    doc.fillColor('#000000'); // Reset
+
+    // Decorative footer with waves
+    const footerY = pageHeight - 100;
+    
+    // Light grey wave (top)
+    doc.fillColor('#e5e7eb');
+    doc.moveTo(margin, footerY);
+    doc.quadraticCurveTo(pageWidth / 2, footerY - 20, pageWidth - margin, footerY);
+    doc.lineTo(pageWidth - margin, pageHeight - margin);
+    doc.lineTo(margin, pageHeight - margin);
+    doc.closePath();
+    doc.fill();
+    
+    // Dark grey wave (bottom, larger)
+    doc.fillColor('#4b5563');
+    doc.moveTo(margin, footerY + 10);
+    doc.quadraticCurveTo(pageWidth / 2, footerY + 30, pageWidth - margin, footerY + 10);
+    doc.lineTo(pageWidth - margin, pageHeight - margin);
+    doc.lineTo(margin, pageHeight - margin);
+    doc.closePath();
+    doc.fill();
 
     // Finalize PDF
     doc.end();
@@ -1019,6 +1613,207 @@ router.get('/deactivation-status', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get deactivation status error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch deactivation status' });
+  }
+});
+
+// Delete account permanently
+router.delete('/account', authenticate, async (req, res) => {
+  try {
+    const { password, confirm } = req.body;
+    
+    if (!confirm || confirm !== 'DELETE') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please type DELETE to confirm account deletion' 
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { password: true }
+    });
+
+    if (user.password) {
+      if (!password) {
+        return res.status(400).json({ success: false, message: 'Password is required' });
+      }
+      
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      if (!isPasswordValid) {
+        return res.status(401).json({ success: false, message: 'Invalid password' });
+      }
+    }
+
+    // Delete user account and related data
+    await prisma.user.delete({
+      where: { id: req.user.id }
+    });
+
+    res.json({ success: true, message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete account' });
+  }
+});
+
+// Get user activity log
+router.get('/activity-log', authenticate, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, type } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const where = { userId: req.user.id };
+    if (type) where.type = type;
+
+    const [activities, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        skip,
+        take: parseInt(limit),
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          type: true,
+          action: true,
+          description: true,
+          createdAt: true,
+          metadata: true
+        }
+      }),
+      prisma.auditLog.count({ where })
+    ]);
+
+    res.json({
+      success: true,
+      activities,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Get activity log error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch activity log' });
+  }
+});
+
+// Update notification settings
+router.put('/notification-settings', authenticate, async (req, res) => {
+  try {
+    const { 
+      emailNotifications,
+      pushNotifications,
+      smsNotifications,
+      adUpdates,
+      messages,
+      favorites
+    } = req.body;
+
+    // Store notification preferences (you may need to add a UserSettings model)
+    // For now, we'll store in user metadata or create a settings field
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        // Add notification settings fields to User model if needed
+        // For now, using a JSON field or separate settings table
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Notification settings updated successfully' 
+    });
+  } catch (error) {
+    console.error('Update notification settings error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update notification settings' });
+  }
+});
+
+// Get public profile by user ID (alternative endpoint)
+router.get('/users/:id/public-profile', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        avatar: true,
+        bio: true,
+        showPhone: true,
+        isVerified: true,
+        createdAt: true,
+        _count: {
+          select: {
+            ads: true
+          }
+        }
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const [followersCount, followingCount] = await Promise.all([
+      prisma.follow.count({ where: { followingId: id } }),
+      prisma.follow.count({ where: { followerId: id } })
+    ]);
+
+    const phoneNumber = user.showPhone ? user.phone : null;
+    const { showPhone, ...userWithoutPrivacy } = user;
+
+    res.json({
+      success: true,
+      user: {
+        ...userWithoutPrivacy,
+        phone: phoneNumber,
+        followersCount,
+        followingCount
+      }
+    });
+  } catch (error) {
+    console.error('Get public profile error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch user profile' });
+  }
+});
+
+// Get recent ad views
+router.get('/recent-views', authenticate, async (req, res) => {
+  try {
+    const { limit = 20 } = req.query;
+    
+    // Get recently viewed ads (you may need to track views in a separate table)
+    // For now, returning recent ads user interacted with
+    const recentAds = await prisma.ad.findMany({
+      where: {
+        favorites: {
+          some: { userId: req.user.id }
+        }
+      },
+      take: parseInt(limit),
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        title: true,
+        price: true,
+        images: true,
+        location: true,
+        createdAt: true
+      }
+    });
+
+    res.json({
+      success: true,
+      recentViews: recentAds
+    });
+  } catch (error) {
+    console.error('Get recent views error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch recent views' });
   }
 });
 

@@ -3,27 +3,16 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { FiBriefcase, FiCheckCircle, FiXCircle, FiCreditCard, FiCalendar, FiStar, FiTrendingUp, FiZap, FiChevronDown, FiHome, FiSearch, FiAward } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import dynamic from 'next/dynamic';
 import { format } from 'date-fns';
-
-// Lazy load PaymentModal (heavy component with Razorpay SDK)
-// Using same simple pattern as other components
-const PaymentModal = dynamic(() => import('@/components/PaymentModal'), {
-  loading: () => null,
-  ssr: false
-});
 
 export default function BusinessPackagePage() {
   const router = useRouter();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const queryClient = useQueryClient();
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentOrder, setPaymentOrder] = useState<any>(null);
-  const [selectedPackageType, setSelectedPackageType] = useState<string | null>(null);
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const [redirectingPackageType, setRedirectingPackageType] = useState<string | null>(null);
   const [billingPeriod, setBillingPeriod] = useState<'monthly' | 'yearly'>('monthly');
   const [openFaq, setOpenFaq] = useState<number | null>(null);
 
@@ -66,176 +55,60 @@ export default function BusinessPackagePage() {
     enabled: isAuthenticated,
   });
 
-  // Create order mutation
-  const createOrder = useMutation({
-    mutationFn: async (packageType: string) => {
-      console.log('📤 Creating order for package:', packageType);
-      try {
-        const response = await api.post('/business-package/order', { packageType });
-        console.log('✅ Order creation response:', response.data);
-        return response.data;
-      } catch (error: any) {
-        console.error('❌ Order creation error:', error);
-        console.error('Error response:', error.response);
-        console.error('Error data:', error.response?.data);
-        throw error;
-      }
-    },
-    onSuccess: (data) => {
-      console.log('✅ Order created, setting payment order:', data);
-      console.log('📦 Order data structure:', {
-        hasData: !!data,
-        hasRazorpayOrder: !!data?.razorpayOrder,
-        hasOrder: !!data?.order,
-        razorpayOrderId: data?.razorpayOrder?.id,
-        razorpayOrderAmount: data?.razorpayOrder?.amount,
-        razorpayOrderKey: data?.razorpayOrder?.key
-      });
-      
-      if (!data || !data.razorpayOrder) {
-        console.error('❌ Invalid order data:', data);
-        toast.error('Invalid order data received. Please try again.');
-        return;
-      }
-      
-      if (!data.razorpayOrder.id) {
-        console.error('❌ Missing Razorpay order ID:', data);
-        toast.error('Order ID missing. Please try again.');
-        return;
-      }
-      
-      if (!data.razorpayOrder.key) {
-        console.error('❌ Missing Razorpay key:', data);
-        toast.error('Payment gateway key missing. Please contact support.');
-        return;
-      }
-      
-      console.log('✅ Setting payment order and showing modal');
-      setPaymentOrder(data);
-      setShowPaymentModal(true);
-      console.log('✅ Payment modal should now be visible');
-    },
-    onError: (error: any) => {
-      console.error('❌ Order creation mutation error:', error);
-      const errorMessage = error.response?.data?.message || error.message || 'Failed to create order';
-      console.error('Error message:', errorMessage);
-      toast.error(errorMessage);
-    },
-  });
-
-  // Verify payment mutation
-  const verifyPayment = useMutation({
-    mutationFn: async (data: { orderId: string; paymentId: string; signature: string }) => {
-      const response = await api.post('/business-package/verify', data);
-      return response.data;
-    },
-    onSuccess: () => {
-      toast.success('Business package activated successfully!');
-      setShowPaymentModal(false);
-      setPaymentOrder(null);
-      setSelectedPackageType(null);
-      refetchStatus();
-      
-      // CRITICAL: Invalidate and refetch all quota-related queries immediately
-      console.log('🔄 Invalidating queries after package purchase...');
-      queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
-      queryClient.invalidateQueries({ queryKey: ['user-profile'] });
-      queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
-      
-      // Force immediate refetch with multiple attempts to ensure update
-      const refetchQuota = async () => {
-        try {
-          await queryClient.refetchQueries({ queryKey: ['ad-limit-status'] });
-          await queryClient.refetchQueries({ queryKey: ['user-profile'] });
-          await queryClient.refetchQueries({ queryKey: ['business-package', 'status'] });
-          console.log('✅ Queries refetched after package purchase');
-        } catch (error) {
-          console.error('❌ Error refetching queries:', error);
-        }
-      };
-      
-      // Immediate refetch
-      refetchQuota();
-      
-      // Additional refetch after delay (in case socket event is delayed)
-      setTimeout(() => {
-        refetchQuota();
-      }, 500);
-      
-      setTimeout(() => {
-        refetchQuota();
-      }, 1500);
-      
-      // Redirect to post-ad page with query param to trigger refetch
-      setTimeout(() => {
-        router.push('/post-ad?from=purchase');
-      }, 2000);
-    },
-    onError: (error: any) => {
-      toast.error(error.response?.data?.message || 'Payment verification failed');
-    },
-  });
-
   const handlePurchase = (packageType: string) => {
-    console.log('🛒 Purchase button clicked for package:', packageType);
-    console.log('📊 Current mutation state:', {
-      isPending: createOrder.isPending,
-      status: createOrder.status,
-      isError: createOrder.isError,
-      isSuccess: createOrder.isSuccess
+    if (!user?.id) {
+      router.push('/login');
+      return;
+    }
+
+    const selected = packagesData?.find((pkg: any) => pkg.type === packageType);
+    if (!selected) {
+      toast.error('Package not found. Please refresh and try again.');
+      return;
+    }
+
+    const isBasic = packageType === 'MAX_VISIBILITY';
+    const isPopular = packageType === 'SELLER_PLUS';
+    const packageName = isBasic ? 'Business Basic' : isPopular ? 'Business Pro' : 'Business Enterprise';
+
+    // Compute displayed price (same as cards). Payment will be created on /payment automatically.
+    const getPrice = (pkg: any) => {
+      if (!pkg) return 0;
+      const monthly = pkg.priceMonthly ?? pkg.price ?? pkg.amount ?? 0;
+      const yearly = pkg.priceYearly ?? (monthly ? Math.round(monthly * 12 * 0.8) : 0);
+      return billingPeriod === 'yearly' ? yearly : monthly;
+    };
+    const price = getPrice(selected);
+
+    // Save selection (Requirement #2)
+    try {
+      sessionStorage.setItem(
+        'business_package_checkout',
+        JSON.stringify({
+          flow: 'business-package',
+          packageType,
+          packageId: selected.id || selected.packageId || '',
+          packageName,
+          price,
+          userId: user.id,
+        })
+      );
+    } catch {
+      // ignore storage errors
+    }
+
+    setRedirectingPackageType(packageType);
+
+    // Redirect immediately to payment page (Requirement #3)
+    const qp = new URLSearchParams({
+      flow: 'business-package',
+      packageType,
+      packageId: String(selected.id || selected.packageId || ''),
+      packageName,
+      price: String(price),
+      userId: user.id,
     });
-    
-    // Check if already processing
-    if (createOrder.isPending) {
-      console.warn('⚠️ Purchase already in progress, ignoring click');
-      toast.info('Purchase is already in progress. Please wait...');
-      return;
-    }
-    
-    // Reset any previous error or success state to allow retry
-    if (createOrder.isError || createOrder.isSuccess) {
-      console.log('🔄 Resetting previous mutation state');
-      createOrder.reset();
-    }
-    
-    // Allow users to purchase new packages regardless of existing package status
-    // Packages will stack/queue and provide additional premium slots
-    setSelectedPackageType(packageType);
-    console.log('📦 Creating order for package type:', packageType);
-    
-    // Directly call mutate - it handles errors internally via onError callback
-    createOrder.mutate(packageType);
-  };
-
-  const handlePaymentSuccess = (paymentId: string, signature: string, orderIdFromResponse?: string) => {
-    console.log('💳 Payment success callback received:', { paymentId, signature, orderIdFromResponse, paymentOrder });
-    
-    // Use orderId from response if available, otherwise use from paymentOrder
-    const orderIdToVerify = orderIdFromResponse || paymentOrder?.razorpayOrder?.id || paymentOrder?.order?.razorpayOrderId;
-    
-    if (!orderIdToVerify) {
-      console.error('❌ Order ID missing:', { paymentOrder, orderIdFromResponse });
-      toast.error('Order information missing. Please contact support.');
-      return;
-    }
-
-    if (!paymentId || !signature) {
-      console.error('❌ Payment ID or signature missing:', { paymentId, signature });
-      toast.error('Payment information incomplete. Please contact support.');
-      return;
-    }
-
-    console.log('✅ Verifying payment with:', { orderId: orderIdToVerify, paymentId, signature });
-    verifyPayment.mutate({
-      orderId: orderIdToVerify,
-      paymentId,
-      signature,
-    });
-  };
-
-  const handlePaymentError = (error: any) => {
-    console.error('Payment error:', error);
-    toast.error('Payment failed. Please try again.');
+    router.push(`/payment?${qp.toString()}`);
   };
 
   if (authLoading || isLoadingInfo) {
@@ -505,17 +378,17 @@ export default function BusinessPackagePage() {
                       e.stopPropagation();
                       handlePurchase(pkg.type);
                     }}
-                    disabled={createOrder.isPending}
+                    disabled={redirectingPackageType === pkg.type}
                     className={`w-full py-3 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 ${
                       isPopular
                         ? 'bg-blue-600 text-white hover:bg-blue-700'
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
-                    {createOrder.isPending ? (
+                    {redirectingPackageType === pkg.type ? (
                       <>
                         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-current"></div>
-                        Processing...
+                        Redirecting...
                       </>
                     ) : (
                       <>
@@ -638,69 +511,6 @@ export default function BusinessPackagePage() {
             ))}
           </div>
         </div>
-
-        {/* Payment Modal */}
-        {showPaymentModal && paymentOrder && paymentOrder.razorpayOrder && (() => {
-          const selectedPackage = packagesData?.find((pkg: any) => pkg.type === selectedPackageType);
-          const packageName = selectedPackageType === 'MAX_VISIBILITY' 
-            ? 'Business Basic' 
-            : selectedPackageType === 'SELLER_PLUS' 
-            ? 'Business Pro' 
-            : selectedPackageType === 'SELLER_PRIME'
-            ? 'Business Enterprise'
-            : 'Business Package';
-          
-          return (
-            <PaymentModal
-              isOpen={showPaymentModal}
-              onClose={() => {
-                console.log('🔒 Closing payment modal');
-                setShowPaymentModal(false);
-                setPaymentOrder(null);
-                setSelectedPackageType(null);
-              }}
-              amount={paymentOrder.razorpayOrder.amount / 100} // Convert from paise to INR for display
-              orderId={paymentOrder.razorpayOrder.id}
-              razorpayKey={paymentOrder.razorpayOrder.key}
-              razorpayOrderAmount={paymentOrder.razorpayOrder.amount} // Amount in paise
-              onSuccess={handlePaymentSuccess}
-              onError={handlePaymentError}
-              description={`Complete payment to activate your ${packageName}`}
-              packageDetails={selectedPackage ? {
-                name: packageName,
-                type: 'BUSINESS_PACKAGE',
-                packageType: selectedPackageType as 'MAX_VISIBILITY' | 'SELLER_PLUS' | 'SELLER_PRIME',
-                validity: selectedPackage.duration || 30,
-                validityUnit: 'days',
-                benefits: [
-                  selectedPackageType === 'SELLER_PRIME' 
-                    ? 'Top priority in all search results'
-                    : selectedPackageType === 'SELLER_PLUS'
-                    ? 'Enhanced visibility and ranking'
-                    : 'Improved ad visibility',
-                  `${selectedPackage.premiumSlotsTotal || selectedPackage.maxAds || 0} premium ad slots included`,
-                  selectedPackageType !== 'MAX_VISIBILITY' ? 'Featured badge on all ads' : 'Priority placement',
-                  selectedPackageType === 'SELLER_PRIME' ? 'Home page featured section' : 'Category top placement'
-                ],
-                adCount: selectedPackage.premiumSlotsTotal || selectedPackage.maxAds || 0,
-                visibilityLevel: selectedPackageType === 'SELLER_PRIME' 
-                  ? 'Maximum' 
-                  : selectedPackageType === 'SELLER_PLUS'
-                  ? 'Enhanced'
-                  : 'Improved'
-              } : undefined}
-              successAction={{
-                label: 'View My Packages',
-                onClick: () => {
-                  setShowPaymentModal(false);
-                  setPaymentOrder(null);
-                  setSelectedPackageType(null);
-                  router.push('/my-ads');
-                }
-              }}
-            />
-          );
-        })()}
       </div>
     </div>
   );

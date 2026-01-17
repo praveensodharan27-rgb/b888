@@ -24,27 +24,40 @@ export default function AdvancedSearchBar({
   const searchRef = useRef<HTMLInputElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
-  // Fetch recent searches or popular searches (you can implement this endpoint)
-  const { data: suggestions } = useQuery({
-    queryKey: ['search-suggestions', search],
+  // Fetch autocomplete suggestions from API
+  const { data: autocompleteData, isLoading: isLoadingSuggestions } = useQuery({
+    queryKey: ['search-autocomplete', search],
     queryFn: async () => {
-      if (!search || search.length < 2) return [];
+      if (!search || search.length < 2) return { suggestions: [], categories: [] };
       try {
-        // This would be a new endpoint for search suggestions
-        // For now, return empty array
-        return [];
+        const response = await api.get(`/search/autocomplete?q=${encodeURIComponent(search)}&limit=8`);
+        return response.data || { suggestions: [], categories: [] };
+      } catch {
+        return { suggestions: [], categories: [] };
+      }
+    },
+    enabled: search.length >= 2 && isFocused,
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
+
+  // Fetch popular searches when input is empty
+  const { data: popularData } = useQuery({
+    queryKey: ['popular-searches'],
+    queryFn: async () => {
+      try {
+        const response = await api.get('/search/trending?limit=10');
+        return response.data?.trending || [];
       } catch {
         return [];
       }
     },
-    enabled: search.length >= 2 && isFocused,
+    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
   });
 
-  // Popular search terms (can be fetched from API)
-  const popularSearches = [
-    'iPhone', 'Laptop', 'Car', 'Bike', 'Furniture', 
-    'Mobile', 'TV', 'Watch', 'Camera', 'Books'
-  ];
+  const suggestions = autocompleteData?.suggestions || [];
+  const categories = autocompleteData?.categories || [];
+  const popularSearches = popularData || [];
+
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -75,15 +88,17 @@ export default function AdvancedSearchBar({
     }
   };
 
-  const handleSuggestionClick = (suggestion: string) => {
-    setSearch(suggestion);
+  const handleSuggestionClick = (suggestion: string | any) => {
+    const searchTerm = typeof suggestion === 'string' ? suggestion : (suggestion.title || suggestion.query || suggestion);
+    setSearch(searchTerm);
     if (onSearch) {
-      onSearch(suggestion);
+      onSearch(searchTerm);
     } else {
       // Search overrides category - clear category from URL
-      router.push(`/ads?search=${encodeURIComponent(suggestion)}`);
+      router.push(`/ads?search=${encodeURIComponent(searchTerm)}`);
     }
     setShowSuggestions(false);
+    setIsFocused(false);
   };
 
   const handleClear = () => {
@@ -95,7 +110,7 @@ export default function AdvancedSearchBar({
     <div className="relative w-full">
       <form onSubmit={handleSubmit} className="relative">
         <div className="relative flex items-center">
-          <FiSearch className="absolute left-3 text-gray-400 w-5 h-5" />
+          <FiSearch className="absolute left-4 text-gray-400 w-6 h-6 z-10" />
           <input
             ref={searchRef}
             type="text"
@@ -109,20 +124,20 @@ export default function AdvancedSearchBar({
               setShowSuggestions(true);
             }}
             placeholder="Search for anything..."
-            className="w-full pl-10 pr-20 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent shadow-sm"
+            className="w-full pl-14 pr-28 py-4 text-base border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-sm hover:border-gray-300 transition-all bg-white"
           />
           {search && (
             <button
               type="button"
               onClick={handleClear}
-              className="absolute right-12 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute right-24 text-gray-400 hover:text-gray-600 transition-colors z-10"
             >
-              <FiX className="w-4 h-4" />
+              <FiX className="w-5 h-5" />
             </button>
           )}
           <button
             type="submit"
-            className="absolute right-1 bg-blue-600 text-white px-4 py-1.5 rounded-md hover:bg-blue-700 transition-colors text-sm font-medium"
+            className="absolute right-1 bg-blue-600 text-white px-6 py-2.5 rounded-lg hover:bg-blue-700 transition-colors text-base font-semibold shadow-md hover:shadow-lg"
           >
             Search
           </button>
@@ -135,37 +150,109 @@ export default function AdvancedSearchBar({
           ref={suggestionsRef}
           className="absolute z-50 w-full mt-2 bg-white rounded-lg shadow-xl border border-gray-200 max-h-96 overflow-y-auto"
         >
-          {search.length >= 2 && suggestions && suggestions.length > 0 ? (
+          {search.length >= 2 ? (
+            // Show autocomplete suggestions when typing
             <div className="p-2">
-              <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase">Suggestions</div>
-              {suggestions.map((suggestion: string, index: number) => (
-                <button
-                  key={index}
-                  onClick={() => handleSuggestionClick(suggestion)}
-                  className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg flex items-center gap-2"
-                >
-                  <FiSearch className="w-4 h-4 text-gray-400" />
-                  <span>{suggestion}</span>
-                </button>
-              ))}
+              {isLoadingSuggestions ? (
+                <div className="px-4 py-3 text-center text-gray-500 text-sm">
+                  <div className="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                  <span className="ml-2">Searching...</span>
+                </div>
+              ) : (
+                <>
+                  {/* Categories */}
+                  {categories && categories.length > 0 && (
+                    <>
+                      <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase">Categories</div>
+                      {categories.map((cat: any, index: number) => (
+                        <button
+                          key={`cat-${index}`}
+                          onClick={() => {
+                            if (cat.slug) {
+                              router.push(`/ads?category=${cat.slug}`);
+                              setShowSuggestions(false);
+                            } else {
+                              handleSuggestionClick(cat.name || cat.query);
+                            }
+                          }}
+                          className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg flex items-center gap-2"
+                        >
+                          <FiTag className="w-4 h-4 text-blue-500" />
+                          <span className="font-medium">{cat.name || cat.query}</span>
+                          {cat.count && (
+                            <span className="ml-auto text-xs text-gray-500">({cat.count})</span>
+                          )}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                  
+                  {/* Search Suggestions */}
+                  {suggestions && suggestions.length > 0 && (
+                    <>
+                      {categories && categories.length > 0 && (
+                        <div className="border-t border-gray-200 my-2"></div>
+                      )}
+                      <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase">Suggestions</div>
+                      {suggestions.map((suggestion: any, index: number) => (
+                        <button
+                          key={`sug-${index}`}
+                          onClick={() => handleSuggestionClick(suggestion.title || suggestion.query || suggestion)}
+                          className="w-full text-left px-4 py-2 hover:bg-gray-100 rounded-lg flex items-center gap-2"
+                        >
+                          <FiSearch className="w-4 h-4 text-gray-400" />
+                          <span>{suggestion.title || suggestion.query || suggestion}</span>
+                          {suggestion.category && (
+                            <span className="ml-auto text-xs text-gray-500">{suggestion.category}</span>
+                          )}
+                        </button>
+                      ))}
+                    </>
+                  )}
+
+                  {/* No results */}
+                  {!isLoadingSuggestions && (!suggestions || suggestions.length === 0) && (!categories || categories.length === 0) && (
+                    <div className="px-4 py-3 text-center text-gray-500 text-sm">
+                      No suggestions found for "{search}"
+                    </div>
+                  )}
+                </>
+              )}
             </div>
-          ) : search.length === 0 ? (
+          ) : (
+            // Show popular searches when input is empty
             <div className="p-4">
               <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase">Popular Searches</div>
               <div className="flex flex-wrap gap-2 mt-2">
-                {popularSearches.map((term, index) => (
-                  <button
-                    key={index}
-                    onClick={() => handleSuggestionClick(term)}
-                    className="px-3 py-1 bg-gray-100 hover:bg-primary-50 text-gray-700 hover:text-primary-600 rounded-full text-sm transition-colors flex items-center gap-1"
-                  >
-                    <FiTag className="w-3 h-3" />
-                    {term}
-                  </button>
-                ))}
+                {popularSearches.length > 0 ? (
+                  popularSearches.map((item: any, index: number) => {
+                    const term = item.query || item.name || item;
+                    const count = item.count;
+                    return (
+                      <button
+                        key={index}
+                        onClick={() => {
+                          if (item.slug) {
+                            router.push(`/ads?category=${item.slug}`);
+                            setShowSuggestions(false);
+                          } else {
+                            handleSuggestionClick(term);
+                          }
+                        }}
+                        className="px-3 py-1 bg-gray-100 hover:bg-primary-50 text-gray-700 hover:text-primary-600 rounded-full text-sm transition-colors flex items-center gap-1"
+                      >
+                        <FiTag className="w-3 h-3" />
+                        {term}
+                        {count && <span className="text-xs text-gray-500">({count})</span>}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="text-sm text-gray-500">No popular searches available</div>
+                )}
               </div>
             </div>
-          ) : null}
+          )}
         </div>
       )}
 

@@ -4,6 +4,7 @@ const { processSearchAlerts } = require('../services/searchAlerts');
 const { autoApprovePendingAds } = require('../services/autoApproval');
 const { resetMonthlyFreeAds } = require('../services/monthlyQuotaReset');
 const { expireAds } = require('../scripts/expire-ads');
+const { cleanupExpiredAds, refreshAllClusters, mergeLowVolumeClusters } = require('../services/clusterAutoUpdate');
 
 /**
  * Setup cron jobs for scheduled tasks
@@ -79,12 +80,48 @@ function setupCronJobs() {
     }
   }, 60000);
   
+  // Cleanup expired ads from clusters daily at 3:30 AM
+  cron.schedule('30 3 * * *', async () => {
+    console.log('⏰ Running scheduled task: Cleanup expired ads from clusters');
+    try {
+      const result = await cleanupExpiredAds();
+      console.log(`✅ Cleaned up ${result.cleaned} expired ads from clusters`);
+    } catch (error) {
+      console.error('❌ Error in cluster cleanup task:', error);
+    }
+  });
+
+  // Refresh all clusters daily at 4 AM
+  cron.schedule('0 4 * * *', async () => {
+    console.log('⏰ Running scheduled task: Refresh all clusters');
+    try {
+      const result = await refreshAllClusters();
+      console.log(`✅ Refreshed ${result.updated} clusters, ${result.errors} errors`);
+    } catch (error) {
+      console.error('❌ Error in cluster refresh task:', error);
+    }
+  });
+
+  // Merge low-volume clusters weekly on Sunday at 5 AM
+  cron.schedule('0 5 * * 0', async () => {
+    console.log('⏰ Running scheduled task: Merge low-volume clusters');
+    try {
+      const result = await mergeLowVolumeClusters(3);
+      console.log(`✅ Merged ${result.merged} low-volume clusters`);
+    } catch (error) {
+      console.error('❌ Error in cluster merge task:', error);
+    }
+  });
+
   console.log('✅ Cron jobs scheduled:');
   console.log('   - Delete deactivated accounts: Daily at 2 AM');
   console.log('   - Process search alerts: Every hour');
   console.log('   - Process pending moderation: Every 5 minutes (approve/reject after review)');
   console.log('   - Reset monthly free ads quota: 1st of every month at midnight');
   console.log('   - Auto-expire ads: Every hour');
+  console.log('   - Cleanup expired ads from clusters: Daily at 3:30 AM');
+  console.log('   - Refresh all clusters: Daily at 4 AM');
+  console.log('   - Merge low-volume clusters: Weekly on Sunday at 5 AM');
   console.log('   - Initial search alerts check: 30 seconds after startup');
   console.log('   - Initial moderation check: 1 minute after startup');
 }

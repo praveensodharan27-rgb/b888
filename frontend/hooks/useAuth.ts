@@ -63,10 +63,47 @@ export const useAuth = () => {
 
   const loginMutation = useMutation({
     mutationFn: async (credentials: { email?: string; phone?: string; password: string }) => {
-      const response = await api.post('/auth/login', credentials);
-      return response.data;
+      try {
+        console.log('🔐 Attempting login with credentials:', {
+          email: credentials.email ? `${credentials.email.substring(0, 3)}***` : undefined,
+          phone: credentials.phone ? `${credentials.phone.substring(0, 3)}***` : undefined,
+          hasPassword: !!credentials.password
+        });
+        
+        const response = await api.post('/auth/login', credentials);
+        
+        if (!response.data || !response.data.success) {
+          throw new Error(response.data?.message || 'Login failed');
+        }
+        
+        return response.data;
+      } catch (error: any) {
+        console.error('❌ Login error:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status,
+          code: error.code
+        });
+        
+        // Re-throw with more context
+        if (error.response?.data?.message) {
+          throw new Error(error.response.data.message);
+        } else if (error.message) {
+          throw error;
+        } else if (error.code === 'ERR_NETWORK' || error.code === 'ECONNREFUSED') {
+          throw new Error('Cannot connect to server. Please check your connection.');
+        } else {
+          throw new Error('Login failed. Please try again.');
+        }
+      }
     },
     onSuccess: (data) => {
+      if (!data.token) {
+        console.error('❌ No token in login response');
+        toast.error('Login failed: Invalid response from server');
+        return;
+      }
+      
       Cookies.set('token', data.token, { expires: 7 });
       queryClient.setQueryData(['auth', 'me'], data.user);
       toast.success('Logged in successfully');
@@ -79,7 +116,9 @@ export const useAuth = () => {
       }
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.message || 'Login failed');
+      const errorMessage = error.message || error.response?.data?.message || 'Login failed. Please check your credentials.';
+      console.error('❌ Login mutation error:', errorMessage);
+      toast.error(errorMessage);
     },
   });
 
@@ -161,16 +200,28 @@ export const useAuth = () => {
       // Show success message
       toast.success('Logged out successfully');
       
-      // Use window.location for a clean redirect (clears all state)
+      // Check if user is on home page - if so, refresh it instead of redirecting to login
       if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+        const currentPath = window.location.pathname;
+        if (currentPath === '/') {
+          // Refresh home page
+          window.location.reload();
+        } else {
+          // Redirect to home page for other pages
+          window.location.href = '/';
+        }
       }
     } catch (error) {
       console.error('Logout error:', error);
       // Even if there's an error, try to clear token and redirect
       Cookies.remove('token');
       if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+        const currentPath = window.location.pathname;
+        if (currentPath === '/') {
+          window.location.reload();
+        } else {
+          window.location.href = '/';
+        }
       }
     }
   };

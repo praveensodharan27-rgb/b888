@@ -877,10 +877,15 @@ router.post('/banners',
 
       const { title, link, position, categoryId, locationId, order, startDate, endDate } = req.body;
 
+      // Normalize image URL (handle both string and object formats)
+      const imageUrl = typeof req.uploadedImages[0] === 'string' 
+        ? req.uploadedImages[0] 
+        : (req.uploadedImages[0]?.url || req.uploadedImages[0]);
+      
       const banner = await prisma.banner.create({
         data: {
           title,
-          image: req.uploadedImages[0],
+          image: imageUrl,
           link,
           position,
           categoryId: categoryId || null,
@@ -914,7 +919,12 @@ router.put('/banners/:id',
       if (req.body.isActive !== undefined) updateData.isActive = req.body.isActive === 'true';
       if (req.body.startDate) updateData.startDate = new Date(req.body.startDate);
       if (req.body.endDate) updateData.endDate = new Date(req.body.endDate);
-      if (req.uploadedImages) updateData.image = req.uploadedImages[0];
+      if (req.uploadedImages) {
+        // Normalize image URL (handle both string and object formats)
+        updateData.image = typeof req.uploadedImages[0] === 'string' 
+          ? req.uploadedImages[0] 
+          : (req.uploadedImages[0]?.url || req.uploadedImages[0]);
+      }
 
       const banner = await prisma.banner.update({
         where: { id: req.params.id },
@@ -1009,10 +1019,15 @@ router.post('/interstitial-ads',
 
       const { title, link, position, isActive, frequency, width, height, startDate, endDate, order } = req.body;
 
+      // Normalize image URL (handle both string and object formats)
+      const imageUrl = typeof req.uploadedImages[0] === 'string' 
+        ? req.uploadedImages[0] 
+        : (req.uploadedImages[0]?.url || req.uploadedImages[0]);
+      
       const ad = await prisma.interstitialAd.create({
         data: {
           title,
-          image: req.uploadedImages[0],
+          image: imageUrl,
           link: link || null,
           position,
           isActive: isActive === 'true' || isActive === true,
@@ -1054,7 +1069,10 @@ router.put('/interstitial-ads/:id',
       };
 
       if (req.uploadedImages && req.uploadedImages.length > 0) {
-        updateData.image = req.uploadedImages[0];
+        // Normalize image URL (handle both string and object formats)
+        updateData.image = typeof req.uploadedImages[0] === 'string' 
+          ? req.uploadedImages[0] 
+          : (req.uploadedImages[0]?.url || req.uploadedImages[0]);
       }
 
       const ad = await prisma.interstitialAd.update({
@@ -1556,15 +1574,23 @@ router.delete('/subcategories/:id', async (req, res) => {
 });
 
 // Location management
-// Get all locations
+// Get all locations (with hierarchical support)
 router.get('/locations', async (req, res) => {
   try {
-    const { state, city, isActive } = req.query;
+    const { state, city, isActive, type } = req.query;
     const where = {};
 
     if (state) where.state = state;
     if (city) where.city = city;
     if (isActive !== undefined) where.isActive = isActive === 'true';
+    
+    // Type filter: 'city' (only cities), 'area' (only local areas), or all
+    if (type === 'city') {
+      where.neighbourhood = null;
+      where.city = { not: null };
+    } else if (type === 'area') {
+      where.neighbourhood = { not: null };
+    }
 
     const locations = await prisma.location.findMany({
       where,
@@ -1573,13 +1599,70 @@ router.get('/locations', async (req, res) => {
           select: { ads: { where: { status: 'APPROVED' } } }
         }
       },
-      orderBy: { name: 'asc' }
+      orderBy: { name: 'asc' } // Alphabetical sorting
     });
 
     res.json({ success: true, locations });
   } catch (error) {
     console.error('Get admin locations error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch locations' });
+  }
+});
+
+// Get cities by state (for admin panel)
+router.get('/locations/states/:state/cities', async (req, res) => {
+  try {
+    const { state } = req.params;
+    const cities = await prisma.location.findMany({
+      where: {
+        state: decodeURIComponent(state),
+        city: { not: null },
+        neighbourhood: null, // Only cities
+        isActive: true
+      },
+      orderBy: { name: 'asc' },
+      include: {
+        _count: {
+          select: { ads: { where: { status: 'APPROVED' } } }
+        }
+      }
+    });
+
+    res.json({ success: true, cities, state: decodeURIComponent(state) });
+  } catch (error) {
+    console.error('Get admin cities by state error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch cities' });
+  }
+});
+
+// Get local areas by city (for admin panel)
+router.get('/locations/cities/:city/areas', async (req, res) => {
+  try {
+    const { city } = req.params;
+    const { state } = req.query;
+    
+    const where = {
+      city: decodeURIComponent(city),
+      neighbourhood: { not: null }, // Only local areas
+      isActive: true
+    };
+    
+    if (state) where.state = decodeURIComponent(state);
+
+    const areas = await prisma.location.findMany({
+      where,
+      orderBy: { name: 'asc' },
+      include: {
+        _count: {
+          select: { ads: { where: { status: 'APPROVED' } } }
+        }
+      }
+    });
+
+    res.json({ success: true, areas, city: decodeURIComponent(city) });
+  } catch (error) {
+    console.error('Get admin areas by city error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch local areas' });
   }
 });
 
@@ -2436,6 +2519,59 @@ router.get('/feature-flags/:flagName/stats', authenticate, requireAdmin, async (
   } catch (error) {
     console.error('Get feature flag stats error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch feature flag statistics' });
+  }
+});
+
+// Clear server cache
+router.post('/cache/clear', async (req, res) => {
+  try {
+    const { clearCache } = require('../middleware/cache');
+    const { pattern } = req.body;
+    
+    if (pattern) {
+      clearCache(pattern);
+      res.json({
+        success: true,
+        message: `Cache cleared for pattern: ${pattern}`
+      });
+    } else {
+      clearCache(); // Clear all cache
+      res.json({
+        success: true,
+        message: 'All server cache cleared successfully'
+      });
+    }
+  } catch (error) {
+    console.error('Clear cache error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to clear cache',
+      error: error.message 
+    });
+  }
+});
+
+// Get cache stats
+router.get('/cache/stats', async (req, res) => {
+  try {
+    const { getCacheSize, getCacheKeys } = require('../middleware/cache');
+    const size = getCacheSize();
+    const keys = getCacheKeys();
+    
+    res.json({
+      success: true,
+      stats: {
+        size,
+        keys: keys.slice(0, 50), // Return first 50 keys to avoid huge response
+        totalKeys: keys.length
+      }
+    });
+  } catch (error) {
+    console.error('Get cache stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get cache stats' 
+    });
   }
 });
 

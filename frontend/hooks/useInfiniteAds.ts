@@ -7,6 +7,9 @@ interface AdsFilters {
   category?: string;
   subcategory?: string;
   location?: string;
+  latitude?: string;
+  longitude?: string;
+  radius?: string;
   minPrice?: number | string;
   maxPrice?: number | string;
   search?: string;
@@ -38,9 +41,10 @@ export const useInfiniteAds = (filters: AdsFilters = {}) => {
       return undefined;
     },
     initialPageParam: 1,
-    staleTime: 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    staleTime: 2 * 60 * 1000, // 2 minutes (increased from 1 minute)
+    gcTime: 15 * 60 * 1000, // 15 minutes (increased from 10 minutes)
     refetchOnWindowFocus: false,
+    refetchOnMount: false, // Don't refetch on mount if data is fresh
   });
 };
 

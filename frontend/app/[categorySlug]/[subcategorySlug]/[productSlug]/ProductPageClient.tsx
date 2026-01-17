@@ -233,7 +233,7 @@ export default function ProductPageClient({
                   </div>
 
                   <div className="flex flex-wrap gap-3 mt-4">
-                    {previewImages.map((img, index) => {
+                    {previewImages.map((img: string, index: number) => {
                       const actualIndex = index;
                       const isExtraTile = remainingImageCount > 0 && index === previewImages.length - 1;
 

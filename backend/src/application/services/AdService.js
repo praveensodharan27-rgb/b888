@@ -34,6 +34,7 @@ class AdService {
     } = filters;
 
     const where = {
+      // Only show APPROVED ads (excludes INACTIVE, EXPIRED, PENDING, REJECTED, SOLD)
       status: 'APPROVED',
       AND: [
         {

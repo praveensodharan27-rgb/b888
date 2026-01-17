@@ -22,6 +22,7 @@ const bannerRoutes = require('./routes/banners');
 const interstitialAdRoutes = require('./routes/interstitial-ads');
 const adminRoutes = require('./routes/admin');
 const adminPremiumRoutes = require('./routes/admin-premium');
+const adminPaymentsRoutes = require('./routes/admin-payments');
 const walletRoutes = require('./routes/wallet');
 const referralRoutes = require('./routes/referral');
 const testEmailRoutes = require('./routes/test-email');
@@ -35,6 +36,12 @@ const authSettingsRoutes = require('./routes/auth-settings');
 const followRoutes = require('./routes/follow');
 const contactRequestRoutes = require('./routes/contact-request');
 const blockRoutes = require('./routes/block');
+const paymentGatewayRoutes = require('./routes/payment-gateway');
+const sessionRoutes = require('./routes/session');
+const systemRoutes = require('./routes/system');
+const mobileRoutes = require('./routes/mobile');
+const offerRoutes = require('./routes/offers');
+const clusterRoutes = require('./routes/clusters');
 const { setupSocketIO } = require('./socket/socket');
 const { initializeIndex } = require('./services/meilisearch');
 const { setupCronJobs } = require('./utils/cron');
@@ -42,95 +49,148 @@ const { setupCronJobs } = require('./utils/cron');
 const app = express();
 const httpServer = createServer(app);
 
-// Allow multiple frontend origins
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://127.0.0.1:3000',
-  'http://127.0.0.1:3001',
-  process.env.FRONTEND_URL
-].filter(Boolean);
+// CORS setup – allow localhost in dev, FRONTEND_URL in prod
+const isProduction = process.env.NODE_ENV === 'production';
+const isDevelopment = !process.env.NODE_ENV || process.env.NODE_ENV !== 'production';
 
-// Log allowed origins on startup
-console.log('🌐 CORS Allowed Origins:', allowedOrigins);
+// Build allowed origins list
+const allowedOrigins = isProduction && process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL]
+  : [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3001',
+      'http://localhost:3002',
+      'http://127.0.0.1:3002',
+    ];
+
+const isAllowedOrigin = (origin) => {
+  // In development, allow requests without origin (same-origin, Postman, etc.)
+  if (!origin) {
+    return isDevelopment;
+  }
+  
+  // Check if origin is in allowed list
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+  
+  // In development, allow any localhost or 127.0.0.1 with any port
+  if (isDevelopment && origin.match(/^https?:\/\/(localhost|127\.0.0\.1|0\.0\.0\.0)(:\d+)?$/)) {
+    return true;
+  }
+  
+  return false;
+};
+
+console.log('🌐 CORS Configuration:');
+console.log('  - Environment:', isProduction ? 'PRODUCTION' : 'DEVELOPMENT');
+console.log('  - Allowed Origins:', allowedOrigins);
+console.log('  - Credentials:', true);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     credentials: true
   }
 });
 
-// Middleware - CORS must be before other middleware
-// In development, allow all localhost origins
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, or server-to-server)
-    if (!origin) {
+    // Allow requests with no origin (like mobile apps, Postman, curl)
+    if (!origin && isDevelopment) {
       return callback(null, true);
     }
     
-    // In development, be very permissive with localhost
-    // Default to development if NODE_ENV is not set
-    const isDevelopment = !process.env.NODE_ENV || process.env.NODE_ENV !== 'production';
-    
-    if (isDevelopment) {
-      // Allow any localhost or 127.0.0.1 on any port
-      if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
-        return callback(null, true);
-      }
+    if (isAllowedOrigin(origin)) {
+      callback(null, true);
+    } else {
+      console.warn('🚫 CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'), false);
     }
-    
-    // Check against allowed origins
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    }
-    
-    // In development, allow any origin (more permissive)
-    if (isDevelopment) {
-      return callback(null, true);
-    }
-    
-    // Log blocked origins for debugging
-    console.warn(`⚠️ CORS blocked origin: ${origin}`);
-    console.warn(`   Allowed origins:`, allowedOrigins);
-    return callback(new Error('Not allowed by CORS'), false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-HTTP-Method-Override'],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
   preflightContinue: false,
   optionsSuccessStatus: 200
 };
 
+// ===== CORS CONFIGURATION - MUST BE FIRST MIDDLEWARE =====
+// Apply CORS middleware before ALL other middleware
 app.use(cors(corsOptions));
 
-// Handle preflight requests - must be before routes
+// Explicitly handle OPTIONS preflight requests for all routes
 app.options('*', (req, res) => {
   const origin = req.headers.origin;
   
-  // In development, allow any localhost or network IP origin
-  // Default to development if NODE_ENV is not set
-  const isDevelopment = !process.env.NODE_ENV || process.env.NODE_ENV !== 'production';
-  
-  if (isDevelopment && origin && origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
-    res.header('Access-Control-Allow-Origin', origin);
-  } else if (allowedOrigins.indexOf(origin) !== -1) {
+  if (isAllowedOrigin(origin)) {
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+    } else if (isDevelopment) {
+      res.header('Access-Control-Allow-Origin', '*');
+    }
+  } else if (isDevelopment && origin && origin.match(/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/)) {
     res.header('Access-Control-Allow-Origin', origin);
   } else if (isDevelopment) {
-    // In development, be more permissive
-    res.header('Access-Control-Allow-Origin', origin || '*');
-  } else {
-    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Origin', '*');
   }
   
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-HTTP-Method-Override');
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  res.header('Access-Control-Max-Age', '86400');
   res.sendStatus(200);
+});
+
+// Add CORS headers to all responses as a fallback
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Log CORS requests for debugging
+  if (req.method === 'OPTIONS' || origin) {
+    console.log(`🌐 CORS Request: ${req.method} ${req.path}`, {
+      origin: origin || 'no-origin',
+      allowed: isAllowedOrigin(origin)
+    });
+  }
+  
+  // Set CORS headers on all responses
+  if (isAllowedOrigin(origin)) {
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+    } else if (isDevelopment) {
+      res.header('Access-Control-Allow-Origin', '*');
+    }
+  } else if (isDevelopment && origin && origin.match(/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/)) {
+    // Development fallback: allow any localhost
+    res.header('Access-Control-Allow-Origin', origin);
+  } else if (isDevelopment && !origin) {
+    // Development: allow requests without origin
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-HTTP-Method-Override');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Expose-Headers', 'Content-Range, X-Content-Range');
+  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  
+  // Handle OPTIONS preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
 });
 
 app.use(helmet({
@@ -174,18 +234,21 @@ const uploadsPath = path.join(__dirname, 'uploads');
 app.use('/uploads', (req, res, next) => {
   // Set CORS headers for static files - use same logic as main CORS
   const origin = req.headers.origin;
-  const isDevelopment = !process.env.NODE_ENV || process.env.NODE_ENV !== 'production';
   
   // Allow same origins as main CORS
-  if (isDevelopment && origin && origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
+  if (isAllowedOrigin(origin)) {
+    if (origin) {
+      res.header('Access-Control-Allow-Origin', origin);
+    } else if (isDevelopment) {
+      res.header('Access-Control-Allow-Origin', '*');
+    }
+  } else if (isDevelopment && origin && origin.match(/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/)) {
     res.header('Access-Control-Allow-Origin', origin);
-  } else if (allowedOrigins.indexOf(origin) !== -1) {
-    res.header('Access-Control-Allow-Origin', origin);
+  } else if (isProduction && process.env.FRONTEND_URL) {
+    res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL);
   } else if (isDevelopment) {
     res.header('Access-Control-Allow-Origin', origin || '*');
-  } else if (process.env.FRONTEND_URL) {
-    res.header('Access-Control-Allow-Origin', process.env.FRONTEND_URL);
-  }
+  } 
   
   res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -212,15 +275,26 @@ app.use('/uploads', (req, res, next) => {
   }
 }));
 
-// Health check
+// Health check endpoints
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development'
+  });
 });
 
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/auth', oauthRoutes); // OAuth routes (Google, Facebook)
 app.use('/api/user', userRoutes);
+app.use('/api/profile', userRoutes); // Profile routes (alias for user routes)
+console.log('✅ Profile routes registered at /api/profile');
 app.use('/api/follow', followRoutes);
 app.use('/api/contact-request', contactRequestRoutes);
 app.use('/api/block', blockRoutes);
@@ -235,6 +309,7 @@ app.use('/api/banners', bannerRoutes);
 app.use('/api/interstitial-ads', interstitialAdRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/premium', adminPremiumRoutes);
+app.use('/api/admin/payments', adminPaymentsRoutes);
 console.log('✅ Admin premium routes registered at /api/admin/premium');
 app.use('/api/wallet', walletRoutes);
 app.use('/api/referral', referralRoutes);
@@ -247,9 +322,25 @@ app.use('/api/moderation', moderationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
 console.log('✅ Auth settings routes registered at /api/auth-settings');
+app.use('/api/payment-gateway', paymentGatewayRoutes);
+console.log('✅ Payment gateway routes registered at /api/payment-gateway');
+const rateLimitRoutes = require('./routes/rate-limit');
+app.use('/api/rate-limit', rateLimitRoutes);
+app.use('/api/session', sessionRoutes);
+console.log('✅ Session management routes registered at /api/session');
+app.use('/api/system', systemRoutes);
+console.log('✅ System routes registered at /api/system');
+app.use('/api/mobile', mobileRoutes);
+console.log('✅ Mobile routes registered at /api/mobile');
+app.use('/api/offers', offerRoutes);
+app.use('/api/clusters', clusterRoutes);
+console.log('✅ Clusters & Auto Lists routes registered at /api/clusters');
+console.log('✅ Offer routes registered at /api/offers');
+console.log('✅ Rate limit routes registered at /api/rate-limit');
 
 // Setup Socket.IO
 setupSocketIO(io);
+console.log('✅ Socket.IO initialized and attached to HTTP server');
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -273,28 +364,16 @@ const server = httpServer.listen(PORT, HOST, async () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`🌐 Accessible from network at http://localhost:${PORT}`);
   
-  // Initialize Meilisearch index
+  // Initialize Meilisearch index settings (no indexing on startup)
   try {
     const meilisearch = require('./services/meilisearch');
     const initialized = await meilisearch.initializeIndex();
     if (initialized) {
-      // Check if index has documents, if not, suggest reindexing
-      try {
-        const index = meilisearch.client.index('ads');
-        const stats = await index.getStats();
-        if (stats.numberOfDocuments === 0) {
-          console.warn('⚠️ Meilisearch index is empty. Run: npm run reindex-meilisearch');
-        } else {
-          console.log(`✅ Meilisearch index has ${stats.numberOfDocuments} documents`);
-        }
-      } catch (err) {
-        // Ignore stats error if Meilisearch is not available
-      }
+      console.log('✅ Meilisearch index configured (ads will be indexed on create/update)');
     }
   } catch (error) {
     console.warn('⚠️ Meilisearch initialization failed:', error.message);
     console.warn('⚠️ Search will fallback to database queries');
-    console.warn('⚠️ To enable Meilisearch, make sure it is running on port 7700');
   }
   
   // Setup cron jobs for scheduled tasks

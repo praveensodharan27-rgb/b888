@@ -17,14 +17,10 @@ router.get('/',
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('category').optional().isString(),
     query('subcategory').optional().isString(),
-    query('location').optional().isString(),
     query('minPrice').optional().isFloat({ min: 0 }),
     query('maxPrice').optional().isFloat({ min: 0 }),
     query('condition').optional().isIn(['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED']),
-    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped']),
-    query('latitude').optional().isFloat(),
-    query('longitude').optional().isFloat(),
-    query('radius').optional().isFloat({ min: 0 }), // Radius in kilometers
+    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped'])
   ],
   async (req, res) => {
     try {
@@ -39,34 +35,28 @@ router.get('/',
         limit = 20,
         category,
         subcategory,
-        location,
         minPrice,
         maxPrice,
         condition,
         sort = 'newest',
-        latitude,
-        longitude,
-        radius = 50, // Default 50km radius
       } = req.query;
 
       // IMPORTANT: If search keyword exists, ignore category/subcategory filters (search overrides category)
       const shouldIgnoreCategory = q && q.trim();
       
-      // Resolve category, subcategory, and location IDs
-      const [categoryObj, subcategoryObj, locationObj] = await Promise.all([
+      // Resolve category and subcategory IDs - REMOVED: location lookup
+      const [categoryObj, subcategoryObj] = await Promise.all([
         (!shouldIgnoreCategory && category) ? prisma.category.findUnique({ where: { slug: category }, select: { id: true } }) : null,
         (!shouldIgnoreCategory && subcategory) ? prisma.subcategory.findFirst({ where: { slug: subcategory }, select: { id: true } }) : null,
-        location ? prisma.location.findUnique({ where: { slug: location }, select: { id: true } }) : null,
       ]);
 
-      // Search using Meilisearch
+      // Search using Meilisearch - REMOVED: locationId filter
       // Only pass category/subcategory if search doesn't exist
       const searchResults = await searchAds(q, {
         page: parseInt(page),
         limit: parseInt(limit),
         categoryId: (!shouldIgnoreCategory && categoryObj) ? categoryObj.id : undefined,
         subcategoryId: (!shouldIgnoreCategory && subcategoryObj) ? subcategoryObj.id : undefined,
-        locationId: locationObj?.id,
         minPrice: minPrice ? parseFloat(minPrice) : undefined,
         maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
         condition,
@@ -151,96 +141,16 @@ router.get('/',
         },
       });
 
-      // Apply package-based ranking
+      // Apply simple ranking - REMOVED: package-based ranking and prioritization
       const rankedAds = await rankAds(ads, { updateLastShown: true });
       
-      // Maintain search relevance by preserving original order within package groups
-      // But prioritize by package type
       const adsMap = new Map(rankedAds.map(ad => [ad.id, ad]));
       const orderedAds = rankedAds.slice(0, parseInt(limit));
 
-      // Calculate distance if latitude/longitude provided
-      if (latitude && longitude) {
-        const userLat = parseFloat(latitude);
-        const userLng = parseFloat(longitude);
-        const radiusKm = parseFloat(radius) || 50;
+        // REMOVED: Location-based distance calculation and filtering
 
-        // Haversine formula to calculate distance
-        const calculateDistance = (lat1, lon1, lat2, lon2) => {
-          const R = 6371; // Earth's radius in kilometers
-          const dLat = (lat2 - lat1) * Math.PI / 180;
-          const dLon = (lon2 - lon1) * Math.PI / 180;
-          const a = 
-            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          return R * c; // Distance in kilometers
-        };
-
-        orderedAds = orderedAds
-          .map(ad => {
-            if (ad.location?.latitude && ad.location?.longitude) {
-              const distance = calculateDistance(
-                userLat,
-                userLng,
-                ad.location.latitude,
-                ad.location.longitude
-              );
-              return { ...ad, distance };
-            }
-            return { ...ad, distance: null };
-          })
-          .filter(ad => {
-            // Filter by radius if location has coordinates
-            if (ad.location?.latitude && ad.location?.longitude) {
-              return ad.distance <= radiusKm;
-            }
-            // Include ads without location coordinates if no location filter
-            return !locationObj;
-          })
-          .sort((a, b) => {
-            // Sort by distance if available, otherwise by original order
-            if (a.distance !== null && b.distance !== null) {
-              return a.distance - b.distance;
-            }
-            if (a.distance !== null) return -1;
-            if (b.distance !== null) return 1;
-            return 0;
-          });
-      }
-
-      // Distance-based sorting within package groups (if location provided)
-      let finalAds = orderedAds;
-      if (latitude && longitude) {
-        // Group by package priority and sort by distance within each group
-        const packageGroups = {};
-        orderedAds.forEach(ad => {
-          const priority = ad.packageType || 1;
-          if (!packageGroups[priority]) packageGroups[priority] = [];
-          packageGroups[priority].push(ad);
-        });
-        
-        // Sort each group by distance
-        Object.keys(packageGroups).forEach(priority => {
-          packageGroups[priority].sort((a, b) => {
-            if (a.distance !== null && b.distance !== null) {
-              return a.distance - b.distance;
-            }
-            if (a.distance !== null) return -1;
-            if (b.distance !== null) return 1;
-            return 0;
-          });
-        });
-        
-        // Recombine in priority order
-        finalAds = [
-          ...(packageGroups[4] || []),
-          ...(packageGroups[3] || []),
-          ...(packageGroups[2] || []),
-          ...(packageGroups[1] || [])
-        ];
-      }
+      // REMOVED: Distance-based sorting and package grouping
+      const finalAds = orderedAds;
 
       // Save search query for alerts (async, don't wait)
       if (q && q.trim().length > 0) {
@@ -251,13 +161,12 @@ router.get('/',
         if (userEmail) {
           const filters = {};
           if (category) filters.category = category;
-          if (location) filters.location = location;
           if (minPrice) filters.minPrice = minPrice;
           if (maxPrice) filters.maxPrice = maxPrice;
           if (condition) filters.condition = condition;
           
           // Save asynchronously, don't wait for completion
-          saveSearchQuery(q, userId, userEmail, category, location, filters).catch(err => {
+          saveSearchQuery(q, userId, userEmail, category, null, filters).catch(err => {
             console.error('Error saving search query:', err);
           });
         }
@@ -290,10 +199,9 @@ router.get('/trending', async (req, res) => {
 
     // Get trending search queries (you may need to track searches)
     // For now, returning popular categories/subcategories
-    const trending = await prisma.category.findMany({
-      take: parseInt(limit),
+    // Note: Prisma doesn't support ordering by _count directly, so we fetch all and sort in JavaScript
+    const allCategories = await prisma.category.findMany({
       where: { isActive: true },
-      orderBy: { _count: { ads: 'desc' } },
       select: {
         id: true,
         name: true,
@@ -304,11 +212,16 @@ router.get('/trending', async (req, res) => {
       }
     });
 
+    // Sort by ad count (descending) and take top N
+    const trending = allCategories
+      .sort((a, b) => (b._count?.ads || 0) - (a._count?.ads || 0))
+      .slice(0, parseInt(limit));
+
     res.json({
       success: true,
       trending: trending.map(cat => ({
         query: cat.name,
-        count: cat._count.ads,
+        count: cat._count?.ads || 0,
         type: 'category',
         slug: cat.slug
       }))

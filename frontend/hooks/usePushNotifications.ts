@@ -2,6 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import api from '@/lib/api';
+import { 
+  requestNotificationPermission as requestFCMPermission,
+  getFCMToken,
+  onMessageListener,
+  isFirebaseMessagingSupported,
+  deleteFCMToken
+} from '@/lib/firebaseMessaging';
 
 interface PushSubscription {
   endpoint: string;
@@ -16,34 +23,65 @@ export function usePushNotifications() {
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [vapidPublicKey, setVapidPublicKey] = useState<string | null>(null);
+  const [useFirebase, setUseFirebase] = useState(false);
+  const [fcmToken, setFcmToken] = useState<string | null>(null);
 
   useEffect(() => {
     // Check if browser supports push notifications
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window) {
       setIsSupported(true);
       
-      // Get VAPID public key
-      api.get('/push/vapid-key')
-        .then((response) => {
-          if (response.data.success) {
-            setVapidPublicKey(response.data.publicKey);
-          }
-        })
-        .catch((error) => {
-          // Silently handle 503 (push notifications not configured)
-          // Only log in development mode
-          if (error.response?.status !== 503) {
-            if (process.env.NODE_ENV === 'development') {
-              console.warn('Push notifications not configured. Add VAPID keys to backend .env file.');
+      // Check if Firebase Messaging is available and preferred
+      isFirebaseMessagingSupported().then((firebaseSupported) => {
+        setUseFirebase(firebaseSupported);
+        
+        if (firebaseSupported) {
+          // Try to get existing FCM token
+          getFCMToken().then((token) => {
+            if (token) {
+              setFcmToken(token);
+              setIsSubscribed(true);
             }
-          }
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
+            setIsLoading(false);
+          }).catch(() => {
+            setIsLoading(false);
+          });
 
-      // Check if already subscribed
-      checkSubscriptionStatus();
+          // Listen for foreground messages
+          onMessageListener().then((payload) => {
+            console.log('Foreground message received:', payload);
+            // You can show a toast or update UI here
+          }).catch(() => {
+            // Ignore errors
+          });
+        } else {
+          // Fallback to VAPID
+          // Get VAPID public key
+          api.get('/push/vapid-key')
+            .then((response) => {
+              if (response.data.success) {
+                setVapidPublicKey(response.data.publicKey);
+              }
+            })
+            .catch((error) => {
+              // Silently handle 503 (push notifications not configured)
+              // Only log in development mode
+              if (error.response?.status !== 503) {
+                if (process.env.NODE_ENV === 'development') {
+                  console.warn('Push notifications not configured. Add VAPID keys to backend .env file.');
+                }
+              }
+            })
+            .finally(() => {
+              setIsLoading(false);
+            });
+
+          // Check if already subscribed
+          checkSubscriptionStatus();
+        }
+      }).catch(() => {
+        setIsLoading(false);
+      });
     } else {
       setIsLoading(false);
     }
@@ -51,61 +89,95 @@ export function usePushNotifications() {
 
   const checkSubscriptionStatus = async () => {
     try {
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.getSubscription();
-      setIsSubscribed(!!subscription);
+      // Check current Firebase support status
+      const firebaseSupported = await isFirebaseMessagingSupported();
+      
+      if (firebaseSupported) {
+        const token = await getFCMToken();
+        if (token) {
+          setFcmToken(token);
+          setIsSubscribed(true);
+        } else {
+          setIsSubscribed(false);
+        }
+      } else {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+        setIsSubscribed(!!subscription);
+      }
     } catch (error) {
       console.error('Error checking subscription status:', error);
     }
   };
 
   const subscribe = async (): Promise<boolean> => {
-    if (!isSupported || !vapidPublicKey) {
-      console.error('Push notifications not supported or VAPID key not available');
+    if (!isSupported) {
+      console.error('Push notifications not supported');
       return false;
     }
 
     try {
       setIsLoading(true);
 
-      // Register service worker
-      const registration = await navigator.serviceWorker.register('/sw.js');
-      console.log('Service Worker registered:', registration);
-
-      // Request notification permission
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        console.warn('Notification permission denied');
-        setIsLoading(false);
-        return false;
-      }
-
-      // Subscribe to push notifications
-      const keyArray = urlBase64ToUint8Array(vapidPublicKey);
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: keyArray as any
-      });
-
-      // Send subscription to server
-      const response = await api.post('/push/subscribe', {
-        subscription: {
-          endpoint: subscription.endpoint,
-          keys: {
-            p256dh: arrayBufferToBase64(subscription.getKey('p256dh')!),
-            auth: arrayBufferToBase64(subscription.getKey('auth')!)
-          }
-        },
-        userAgent: navigator.userAgent
-      });
-
-      if (response.data.success) {
-        setIsSubscribed(true);
-        console.log('Successfully subscribed to push notifications');
-        return true;
+      // Use Firebase if available, otherwise fallback to VAPID
+      if (useFirebase) {
+        const token = await requestFCMPermission();
+        if (token) {
+          setFcmToken(token);
+          setIsSubscribed(true);
+          console.log('Successfully subscribed to Firebase push notifications');
+          return true;
+        } else {
+          console.error('Failed to get FCM token');
+          return false;
+        }
       } else {
-        console.error('Failed to save subscription:', response.data.message);
-        return false;
+        // VAPID fallback
+        if (!vapidPublicKey) {
+          console.error('VAPID key not available');
+          setIsLoading(false);
+          return false;
+        }
+
+        // Register service worker
+        const registration = await navigator.serviceWorker.register('/sw.js');
+        console.log('Service Worker registered:', registration);
+
+        // Request notification permission
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          console.warn('Notification permission denied');
+          setIsLoading(false);
+          return false;
+        }
+
+        // Subscribe to push notifications
+        const keyArray = urlBase64ToUint8Array(vapidPublicKey);
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: keyArray as any
+        });
+
+        // Send subscription to server
+        const response = await api.post('/push/subscribe', {
+          subscription: {
+            endpoint: subscription.endpoint,
+            keys: {
+              p256dh: arrayBufferToBase64(subscription.getKey('p256dh')!),
+              auth: arrayBufferToBase64(subscription.getKey('auth')!)
+            }
+          },
+          userAgent: navigator.userAgent
+        });
+
+        if (response.data.success) {
+          setIsSubscribed(true);
+          console.log('Successfully subscribed to push notifications');
+          return true;
+        } else {
+          console.error('Failed to save subscription:', response.data.message);
+          return false;
+        }
       }
     } catch (error: any) {
       console.error('Error subscribing to push notifications:', error);
@@ -119,25 +191,38 @@ export function usePushNotifications() {
     try {
       setIsLoading(true);
 
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.getSubscription();
+      if (useFirebase && fcmToken) {
+        // Unsubscribe from Firebase
+        const success = await deleteFCMToken();
+        if (success) {
+          setFcmToken(null);
+          setIsSubscribed(false);
+          console.log('Successfully unsubscribed from Firebase push notifications');
+          return true;
+        }
+        return false;
+      } else {
+        // VAPID unsubscribe
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
 
-      if (subscription) {
-        // Get endpoint to send to server
-        const endpoint = subscription.endpoint;
+        if (subscription) {
+          // Get endpoint to send to server
+          const endpoint = subscription.endpoint;
 
-        // Unsubscribe from push service
-        await subscription.unsubscribe();
+          // Unsubscribe from push service
+          await subscription.unsubscribe();
 
-        // Remove subscription from server
-        await api.post('/push/unsubscribe', { endpoint });
+          // Remove subscription from server
+          await api.post('/push/unsubscribe', { endpoint });
 
-        setIsSubscribed(false);
-        console.log('Successfully unsubscribed from push notifications');
-        return true;
+          setIsSubscribed(false);
+          console.log('Successfully unsubscribed from push notifications');
+          return true;
+        }
+
+        return false;
       }
-
-      return false;
     } catch (error: any) {
       console.error('Error unsubscribing from push notifications:', error);
       return false;
@@ -152,7 +237,9 @@ export function usePushNotifications() {
     isLoading,
     subscribe,
     unsubscribe,
-    checkSubscriptionStatus
+    checkSubscriptionStatus,
+    useFirebase,
+    fcmToken
   };
 }
 

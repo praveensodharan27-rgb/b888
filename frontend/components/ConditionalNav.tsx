@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { memo } from 'react';
+import { memo, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 
 const Navbar = dynamic(
@@ -21,14 +21,6 @@ const CategoryNav = dynamic(
   () => import('@/components/CategoryNav'),
   {
     loading: () => <div className="h-14 bg-white border-b border-gray-200"></div>,
-    ssr: false
-  }
-);
-
-const PostAdNavbar = dynamic(
-  () => import('@/components/PostAdNavbar'),
-  {
-    loading: () => <div className="h-16 bg-white border-b border-gray-200"></div>,
     ssr: false
   }
 );
@@ -53,11 +45,11 @@ export function ConditionalNavbar() {
   if (isAdminPage) return null;
 
   // Show same Navbar on all pages (like home page)
+  // Wrap in Suspense since Navbar uses useSearchParams
   return (
-    <>
+    <Suspense fallback={<div className="h-16 bg-white shadow-md"></div>}>
       <Navbar />
-      <CategoryNav />
-    </>
+    </Suspense>
   );
 }
 

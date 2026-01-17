@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
 import { useForm } from 'react-hook-form';
-import { FiChevronDown } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 function RegisterPageContent() {
@@ -112,26 +111,23 @@ function RegisterPageContent() {
                   )}
                 </div>
 
-                {/* Country (using phone as location) */}
+                {/* Contact Number */}
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Country</label>
-                  <div className="relative">
-                    <input
-                      {...register('phone', {
-                        validate: (value) => {
-                          const email = watch('email');
-                          if (!value && !email) {
-                            return 'Phone or email is required';
-                          }
-                          return true;
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Contact Number</label>
+                  <input
+                    {...register('phone', {
+                      validate: (value) => {
+                        const email = watch('email');
+                        if (!value && !email) {
+                          return 'Phone or email is required';
                         }
-                      })}
-                      type="tel"
-                      className="w-full px-4 py-3 border-2 border-orange-500 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 text-gray-900 pr-10"
-                      placeholder="+1234567890"
-                    />
-                    <FiChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5 pointer-events-none" />
-                  </div>
+                        return true;
+                      }
+                    })}
+                    type="tel"
+                    className="w-full px-4 py-3 border-2 border-orange-500 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 text-gray-900"
+                    placeholder="+1234567890"
+                  />
                   {errors.phone && (
                     <p className="text-red-500 text-xs mt-1">{errors.phone.message as string}</p>
                   )}

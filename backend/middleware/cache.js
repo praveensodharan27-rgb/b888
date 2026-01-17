@@ -1,6 +1,7 @@
 // Simple in-memory cache middleware for GET requests
 const cache = new Map();
 const CACHE_TTL = 60 * 1000; // 1 minute default
+const STATIC_CACHE_TTL = 10 * 60 * 1000; // 10 minutes for static data (categories, locations)
 
 const getCacheKey = (req) => {
   return `${req.method}:${req.originalUrl}`;
@@ -63,5 +64,15 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000); // Cleanup every 5 minutes
 
-module.exports = { cacheMiddleware, clearCache };
+// Get cache size (for stats)
+const getCacheSize = () => {
+  return cache.size;
+};
+
+// Get all cache keys (for stats)
+const getCacheKeys = () => {
+  return Array.from(cache.keys());
+};
+
+module.exports = { cacheMiddleware, clearCache, getCacheSize, getCacheKeys };
 

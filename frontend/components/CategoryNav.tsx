@@ -141,7 +141,7 @@ function CategoryNav() {
       <div 
         className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-20 z-40 shadow-sm"
       >
-        <div className="container mx-auto px-4">
+        <div className="w-full px-4">
           <div className="flex items-center h-14">
             <div className="flex gap-4 animate-pulse">
               {[...Array(8)].map((_, i) => (
@@ -170,7 +170,7 @@ function CategoryNav() {
         className="bg-gray-100 border-b border-gray-200 sticky z-40 -mt-px"
         style={{ top: '64px' }}
       >
-        <div className="container mx-auto px-4">
+        <div className="w-full px-4">
           <div className="flex items-center gap-2 py-2">
             {/* Quick Category Links - Top 12 Most Popular with Active State - Left aligned */}
             <div 
@@ -236,7 +236,7 @@ function CategoryNav() {
               <FiChevronDown className={`w-4 h-4 transition-transform ${showMegaMenu ? 'rotate-180' : ''}`} />
             </button>
 
-            {/* OLX-Style Mega Menu */}
+            {/* Sell Box Style Mega Menu */}
             {showMegaMenu && (
               <div 
                 className="fixed left-0 right-0 bg-white dark:bg-slate-800 shadow-2xl border-t border-gray-200 dark:border-slate-700"

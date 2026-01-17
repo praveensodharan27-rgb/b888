@@ -131,8 +131,17 @@ router.post('/detect-location', authenticate, async (req, res) => {
           errorMessage = 'No location found for the given coordinates';
           httpStatus = 404;
         } else if (geocodingData.status === 'REQUEST_DENIED') {
-          errorMessage = `Geocoding API error: ${geocodingData.error_message || 'Request denied. Please check your API key and permissions.'}`;
-          console.error('Geocoding API denied:', geocodingData.error_message);
+          const errorMsg = geocodingData.error_message || 'Request denied. Please check your API key and permissions.';
+          errorMessage = `Geocoding API error: ${errorMsg}`;
+          console.error('Geocoding API denied:', errorMsg);
+          
+          // Special handling for referrer restriction error
+          if (errorMsg.includes('referer restrictions') || errorMsg.includes('referrer restrictions')) {
+            console.error('⚠️ IMPORTANT: Your API key has referrer restrictions.');
+            console.error('⚠️ Backend geocoding requires a server-side API key with IP restrictions (NOT referrer restrictions).');
+            console.error('⚠️ See: backend/GOOGLE_MAPS_API_KEY_SETUP.md for setup instructions.');
+            errorMessage = `Geocoding API error: API key has referrer restrictions. Backend requires a server-side key with IP restrictions. See documentation for setup.`;
+          }
           httpStatus = 403;
         } else if (geocodingData.status === 'OVER_QUERY_LIMIT') {
           errorMessage = 'Geocoding API quota exceeded. Please try again later.';
@@ -385,8 +394,17 @@ router.post('/geocode-address', authenticate, async (req, res) => {
       if (geocodingData.status === 'ZERO_RESULTS') {
         errorMessage = 'No location found for the given address';
       } else if (geocodingData.status === 'REQUEST_DENIED') {
-        errorMessage = `Geocoding API error: ${geocodingData.error_message || 'Request denied. Please check your API key and permissions.'}`;
-        console.error('Geocoding API denied:', geocodingData.error_message);
+        const errorMsg = geocodingData.error_message || 'Request denied. Please check your API key and permissions.';
+        errorMessage = `Geocoding API error: ${errorMsg}`;
+        console.error('Geocoding API denied:', errorMsg);
+        
+        // Special handling for referrer restriction error
+        if (errorMsg.includes('referer restrictions') || errorMsg.includes('referrer restrictions')) {
+          console.error('⚠️ IMPORTANT: Your API key has referrer restrictions.');
+          console.error('⚠️ Backend geocoding requires a server-side API key with IP restrictions (NOT referrer restrictions).');
+          console.error('⚠️ See: backend/GOOGLE_MAPS_API_KEY_SETUP.md for setup instructions.');
+          errorMessage = `Geocoding API error: API key has referrer restrictions. Backend requires a server-side key with IP restrictions. See documentation for setup.`;
+        }
       } else if (geocodingData.status === 'OVER_QUERY_LIMIT') {
         errorMessage = 'Geocoding API quota exceeded. Please try again later.';
       } else if (geocodingData.status === 'INVALID_REQUEST') {

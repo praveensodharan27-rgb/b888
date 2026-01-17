@@ -8,14 +8,8 @@ export const getSocket = (): Socket | null => {
 
   const token = Cookies.get('token');
   
-  // If no token, don't create socket
-  if (!token) {
-    if (socket) {
-      socket.disconnect();
-      socket = null;
-    }
-    return null;
-  }
+  // Allow socket connection even without token (for public events like new ads)
+  // But use token if available for authenticated features
 
   // If socket exists but is disconnected, reconnect
   if (socket && !socket.connected) {
@@ -26,7 +20,7 @@ export const getSocket = (): Socket | null => {
   // Create new socket if doesn't exist
   if (!socket) {
     socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000', {
-      auth: { token },
+      auth: token ? { token } : undefined, // Only send token if available
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,

@@ -10,6 +10,7 @@ const prisma = new PrismaClient();
 
 // Configure Google OAuth Strategy
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  console.log('✅ Google OAuth Strategy configured');
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
@@ -32,7 +33,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
       // Check if user exists with this email
       if (profile.emails && profile.emails[0]) {
         const email = profile.emails[0].value.toLowerCase();
-        user = await prisma.user.findUnique({
+        user = await prisma.user.findFirst({
           where: { email }
         });
 
@@ -69,10 +70,13 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     }
   }
   ));
+} else {
+  console.warn('⚠️  Google OAuth not configured: Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
 }
 
 // Configure Facebook OAuth Strategy
 if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
+  console.log('✅ Facebook OAuth Strategy configured');
   passport.use(new FacebookStrategy({
     clientID: process.env.FACEBOOK_APP_ID,
     clientSecret: process.env.FACEBOOK_APP_SECRET,
@@ -96,7 +100,7 @@ if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
       // Check if user exists with this email
       if (profile.emails && profile.emails[0]) {
         const email = profile.emails[0].value.toLowerCase();
-        user = await prisma.user.findUnique({
+        user = await prisma.user.findFirst({
           where: { email }
         });
 
@@ -133,6 +137,8 @@ if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
     }
   }
   ));
+} else {
+  console.warn('⚠️  Facebook OAuth not configured: Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET');
 }
 
 // Serialize user for session
@@ -150,14 +156,29 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// Google OAuth routes
-router.get('/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
-);
+// Helper function to check if Google strategy is configured
+const isGoogleStrategyConfigured = () => {
+  return !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+};
 
-router.get('/google/callback',
-  passport.authenticate('google', { session: false, failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed` }),
-  async (req, res) => {
+// Google OAuth routes
+router.get('/google', (req, res, next) => {
+  if (!isGoogleStrategyConfigured()) {
+    console.error('❌ Google OAuth not configured: Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    return res.redirect(`${frontendUrl}/login?error=google_oauth_not_configured`);
+  }
+  next();
+}, passport.authenticate('google', { scope: ['profile', 'email'] }));
+
+router.get('/google/callback', (req, res, next) => {
+  if (!isGoogleStrategyConfigured()) {
+    console.error('❌ Google OAuth not configured: Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    return res.redirect(`${frontendUrl}/login?error=google_oauth_not_configured`);
+  }
+  next();
+}, passport.authenticate('google', { session: false, failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed` }), async (req, res) => {
     try {
       const user = req.user;
       if (!user || !user.id) {
@@ -178,14 +199,29 @@ router.get('/google/callback',
   }
 );
 
-// Facebook OAuth routes
-router.get('/facebook',
-  passport.authenticate('facebook', { scope: ['email'] })
-);
+// Helper function to check if Facebook strategy is configured
+const isFacebookStrategyConfigured = () => {
+  return !!(process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET);
+};
 
-router.get('/facebook/callback',
-  passport.authenticate('facebook', { session: false, failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed` }),
-  async (req, res) => {
+// Facebook OAuth routes
+router.get('/facebook', (req, res, next) => {
+  if (!isFacebookStrategyConfigured()) {
+    console.error('❌ Facebook OAuth not configured: Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET');
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    return res.redirect(`${frontendUrl}/login?error=facebook_oauth_not_configured`);
+  }
+  next();
+}, passport.authenticate('facebook', { scope: ['email'] }));
+
+router.get('/facebook/callback', (req, res, next) => {
+  if (!isFacebookStrategyConfigured()) {
+    console.error('❌ Facebook OAuth not configured: Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET');
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    return res.redirect(`${frontendUrl}/login?error=facebook_oauth_not_configured`);
+  }
+  next();
+}, passport.authenticate('facebook', { session: false, failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed` }), async (req, res) => {
     try {
       const user = req.user;
       if (!user || !user.id) {

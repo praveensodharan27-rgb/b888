@@ -113,7 +113,8 @@ async function getUserPackagePriority(userId) {
 }
 
 /**
- * Filter expired ads and enrich with package info
+ * Filter expired ads (REMOVED: package-based filtering)
+ * Only filters by basic status and expiry - no package filtering
  */
 async function filterAndEnrichAds(ads) {
   try {
@@ -122,129 +123,23 @@ async function filterAndEnrichAds(ads) {
     }
 
     const now = new Date();
-    const userIds = [...new Set(ads.map(ad => ad.userId).filter(Boolean))];
     
-    // Only fetch packages if we have userIds
-    let userPackages = [];
-    let businessPackages = [];
-    
-    if (userIds.length > 0) {
-      try {
-        // Fetch all user packages in one query
-        userPackages = await prisma.userBusinessPackage.findMany({
-          where: {
-            userId: { in: userIds },
-            status: 'active',
-            expiresAt: { gt: now }
-          }
-        });
-        
-        // Also check BusinessPackage table
-        businessPackages = await prisma.businessPackage.findMany({
-          where: {
-            userId: { in: userIds },
-            status: 'paid',
-            expiresAt: { gt: now }
-          }
-        });
-      } catch (error) {
-        console.error('Error fetching packages in filterAndEnrichAds:', error);
-        // Continue without packages - ads will default to NORMAL
+    // Only filter by basic status and expiry - NO package filtering
+    const validAds = ads.filter(ad => {
+      if (!ad || !ad.id) return false;
+      if (ad.status !== 'APPROVED') return false;
+      // Only check ad expiry
+      if (ad.expiresAt) {
+        const adExpiry = new Date(ad.expiresAt);
+        if (adExpiry <= now) return false;
       }
-    }
-    
-    // Create map of userId -> package
-    const packageMap = new Map();
-    
-    userPackages.forEach(pkg => {
-      if (pkg.userId && !packageMap.has(pkg.userId)) {
-        packageMap.set(pkg.userId, pkg);
-      }
+      return true;
     });
-    
-    businessPackages.forEach(pkg => {
-      if (pkg.userId && !packageMap.has(pkg.userId)) {
-        packageMap.set(pkg.userId, pkg);
-      }
-    });
-    
-    // Filter and enrich ads
-    const validAds = [];
-    let expiredCount = 0;
-    let invalidCount = 0;
-    
-    for (const ad of ads) {
-      if (!ad || !ad.id) {
-        invalidCount++;
-        continue; // Skip invalid ads
-      }
-
-      try {
-        const userPackage = ad.userId ? packageMap.get(ad.userId) : null;
-        
-        // Set package type FIRST
-        // Free ads (no package) should have packageType = 'NORMAL'
-        if (!ad.packageType || ad.packageType === null || ad.packageType === undefined) {
-          if (userPackage && userPackage.packageType) {
-            // Ad created with business package
-            ad.packageType = PACKAGE_TYPE_MAP[userPackage.packageType] || PACKAGE_PRIORITY.NORMAL;
-          } else {
-            // Free ad (no package) - set to NORMAL
-            ad.packageType = PACKAGE_PRIORITY.NORMAL;
-          }
-        }
-        
-        // Ensure packageType is always set (default to NORMAL for free ads)
-        if (!ad.packageType || ad.packageType === null || ad.packageType === undefined) {
-          ad.packageType = PACKAGE_PRIORITY.NORMAL;
-        }
-        
-        // Only skip if ad itself is expired (not package expiry)
-        // This is less strict - we show ads even if user's package expired
-        if (isAdExpired(ad, userPackage)) {
-          expiredCount++;
-          continue;
-        }
-        
-        validAds.push(ad);
-      } catch (error) {
-        console.error(`Error processing ad ${ad.id}:`, error);
-        // Don't skip on error - include the ad anyway
-        // Just set default packageType
-        if (!ad.packageType) {
-          ad.packageType = PACKAGE_PRIORITY.NORMAL;
-        }
-        // Only skip if truly invalid (no id or status)
-        if (ad.id && ad.status === 'APPROVED') {
-          validAds.push(ad);
-        } else {
-          invalidCount++;
-        }
-      }
-    }
-    
-    // Debug logging
-    if (validAds.length === 0 && ads.length > 0) {
-      console.warn(`⚠️ filterAndEnrichAds: All ${ads.length} ads filtered out! Expired: ${expiredCount}, Invalid: ${invalidCount}`);
-      // Last resort: return ads that passed basic checks
-      const basicValid = ads.filter(ad => ad && ad.id && ad.status === 'APPROVED');
-      if (basicValid.length > 0) {
-        console.log(`✅ Returning ${basicValid.length} basic valid ads as fallback`);
-        basicValid.forEach(ad => {
-          if (!ad.packageType) {
-            ad.packageType = PACKAGE_PRIORITY.NORMAL;
-          }
-        });
-        return basicValid;
-      }
-    } else if (validAds.length < ads.length) {
-      console.log(`📊 filterAndEnrichAds: ${validAds.length}/${ads.length} ads valid (${expiredCount} expired, ${invalidCount} invalid)`);
-    }
     
     return validAds;
   } catch (error) {
     console.error('Error in filterAndEnrichAds:', error);
-    // Return ads as-is if filtering fails (better than returning empty)
+    // Return ads as-is if filtering fails
     return ads || [];
   }
 }
@@ -331,8 +226,8 @@ function rotateAdsInGroup(ads) {
 }
 
 /**
- * Rank ads according to package priority system
- * Priority: Premium ads first (by premium type), then package-based ranking
+ * Rank ads - REMOVED: package-based filtering and separation
+ * Simple ranking by creation date only - no filtering, no separation, no prioritization
  */
 async function rankAds(ads, options = {}) {
   try {
@@ -344,12 +239,12 @@ async function rankAds(ads, options = {}) {
       updateLastShown = false // Whether to update lastShownAt in database
     } = options;
     
-    // First, do a basic filter (only status and ad expiry, no package expiry check)
+    // Only filter by basic status and expiry - NO package filtering, NO separation
     const now = new Date();
-    const basicValidAds = (ads || []).filter(ad => {
+    const validAds = (ads || []).filter(ad => {
       if (!ad || !ad.id) return false;
       if (ad.status !== 'APPROVED') return false;
-      // Only check ad expiry, not package expiry
+      // Only check ad expiry
       if (ad.expiresAt) {
         const adExpiry = new Date(ad.expiresAt);
         if (adExpiry <= now) return false;
@@ -357,73 +252,23 @@ async function rankAds(ads, options = {}) {
       return true;
     });
     
-    if (basicValidAds.length === 0) {
-      console.warn(`⚠️ rankAds: No basic valid ads (input: ${ads.length} ads)`);
+    if (validAds.length === 0) {
       return [];
     }
     
-    // Filter expired ads and enrich with package info
-    const validAds = await filterAndEnrichAds(basicValidAds);
-    
-    if (!validAds || validAds.length === 0) {
-      console.warn(`⚠️ rankAds: No valid ads after filtering (input: ${ads.length} ads). Returning basic valid ads.`);
-      // Return basic valid ads if package filtering removed everything
-      basicValidAds.forEach(ad => {
-        if (!ad.packageType) {
-          ad.packageType = PACKAGE_PRIORITY.NORMAL;
-        }
-      });
-      return basicValidAds;
-    }
-    
-    // Separate premium ads from normal ads
-    const premiumAds = validAds.filter(ad => ad && ad.isPremium === true);
-    const normalAds = validAds.filter(ad => !ad || !ad.isPremium || ad.isPremium === false);
-    
-    // Sort premium ads by premium type: TOP > FEATURED > BUMP_UP, then by creation date
-    premiumAds.sort((a, b) => {
-      const premiumPriority = { 'TOP': 1, 'FEATURED': 2, 'BUMP_UP': 3 };
-      const aPriority = premiumPriority[a.premiumType] || 4;
-      const bPriority = premiumPriority[b.premiumType] || 4;
-      
-      if (aPriority !== bPriority) {
-        return aPriority - bPriority;
-      }
-      
-      // Same premium type - sort by creation date (newest first)
+    // Simple sort by creation date (newest first) - NO package-based ranking, NO separation
+    const rankedAds = [...validAds].sort((a, b) => {
       const aDate = new Date(a.createdAt || 0);
       const bDate = new Date(b.createdAt || 0);
-      return bDate - aDate;
+      return bDate - aDate; // Newest first
     });
-    
-    // Group normal ads by package priority
-    const groups = groupAdsByPackage(normalAds);
-    
-    // Rotate ads within each group
-    const rotatedGroups = {};
-    for (const [priority, groupAds] of Object.entries(groups)) {
-      if (groupAds && groupAds.length > 0) {
-        rotatedGroups[priority] = rotateAdsInGroup(groupAds);
-      } else {
-        rotatedGroups[priority] = [];
-      }
-    }
-    
-    // Combine: Premium ads first, then package-based groups
-    const rankedAds = [
-      ...premiumAds, // Premium ads always first
-      ...(rotatedGroups[PACKAGE_PRIORITY.ENTERPRISE] || []),
-      ...(rotatedGroups[PACKAGE_PRIORITY.PRO] || []),
-      ...(rotatedGroups[PACKAGE_PRIORITY.BASIC] || []),
-      ...(rotatedGroups[PACKAGE_PRIORITY.NORMAL] || [])
-    ];
     
     // Update lastShownAt if requested
     if (updateLastShown && rankedAds.length > 0) {
       const now = new Date();
       const adIds = rankedAds.slice(0, 50)
         .map(ad => ad && ad.id)
-        .filter(Boolean); // Filter out null/undefined
+        .filter(Boolean);
       
       if (adIds.length > 0) {
         try {
@@ -433,7 +278,6 @@ async function rankAds(ads, options = {}) {
           });
         } catch (error) {
           console.error('Error updating lastShownAt:', error);
-          // Don't fail ranking if update fails
         }
       }
     }
@@ -441,7 +285,6 @@ async function rankAds(ads, options = {}) {
     return rankedAds;
   } catch (error) {
     console.error('Error in rankAds:', error);
-    // Return original ads if ranking fails (better than empty)
     return ads || [];
   }
 }

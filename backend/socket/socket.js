@@ -14,6 +14,19 @@ const emitNotification = (userId, notification) => {
   }
 };
 
+// Helper function to emit ad quota update to a user
+const emitAdQuotaUpdate = (userId, quotaData) => {
+  if (ioInstance) {
+    ioInstance.to(`user:${userId}`).emit('AD_QUOTA_UPDATED', quotaData);
+    console.log(`📡 Emitted AD_QUOTA_UPDATED to user ${userId}`, {
+      freeAds: quotaData.monthlyFreeAds?.remaining || 0,
+      packages: quotaData.packages?.length || 0
+    });
+  } else {
+    console.warn('⚠️ Socket.IO instance not available - cannot emit quota update');
+  }
+};
+
 // Helper function to get io instance
 const getIO = () => {
   return ioInstance;
@@ -22,11 +35,15 @@ const getIO = () => {
 const setupSocketIO = (io) => {
   ioInstance = io;
   // Authentication middleware for Socket.IO
+  // Allow unauthenticated connections for public events (like new_ad)
   io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth.token;
       if (!token) {
-        return next(new Error('Authentication error'));
+        // Allow connection without token (for public events)
+        socket.userId = null;
+        socket.isAuthenticated = false;
+        return next();
       }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -35,13 +52,20 @@ const setupSocketIO = (io) => {
       });
 
       if (!user) {
-        return next(new Error('User not found'));
+        // Allow connection even if user not found (for public events)
+        socket.userId = null;
+        socket.isAuthenticated = false;
+        return next();
       }
 
       socket.userId = user.id;
+      socket.isAuthenticated = true;
       next();
     } catch (error) {
-      next(new Error('Authentication error'));
+      // Allow connection even on auth error (for public events)
+      socket.userId = null;
+      socket.isAuthenticated = false;
+      next();
     }
   });
 
@@ -66,14 +90,18 @@ const setupSocketIO = (io) => {
 
     // Handle joining chat room
     socket.on('join_room', (roomId) => {
-      socket.join(`room:${roomId}`);
-      console.log(`User ${socket.userId} joined room ${roomId}`);
+      // CRITICAL: Convert roomId to STRING to avoid type mismatch
+      const roomIdString = String(roomId);
+      socket.join(`room:${roomIdString}`);
+      console.log(`User ${socket.userId} joined room ${roomIdString}`);
     });
 
     // Handle leaving chat room
     socket.on('leave_room', (roomId) => {
-      socket.leave(`room:${roomId}`);
-      console.log(`User ${socket.userId} left room ${roomId}`);
+      // CRITICAL: Convert roomId to STRING to avoid type mismatch
+      const roomIdString = String(roomId);
+      socket.leave(`room:${roomIdString}`);
+      console.log(`User ${socket.userId} left room ${roomIdString}`);
     });
 
     // Handle sending message
@@ -81,9 +109,12 @@ const setupSocketIO = (io) => {
       try {
         const { roomId, content, type = 'TEXT', imageUrl } = data;
 
+        // CRITICAL: Convert roomId to STRING to avoid type mismatch
+        const roomIdString = String(roomId);
+
         // Verify room access
         const room = await prisma.chatRoom.findUnique({
-          where: { id: roomId },
+          where: { id: roomIdString },
           include: {
             user1: true,
             user2: true
@@ -110,7 +141,7 @@ const setupSocketIO = (io) => {
             imageUrl,
             senderId: socket.userId,
             receiverId,
-            roomId
+            roomId: roomIdString
           },
           include: {
             sender: {
@@ -125,34 +156,82 @@ const setupSocketIO = (io) => {
 
         // Update room's updatedAt
         await prisma.chatRoom.update({
-          where: { id: roomId },
+          where: { id: roomIdString },
           data: { updatedAt: new Date() }
         });
 
-        // Emit message to room
-        io.to(`room:${roomId}`).emit('new_message', message);
+        // ROOT FIX: Use io.to() to broadcast to ALL users in room (not just sender)
+        const roomName = `room:${roomIdString}`;
+        io.to(roomName).emit('new_message', message);
+        console.log(`📤 Emitted new_message to room: ${roomIdString}`);
 
-        // Send notification to receiver if offline
+        // Check if receiver is online via WebSocket
         const receiverSockets = userSockets.get(receiverId) || [];
-        if (receiverSockets.length === 0) {
-          // Create notification
+        const isReceiverOnline = receiverSockets.length > 0;
+
+        // If receiver is offline, send FCM push notification
+        if (!isReceiverOnline) {
+          // Create notification in database
           await prisma.notification.create({
             data: {
               userId: receiverId,
               title: 'New Message',
               message: `You have a new message from ${message.sender.name}`,
               type: 'new_message',
-              link: `/chat/${roomId}`
+              link: `/chat/${roomIdString}`
             }
           });
 
-          // Emit notification to receiver's personal room
-          io.to(`user:${receiverId}`).emit('notification', {
-            title: 'New Message',
-            message: `You have a new message from ${message.sender.name}`,
-            type: 'new_message',
-            link: `/chat/${roomId}`
-          });
+          // Send FCM push notification (WhatsApp-style)
+          try {
+            const { sendFCMNotificationToUser } = require('../utils/fcmService');
+            
+            // Prepare notification body based on message type (WhatsApp-style)
+            let notificationBody = content;
+            if (type === 'IMAGE') {
+              notificationBody = '📷 Image';
+            } else if (type === 'AUDIO') {
+              notificationBody = '🎵 Audio';
+            } else if (type === 'VIDEO') {
+              notificationBody = '🎥 Video';
+            } else if (type === 'FILE') {
+              notificationBody = '📎 File';
+            } else if (type !== 'TEXT') {
+              notificationBody = 'Sent a message';
+            }
+            
+            // Truncate long messages (WhatsApp-style preview)
+            if (notificationBody.length > 100) {
+              notificationBody = notificationBody.substring(0, 97) + '...';
+            }
+            
+            await sendFCMNotificationToUser(
+              receiverId,
+              {
+                title: message.sender.name || 'SellIt',
+                body: notificationBody,
+                type: 'chat_message'
+              },
+              {
+                type: 'chat_message',
+                chatId: roomIdString, // Use chatId for Flutter intent
+                roomId: roomIdString, // Keep for backward compatibility
+                messageId: message.id,
+                senderId: socket.userId,
+                senderName: message.sender.name,
+                content: type === 'TEXT' ? content : '',
+                messageType: type,
+                url: `/chat/${roomIdString}`
+              }
+            );
+            console.log(`📱 FCM notification sent to offline user: ${receiverId} (chatId: ${roomIdString})`);
+          } catch (fcmError) {
+            console.error('Error sending FCM notification:', fcmError);
+            // Don't fail message sending if FCM fails
+          }
+        } else {
+          // Receiver is online - WebSocket will handle it
+          console.log(`✅ Receiver ${receiverId} is online, message delivered via WebSocket`);
         }
       } catch (error) {
         console.error('Send message error:', error);
@@ -163,18 +242,20 @@ const setupSocketIO = (io) => {
     // Handle typing indicator
     socket.on('typing', (data) => {
       const { roomId } = data;
-      socket.to(`room:${roomId}`).emit('user_typing', {
+      const roomIdString = String(roomId);
+      socket.to(`room:${roomIdString}`).emit('user_typing', {
         userId: socket.userId,
-        roomId
+        roomId: roomIdString
       });
     });
 
     // Handle stop typing
     socket.on('stop_typing', (data) => {
       const { roomId } = data;
-      socket.to(`room:${roomId}`).emit('user_stopped_typing', {
+      const roomIdString = String(roomId);
+      socket.to(`room:${roomIdString}`).emit('user_stopped_typing', {
         userId: socket.userId,
-        roomId
+        roomId: roomIdString
       });
     });
 
@@ -377,5 +458,5 @@ const setupSocketIO = (io) => {
   });
 };
 
-module.exports = { setupSocketIO, emitNotification, getIO };
+module.exports = { setupSocketIO, emitNotification, emitAdQuotaUpdate, getIO };
 

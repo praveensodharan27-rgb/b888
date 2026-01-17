@@ -35,15 +35,30 @@ async function initializeIndex() {
 
     const index = client.index(INDEX_NAME);
     
-    // Configure searchable attributes
+    // Configure searchable attributes - includes title, description, category, ALL location fields, tags
+    // Keywords will match against all these fields with OR logic
     await index.updateSearchableAttributes([
       'title',
       'description',
       'category',
       'subcategory',
-      'location',
+      'location',      // Location name
+      'city',          // City field
+      'state',         // State field
+      'neighbourhood', // Neighbourhood field
+      'exactLocation', // Exact location field
+      'tags',          // Tags
       'condition',
     ]);
+    
+    // Configure typo tolerance for fuzzy matching
+    await index.updateTypoTolerance({
+      enabled: true,
+      minWordSizeForTypos: {
+        oneTypo: 4,
+        twoTypos: 8,
+      },
+    });
 
     // Configure filterable attributes
     await index.updateFilterableAttributes([
@@ -103,12 +118,18 @@ async function indexAd(ad) {
       locationId: ad.locationId,
       category: ad.category?.name || '',
       subcategory: ad.subcategory?.name || '',
-      location: ad.location?.name || '',
+      location: ad.location?.name || '', // Location name from relation
+      city: ad.city || '', // City field from Ad model
+      state: ad.state || '', // State field from Ad model
+      neighbourhood: ad.neighbourhood || '', // Neighbourhood field from Ad model
+      exactLocation: ad.exactLocation || '', // Exact location field from Ad model
+      tags: (ad.tags && Array.isArray(ad.tags)) ? ad.tags.join(' ') : '', // Tags as space-separated string for search
       price: ad.price,
       condition: ad.condition,
       status: ad.status,
       isPremium: ad.isPremium || false,
       premiumType: ad.premiumType || null,
+      packageType: ad.packageType || 'NORMAL', // For Premium → Business → Free ranking
       userId: ad.userId,
       images: ad.images || [],
       createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
@@ -145,12 +166,18 @@ async function indexAds(ads) {
       locationId: ad.locationId,
       category: ad.category?.name || '',
       subcategory: ad.subcategory?.name || '',
-      location: ad.location?.name || '',
+      location: ad.location?.name || '', // Location name from relation
+      city: ad.city || '', // City field from Ad model
+      state: ad.state || '', // State field from Ad model
+      neighbourhood: ad.neighbourhood || '', // Neighbourhood field from Ad model
+      exactLocation: ad.exactLocation || '', // Exact location field from Ad model
+      tags: (ad.tags && Array.isArray(ad.tags)) ? ad.tags.join(' ') : '', // Tags as space-separated string for search
       price: ad.price,
       condition: ad.condition,
       status: ad.status,
       isPremium: ad.isPremium || false,
       premiumType: ad.premiumType || null,
+      packageType: ad.packageType || 'NORMAL', // For Premium → Business → Free ranking
       userId: ad.userId,
       images: ad.images || [],
       createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
@@ -183,7 +210,7 @@ async function deleteAd(adId) {
   }
 }
 
-// Search ads
+// Search ads with keyword-based OR logic
 async function searchAds(query, options = {}) {
   try {
     const {
@@ -223,9 +250,17 @@ async function searchAds(query, options = {}) {
       filters.push(`subcategoryId = "${subcategoryId}"`);
     }
     
-    if (locationId) {
+    // CRITICAL: Location must NEVER block results when searching
+    // Location fields (city, state, neighbourhood, exactLocation) are searchable, not filterable
+    // When searching: location is just one of many fields to match against (OR logic)
+    // When browsing (no search): location filter can be applied for browsing/filtering mode
+    // NEVER apply locationId filter when searching - location fields are searchable, not filterable
+    if (locationId && !hasSearchQuery) {
+      // Only apply location filter when NOT searching (browsing/filtering mode)
       filters.push(`locationId = "${locationId}"`);
     }
+    // When hasSearchQuery is true, locationId filter is NOT applied
+    // This ensures location never blocks search results
     
     if (condition) {
       filters.push(`condition = "${condition}"`);
@@ -261,18 +296,38 @@ async function searchAds(query, options = {}) {
         sortArray = ['createdAt:desc'];
     }
     
-    // Premium ads should appear first, so we'll handle that in post-processing
-    // For now, we'll use a custom ranking
+    // KEYWORD-BASED OR SEARCH: Split query into keywords
+    // Meilisearch by default uses OR logic for multiple words
+    // Each keyword will match against: title, description, category, location, tags
+    // Fuzzy matching is enabled via typo tolerance
+    let searchQuery = query || '';
+    if (hasSearchQuery) {
+      // Split into keywords and ensure OR logic
+      // Meilisearch treats space-separated words as OR by default
+      // But we can make it explicit by using quotes for exact phrases
+      const keywords = query.trim().split(/\s+/).filter(k => k.length > 0);
+      console.log(`🔍 Search query split into ${keywords.length} keywords:`, keywords);
+      
+      // Meilisearch will automatically match each keyword against all searchable attributes
+      // with OR logic (any keyword matching returns the ad)
+      // Fuzzy matching is handled by typo tolerance settings
+      searchQuery = query.trim();
+    }
     
     const searchParams = {
-      q: query || '',
+      q: searchQuery,
       filter: filters.length > 0 ? filters.join(' AND ') : undefined,
       sort: sortArray,
       limit: parseInt(limit),
       offset: (parseInt(page) - 1) * parseInt(limit),
+      // Enable fuzzy matching (typo tolerance is configured at index level)
+      // Meilisearch will match keywords against: title, description, category, location, tags
+      // with OR logic (any keyword matching returns the ad)
     };
     
-    const results = await index.search(query || '', searchParams);
+    const results = await index.search(searchQuery, searchParams);
+    
+    console.log(`🔍 Search results: ${results.estimatedTotalHits || 0} ads found for query: "${searchQuery}"`);
     
     return {
       hits: results.hits || [],

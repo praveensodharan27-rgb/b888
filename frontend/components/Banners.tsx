@@ -40,7 +40,7 @@ export default function Banners({ position, categoryId, locationId }: BannersPro
   if (banners.length === 0) return null;
 
   return (
-    <div className="my-8">
+    <div className="mb-6">
       {banners.map((banner: any) => (
         <Link
           key={banner.id}

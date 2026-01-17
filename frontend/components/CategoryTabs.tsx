@@ -1,175 +1,75 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import { useRouter, usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import api from '@/lib/api';
-import { dummyCategories } from '@/lib/dummyData';
-import { useEffect, useRef } from 'react';
 
-interface Category {
-  id: string;
-  name: string;
-  slug: string;
-  icon?: string;
-  image?: string;
-  _count: { ads: number };
-}
+type Category = { name: string; slug: string };
 
 interface CategoryTabsProps {
-  showAll?: boolean;
-  maxVisible?: number;
+  activeSlug?: string;
+  baseAllHref?: string; // default /ads
 }
 
-export default function CategoryTabs({ showAll = false, maxVisible = 12 }: CategoryTabsProps) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+/**
+ * Simple horizontally scrollable category tabs rendered as links.
+ * Supports normal click + ctrl/middle-click to open in new tab.
+ */
+export default function CategoryTabs({ activeSlug = '', baseAllHref = '/ads' }: CategoryTabsProps) {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  // Extract current category slug from pathname
-  const currentCategorySlug = pathname.startsWith('/category/') 
-    ? pathname.split('/')[2] 
-    : null;
-
-  // Fetch categories
-  const { data, isLoading } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      try {
-        const response = await api.get('/categories');
-        return response.data.categories;
-      } catch (error) {
-        return null;
-      }
-    },
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-    refetchOnWindowFocus: false,
-  });
-
-  const allCategories = (data as Category[]) || dummyCategories;
-  const categories = showAll ? allCategories : allCategories.slice(0, maxVisible);
-
-  // Auto-scroll to active tab
   useEffect(() => {
-    if (currentCategorySlug && scrollContainerRef.current) {
-      const activeTab = scrollContainerRef.current.querySelector(`[data-slug="${currentCategorySlug}"]`);
-      if (activeTab) {
-        activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    const load = async () => {
+      setLoading(true);
+      try {
+        const res = await api.get('/categories');
+        const list = res.data?.categories || [];
+        setCategories(list.map((c: any) => ({ name: c.name, slug: c.slug })));
+      } catch (e) {
+        console.error('Failed to load categories', e);
+      } finally {
+        setLoading(false);
       }
-    }
-  }, [currentCategorySlug]);
+    };
+    load();
+  }, []);
 
-  const handleTabClick = (slug: string) => {
-    router.push(`/category/${slug}`);
-  };
-
-  const handleAllClick = () => {
-    router.push('/ads');
-  };
-
-  if (isLoading) {
-    return (
-      <div className="bg-white border-b shadow-sm">
-        <div className="container mx-auto px-4">
-          <div className="flex gap-2 overflow-x-auto py-4 scrollbar-hide">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="animate-pulse">
-                <div className="h-10 w-24 bg-gray-200 rounded-full"></div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const tabs = [{ name: 'All', slug: '' }, ...categories];
 
   return (
-    <div className="bg-white border-b shadow-sm sticky top-0 z-40">
-      <div className="container mx-auto px-4">
-        <div 
-          ref={scrollContainerRef}
-          className="flex gap-2 overflow-x-auto py-4 scrollbar-hide scroll-smooth"
-          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-        >
-          {/* All Categories Tab */}
-          <button
-            onClick={handleAllClick}
-            className={`
-              flex-shrink-0 px-6 py-2.5 rounded-full font-medium text-sm
-              transition-all duration-200 whitespace-nowrap
-              ${!currentCategorySlug
-                ? 'bg-gradient-to-r from-primary-600 to-primary-700 text-white shadow-lg shadow-primary-200 scale-105'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200 hover:scale-105'
-              }
-            `}
-          >
-            <span className="flex items-center gap-2">
-              <span>🏠</span>
-              <span>All</span>
-            </span>
-          </button>
-
-          {/* Category Tabs */}
-          {categories.map((category) => {
-            const isActive = currentCategorySlug === category.slug;
-            
-            return (
-              <button
-                key={category.id}
-                data-slug={category.slug}
-                onClick={() => handleTabClick(category.slug)}
-                className={`
-                  flex-shrink-0 px-6 py-2.5 rounded-full font-medium text-sm
-                  transition-all duration-200 whitespace-nowrap
-                  ${isActive
-                    ? 'bg-gradient-to-r from-primary-600 to-primary-700 text-white shadow-lg shadow-primary-200 scale-105'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 hover:scale-105'
-                  }
-                `}
-              >
-                <span className="flex items-center gap-2">
-                  {category.icon && <span>{category.icon}</span>}
-                  <span>{category.name}</span>
-                  {category._count?.ads > 0 && (
-                    <span className={`
-                      text-xs px-2 py-0.5 rounded-full
-                      ${isActive 
-                        ? 'bg-white/20 text-white' 
-                        : 'bg-gray-200 text-gray-600'
-                      }
-                    `}>
-                      {category._count.ads}
-                    </span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-
-          {/* Show More Button */}
-          {!showAll && allCategories.length > maxVisible && (
-            <button
-              onClick={() => router.push('/#categories')}
-              className="flex-shrink-0 px-6 py-2.5 rounded-full font-medium text-sm
-                bg-gradient-to-r from-orange-500 to-orange-600 text-white
-                hover:from-orange-600 hover:to-orange-700
-                shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-200
-                whitespace-nowrap"
+    <div className="mb-4 overflow-x-auto">
+      <div className="flex gap-2 min-w-full pb-2">
+        {tabs.map((cat) => {
+          const active = activeSlug === cat.slug;
+          const href = cat.slug ? `/category/${cat.slug}` : baseAllHref;
+          return (
+            <Link
+              key={cat.slug || 'all'}
+              href={href}
+              onClick={(e) => {
+                // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
+                if (e.ctrlKey || e.metaKey || e.button === 1) {
+                  return; // Let browser handle it
+                }
+              }}
+              onAuxClick={(e) => {
+                // Handle middle-click (mouse wheel click)
+                if (e.button === 1) {
+                  window.open(href, '_blank');
+                }
+              }}
+              className={`px-4 py-2 rounded-full border whitespace-nowrap transition-all ${
+                active
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                  : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:text-blue-600'
+              } ${loading ? 'pointer-events-none opacity-60' : ''}`}
             >
-              <span className="flex items-center gap-2">
-                <span>View All</span>
-                <span>→</span>
-              </span>
-            </button>
-          )}
-        </div>
+              {cat.name}
+            </Link>
+          );
+        })}
       </div>
-
-      <style jsx>{`
-        .scrollbar-hide::-webkit-scrollbar {
-          display: none;
-        }
-      `}</style>
     </div>
   );
 }

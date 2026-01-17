@@ -78,10 +78,10 @@ export default function AdminSidebar() {
             <Link href="/admin" className="flex items-center gap-3 mb-3">
               <Image
                 src="/logo.png"
-                alt="SellIt Logo"
-                width={120}
-                height={40}
-                className="h-8 w-auto object-contain"
+                alt="Logo"
+                width={180}
+                height={60}
+                className="h-14 w-auto object-contain"
               />
               <div>
                 <p className="text-xs text-gray-500">Admin Panel</p>

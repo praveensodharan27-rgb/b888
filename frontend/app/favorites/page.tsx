@@ -3,7 +3,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
-import AdCard from '@/components/AdCard';
+import AdCardOLX from '@/components/AdCardOLX';
 import Link from 'next/link';
 import { useState, useEffect } from 'react';
 
@@ -42,31 +42,41 @@ export default function FavoritesPage() {
   }
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-8">My Favorites</h1>
+    <div className="min-h-screen bg-gray-50">
+      <div className="w-full px-4 py-8">
+        <h1 className="text-3xl font-bold text-gray-900 mb-8">My Favorites</h1>
 
-      {isLoading ? (
-        <div className="text-center py-12">Loading...</div>
-      ) : (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {data?.favorites.map((favorite: any) => (
-              <AdCard key={favorite.id} ad={favorite.ad} />
-            ))}
+        {isLoading ? (
+          <div className="text-center py-12">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <p className="mt-4 text-gray-500">Loading favorites...</p>
           </div>
-          {data?.favorites.length === 0 && (
-            <div className="text-center py-12">
-              <p className="text-gray-500 mb-4">No favorites yet</p>
-              <Link
-                href="/ads"
-                className="text-primary-600 hover:text-primary-700"
-              >
-                Browse ads
-              </Link>
-            </div>
-          )}
-        </>
-      )}
+        ) : (
+          <>
+            {data?.favorites && data.favorites.length > 0 ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+                {data.favorites.map((favorite: any) => (
+                  <AdCardOGNOX key={favorite.id} ad={favorite.ad} />
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-16 bg-white rounded-lg shadow-sm border border-gray-200">
+                <div className="max-w-md mx-auto">
+                  <div className="text-6xl mb-4">❤️</div>
+                  <p className="text-gray-600 text-lg font-medium mb-2">No favorites yet</p>
+                  <p className="text-gray-500 text-sm mb-6">Start saving your favorite ads!</p>
+                  <Link
+                    href="/ads"
+                    className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                  >
+                    Browse Ads
+                  </Link>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

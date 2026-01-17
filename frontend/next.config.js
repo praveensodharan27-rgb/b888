@@ -1,16 +1,18 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Ensure Next treats this folder as root (monorepo-safe)
+  outputFileTracingRoot: __dirname,
   // Enable compression
   compress: true,
-  // Optimize production builds
-  swcMinify: true,
   // Optimize images
   images: {
     formats: ['image/avif', 'image/webp'],
     deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
     imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
-    minimumCacheTTL: 60,
+    minimumCacheTTL: 31536000, // 1 year for optimized images
+    dangerouslyAllowSVG: true,
+    contentSecurityPolicy: "default-src 'self'; script-src 'none'; sandbox;",
     domains: [
       'localhost',
       '127.0.0.1',
@@ -86,20 +88,17 @@ const nextConfig = {
   // Performance optimizations
   experimental: {
     optimizeCss: true,
+    // NOTE: Disabling optimizePackageImports entirely because Next 15 dev can emit
+    // missing server vendor chunks (e.g. "./vendor-chunks/react-icons.js") on Windows.
   },
+  // Compress output
+  compress: true,
+  // Production source maps (disable for better performance)
+  productionBrowserSourceMaps: false,
   // Webpack configuration to handle chunk loading errors
   webpack: (config, { isServer }) => {
-    // Fix for "Cannot read properties of undefined (reading 'call')" error
-    // Ensure proper module factory handling
     if (!isServer) {
-      // Handle chunk loading errors on client side
-      config.optimization = {
-        ...config.optimization,
-        moduleIds: 'deterministic',
-        chunkIds: 'deterministic',
-      };
-      
-      // Fix for "originalFactory is undefined" error
+      // Avoid overriding Next's dev chunking behavior (can cause stale/mismatched chunks in dev).
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,

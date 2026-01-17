@@ -16,7 +16,6 @@ interface LiveLocationFeedProps {
 export default function LiveLocationFeed({ radius = 50, limit = 20 }: LiveLocationFeedProps) {
   const { latitude, longitude, error: geoError, loading: geoLoading } = useGeolocation();
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['ads', 'location-feed', latitude, longitude, radius],
@@ -73,12 +72,6 @@ export default function LiveLocationFeed({ radius = 50, limit = 20 }: LiveLocati
     };
   }, [latitude, longitude, radius, refetch]);
 
-  // Update last update time when data changes
-  useEffect(() => {
-    if (data) {
-      setLastUpdate(new Date());
-    }
-  }, [data]);
 
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
     const R = 6371; // Earth's radius in kilometers
@@ -176,11 +169,6 @@ export default function LiveLocationFeed({ radius = 50, limit = 20 }: LiveLocati
             </div>
             <p className="text-sm text-gray-600">
               Ads within {radius}km of your location
-              {lastUpdate && (
-                <span className="ml-2 text-xs text-gray-500">
-                  • Updated {lastUpdate.toLocaleTimeString()}
-                </span>
-              )}
             </p>
           </div>
         </div>

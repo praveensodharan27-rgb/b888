@@ -4,10 +4,12 @@ const { PrismaClient } = require('@prisma/client');
 const { authenticate } = require('../middleware/auth');
 const { uploadImages } = require('../middleware/upload');
 const { cacheMiddleware, clearCache } = require('../middleware/cache');
-const { indexAd, deleteAd } = require('../services/meilisearch');
+const { indexAd, deleteAd, searchAds } = require('../services/meilisearch');
 const { moderateAd, getModerationStatus } = require('../services/contentModeration');
 const { generateUniqueAdSlug } = require('../utils/slug');
 const { rankAds } = require('../services/adRankingService');
+const { rankAdsOGNOX } = require('../services/ognoxRankingService');
+const { rankAdsWithRotation, insertAdsIntoFeed, categorizeAd } = require('../services/ognoxAdsRotationService');
 const Razorpay = require('razorpay');
 
 // Ensure dotenv is loaded
@@ -42,15 +44,16 @@ router.get('/',
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('category').optional().isString(),
     query('subcategory').optional().isString(),
-    query('location').optional().isString(),
+    query('city').optional().isString(),
+    query('state').optional().isString(),
+    query('latitude').optional().isFloat(),
+    query('longitude').optional().isFloat(),
+    query('radius').optional().isFloat({ min: 0 }),
     query('minPrice').optional().isFloat({ min: 0 }),
     query('maxPrice').optional().isFloat({ min: 0 }),
     query('search').optional().isString(),
     query('condition').optional().isIn(['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED']),
-    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped']),
-    query('latitude').optional().isFloat(),
-    query('longitude').optional().isFloat(),
-    query('radius').optional().isFloat({ min: 0 }) // Radius in kilometers
+    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped'])
   ],
   async (req, res) => {
     try {
@@ -59,15 +62,16 @@ router.get('/',
         limit = 20,
         category,
         subcategory,
-        location,
+        city,
+        state,
+        latitude,
+        longitude,
+        radius = 50, // Default 50km radius
         minPrice,
         maxPrice,
         search,
         condition,
         sort = 'newest',
-        latitude,
-        longitude,
-        radius = 50, // Default 50km radius
         userId // Filter by user ID
       } = req.query;
 
@@ -87,14 +91,13 @@ router.get('/',
         ]
       };
 
-      // Parallelize category, subcategory, and location lookups
+      // Parallelize category and subcategory lookups
       // IMPORTANT: If search exists, ignore category/subcategory filters (search overrides category)
       const shouldIgnoreCategory = search && search.trim();
       
-      const [categoryObj, subcategoryObj, locationObj] = await Promise.all([
+      const [categoryObj, subcategoryObj] = await Promise.all([
         (!shouldIgnoreCategory && category) ? prisma.category.findUnique({ where: { slug: category }, select: { id: true } }) : null,
         (!shouldIgnoreCategory && subcategory) ? prisma.subcategory.findFirst({ where: { slug: subcategory }, select: { id: true } }) : null,
-        location ? prisma.location.findUnique({ where: { slug: location }, select: { id: true } }) : null,
       ]);
 
       // Only apply category filter if search doesn't exist
@@ -107,9 +110,7 @@ router.get('/',
         where.subcategoryId = subcategoryObj.id;
       }
 
-      if (locationObj) {
-        where.locationId = locationObj.id;
-      }
+      // REMOVED: Location filtering - location filter completely removed
 
       // Price filter
       if (minPrice || maxPrice) {
@@ -128,140 +129,314 @@ router.get('/',
         where.userId = userId;
       }
 
-      // Search - optimized with case-insensitive search
-      if (search) {
-        where.AND.push({
-          OR: [
-            { title: { contains: search, mode: 'insensitive' } },
-            { description: { contains: search, mode: 'insensitive' } }
-          ]
-        });
+      // Search - use Meilisearch for better search results when search query is provided
+      // If no search query, continue with regular Prisma query
+      let useMeilisearch = false;
+      if (search && search.trim()) {
+        useMeilisearch = true;
       }
 
-      // Sorting - Premium ads always appear first
-      // Priority: isPremium (desc) > premiumType (TOP > FEATURED > BUMP_UP) > selected sort criteria
+      // Sorting - REMOVED: Premium ads prioritization
+      // Simple sorting by selected criteria only - no ad filtering or prioritization
       let orderBy = [];
       
-      // First priority: Premium ads first (isPremium desc)
-      // Second priority: Premium type (TOP > FEATURED > BUMP_UP)
-      // We'll handle this in post-processing since Prisma doesn't support custom enum ordering easily
-      
-      // Third priority: Selected sort criteria
       switch (sort) {
         case 'oldest':
-          orderBy = [{ isPremium: 'desc' }, { createdAt: 'asc' }];
+          orderBy = [{ createdAt: 'asc' }];
           break;
         case 'price_low':
-          orderBy = [{ isPremium: 'desc' }, { price: 'asc' }, { createdAt: 'desc' }];
+          orderBy = [{ price: 'asc' }, { createdAt: 'desc' }];
           break;
         case 'price_high':
-          orderBy = [{ isPremium: 'desc' }, { price: 'desc' }, { createdAt: 'desc' }];
+          orderBy = [{ price: 'desc' }, { createdAt: 'desc' }];
           break;
         case 'featured':
-          orderBy = [{ isPremium: 'desc' }, { featuredAt: 'desc' }, { createdAt: 'desc' }];
+          orderBy = [{ featuredAt: 'desc' }, { createdAt: 'desc' }];
           break;
         case 'bumped':
-          orderBy = [{ isPremium: 'desc' }, { bumpedAt: 'desc' }, { createdAt: 'desc' }];
+          orderBy = [{ bumpedAt: 'desc' }, { createdAt: 'desc' }];
           break;
         default:
-          // newest: Premium first, then by creation date
-          orderBy = [{ isPremium: 'desc' }, { createdAt: 'desc' }];
+          // newest: by creation date
+          orderBy = [{ createdAt: 'desc' }];
           break;
       }
 
-      // Optimized query with parallel execution and minimal data selection
-      // Fetch more ads than needed for ranking (to allow proper rotation)
-      // Increased limit to ensure we have enough ads after filtering
-      const fetchLimit = Math.max(parseInt(limit) * 5, 200); // Fetch 5x for ranking, min 200
+      // Use Meilisearch for search queries, Prisma for regular queries
+      let ads = [];
+      let total = 0;
       
-      const [ads, total] = await Promise.all([
-        prisma.ad.findMany({
-          where,
-          select: {
-            id: true,
-            title: true,
-            description: true, // Added back for AdCard display
-            price: true,
-            originalPrice: true,
-            discount: true,
-            condition: true,
-            images: true,
-            status: true,
-            isPremium: true,
-            premiumType: true,
-            isUrgent: true,
-            views: true,
-            postedAt: true, // Include postedAt for sorting
-            expiresAt: true,
-            createdAt: true,
-            updatedAt: true,
-            packageType: true,
-            lastShownAt: true,
-            userId: true,
-            attributes: true, // Include attributes for Product Specifications
-            category: { select: { id: true, name: true, slug: true } },
-            subcategory: { select: { id: true, name: true, slug: true } },
-            location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true } },
-            user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
-            _count: { select: { favorites: true } }
-          },
-          orderBy: [{ createdAt: 'desc' }], // Basic order, will be re-ranked
-          skip: 0, // Fetch from start for ranking
-          take: fetchLimit
-        }),
-        prisma.ad.count({ where })
-      ]);
-
-      // Calculate distance if latitude/longitude provided
-      let adsWithDistance = ads;
-      if (latitude && longitude) {
-        const userLat = parseFloat(latitude);
-        const userLng = parseFloat(longitude);
-        const radiusKm = parseFloat(radius) || 50;
-
-        // Haversine formula to calculate distance
-        const calculateDistance = (lat1, lon1, lat2, lon2) => {
-          const R = 6371; // Earth's radius in kilometers
-          const dLat = (lat2 - lat1) * Math.PI / 180;
-          const dLon = (lon2 - lon1) * Math.PI / 180;
-          const a = 
-            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          return R * c; // Distance in kilometers
-        };
-
-        adsWithDistance = ads
-          .map(ad => {
-            if (ad.location?.latitude && ad.location?.longitude) {
-              const distance = calculateDistance(
-                userLat,
-                userLng,
-                ad.location.latitude,
-                ad.location.longitude
-              );
-              return { ...ad, distance };
-            }
-            return { ...ad, distance: null };
-          })
-          .filter(ad => {
-            // Filter by radius if location has coordinates
-            if (ad.location?.latitude && ad.location?.longitude) {
-              return ad.distance <= radiusKm;
-            }
-            // Include ads without location coordinates if no location filter
-            return !locationObj;
-          })
-          .sort((a, b) => {
-            // Sort by distance if available, otherwise by original order
-            if (a.distance !== null && b.distance !== null) {
-              return a.distance - b.distance;
-            }
-            if (a.distance !== null) return -1;
-            if (b.distance !== null) return 1;
-            return 0;
+      if (useMeilisearch) {
+        // Use Meilisearch for better search results
+        console.log(`🔍 Using Meilisearch for search: "${search}"`);
+        try {
+          const searchResults = await searchAds(search.trim(), {
+            page: parseInt(page),
+            limit: Math.max(parseInt(limit) * 5, 200), // Fetch more for ranking
+            categoryId: (!shouldIgnoreCategory && categoryObj) ? categoryObj.id : undefined,
+            subcategoryId: (!shouldIgnoreCategory && subcategoryObj) ? subcategoryObj.id : undefined,
+            minPrice: minPrice ? parseFloat(minPrice) : undefined,
+            maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+            condition,
+            sort,
+            status: 'APPROVED',
           });
+          
+          const adIds = searchResults.hits.map(hit => hit.id);
+          total = searchResults.total;
+          
+          if (adIds.length > 0) {
+            // Fetch full ad details from database
+            ads = await prisma.ad.findMany({
+              where: {
+                id: { in: adIds },
+                status: 'APPROVED',
+                AND: [
+                  {
+                    OR: [
+                      { expiresAt: null },
+                      { expiresAt: { gt: now } }
+                    ]
+                  }
+                ]
+              },
+              select: {
+                id: true,
+                title: true,
+                description: true,
+                price: true,
+                originalPrice: true,
+                discount: true,
+                condition: true,
+                images: true,
+                status: true,
+                isPremium: true,
+                premiumType: true,
+                isUrgent: true,
+                views: true,
+                postedAt: true,
+                expiresAt: true,
+                createdAt: true,
+                updatedAt: true,
+                packageType: true,
+                lastShownAt: true,
+                userId: true,
+                attributes: true,
+                category: { select: { id: true, name: true, slug: true } },
+                subcategory: { select: { id: true, name: true, slug: true } },
+                location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+                user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
+                _count: { select: { favorites: true } }
+              }
+            });
+            
+            // Maintain Meilisearch relevance order
+            const adsMap = new Map(ads.map(ad => [ad.id, ad]));
+            ads = adIds.map(id => adsMap.get(id)).filter(Boolean);
+            
+            // Apply Premium → Business → Free ranking to search results
+            if (ads.length > 0) {
+              try {
+                const { rankAdsWithRotation } = require('../services/ognoxAdsRotationService');
+                ads = await rankAdsWithRotation(ads, {
+                  locationKey: 'search', // Use 'search' as location key for search results
+                  updateLastShown: true
+                });
+                console.log(`✅ Applied Premium → Business → Free ranking to search results`);
+              } catch (rankingError) {
+                console.error('⚠️ Error applying ranking to search results:', rankingError);
+                // Continue with unranked results if ranking fails
+              }
+            }
+          }
+          
+          console.log(`📦 Meilisearch result: fetched ${ads.length} ads, total=${total}`);
+        } catch (meilisearchError) {
+          console.error('⚠️ Meilisearch error, falling back to Prisma:', meilisearchError);
+          useMeilisearch = false; // Fallback to Prisma
+        }
+      }
+      
+      // Fallback to Prisma if Meilisearch not used or failed
+      if (!useMeilisearch) {
+        const fetchLimit = Math.max(parseInt(limit) * 5, 200);
+        
+        console.log(`🔍 Using Prisma query with filters:`, {
+          category: category || 'none',
+          subcategory: subcategory || 'none',
+          search: search || 'none'
+        });
+        
+        // KEYWORD-BASED OR SEARCH: Split search query into keywords and match against all fields
+        // Matches Meilisearch behavior: keywords match title, description, category, location, city, state, neighbourhood, tags
+        if (search && search.trim()) {
+          // Split search query into keywords (space-separated)
+          const keywords = search.trim().split(/\s+/).filter(k => k.length > 0);
+          console.log(`🔍 Prisma fallback: Search query split into ${keywords.length} keywords:`, keywords);
+          
+          // Build OR conditions for each keyword
+          // Each keyword can match any field (OR logic across fields)
+          // ANY keyword matching returns the ad (OR logic across keywords)
+          const keywordConditions = keywords.map(keyword => ({
+            OR: [
+              { title: { contains: keyword, mode: 'insensitive' } },
+              { description: { contains: keyword, mode: 'insensitive' } },
+              { city: { contains: keyword, mode: 'insensitive' } },
+              { state: { contains: keyword, mode: 'insensitive' } },
+              { neighbourhood: { contains: keyword, mode: 'insensitive' } },
+              { exactLocation: { contains: keyword, mode: 'insensitive' } },
+              { category: { name: { contains: keyword, mode: 'insensitive' } } },
+              { subcategory: { name: { contains: keyword, mode: 'insensitive' } } },
+              { location: { name: { contains: keyword, mode: 'insensitive' } } },
+            ]
+          }));
+          
+          // OR logic: ANY keyword matching returns the ad
+          where.AND.push({
+            OR: keywordConditions
+          });
+        }
+        
+        const [adsResult, totalResult] = await Promise.all([
+          prisma.ad.findMany({
+            where,
+            select: {
+              id: true,
+              title: true,
+              description: true,
+              price: true,
+              originalPrice: true,
+              discount: true,
+              condition: true,
+              images: true,
+              status: true,
+              isPremium: true,
+              premiumType: true,
+              isUrgent: true,
+              views: true,
+              postedAt: true,
+              expiresAt: true,
+              createdAt: true,
+              updatedAt: true,
+              packageType: true,
+              lastShownAt: true,
+              userId: true,
+              attributes: true,
+              category: { select: { id: true, name: true, slug: true } },
+              subcategory: { select: { id: true, name: true, slug: true } },
+              location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+              user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
+              _count: { select: { favorites: true } }
+            },
+            orderBy: [{ createdAt: 'desc' }],
+            skip: 0,
+            take: fetchLimit
+          }),
+          prisma.ad.count({ where })
+        ]);
+        
+        ads = adsResult;
+        total = totalResult;
+        console.log(`📦 Prisma query result: fetched ${ads.length} ads, total=${total}`);
+      }
+
+      // LOCATION-BASED ADS FETCHING with fallback hierarchy
+      // Strategy: City/Radius → State → All India (NEVER HIDE ADS)
+      // IMPORTANT: When a search keyword is present, we DO NOT hard-filter by location.
+      // Search results should NOT disappear when user selects a location.
+      let locationKey = 'all'; // For rotation seed
+      let adsWithDistance = [];
+
+      // If a text search is active, completely skip location filtering.
+      // This ensures: search + location will still show all search results (location only affects messaging, not filtering).
+      if (search && search.trim()) {
+        adsWithDistance = ads;
+        locationKey = 'all';
+        console.log('🔎 Search active -> skipping strict location filtering. Showing all search results.');
+      } else {
+        // If no search keyword, apply normal location-based filtering with fallback
+        if (city || state || (latitude && longitude)) {
+          const userLat = latitude ? parseFloat(latitude) : null;
+          const userLng = longitude ? parseFloat(longitude) : null;
+          const radiusKm = radius ? parseFloat(radius) : 50;
+          
+          // Set location key for rotation seed
+          locationKey = city || state || 'all';
+          
+          // STEP 1: Try city + radius filtering
+          if (city && userLat && userLng) {
+            // Filter by city name and radius
+            const adsInCity = ads.filter(ad => {
+              const adCity = ad.location?.city || ad.city;
+              if (adCity && adCity.toLowerCase() === city.toLowerCase()) {
+                // If ad has coordinates, check radius
+                if (ad.location?.latitude && ad.location?.longitude) {
+                  const R = 6371; // Earth's radius in km
+                  const dLat = (ad.location.latitude - userLat) * Math.PI / 180;
+                  const dLng = (ad.location.longitude - userLng) * Math.PI / 180;
+                  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                            Math.cos(userLat * Math.PI / 180) * Math.cos(ad.location.latitude * Math.PI / 180) *
+                            Math.sin(dLng/2) * Math.sin(dLng/2);
+                  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                  const distance = R * c;
+                  return distance <= radiusKm;
+                }
+                // No coordinates - include if city matches
+                return true;
+              }
+              return false;
+            });
+            
+            if (adsInCity.length > 0) {
+              adsWithDistance = adsInCity;
+              console.log(`📍 Found ${adsInCity.length} ads in city: ${city}`);
+            }
+          } else if (userLat && userLng) {
+            // STEP 1b: Try radius-only filtering (if no city but has coordinates)
+            const R = 6371;
+            const adsInRadius = ads.filter(ad => {
+              if (ad.location?.latitude && ad.location?.longitude) {
+                const dLat = (ad.location.latitude - userLat) * Math.PI / 180;
+                const dLng = (ad.location.longitude - userLng) * Math.PI / 180;
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                          Math.cos(userLat * Math.PI / 180) * Math.cos(ad.location.latitude * Math.PI / 180) *
+                          Math.sin(dLng/2) * Math.sin(dLng/2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                const distance = R * c;
+                return distance <= radiusKm;
+              }
+              return false;
+            });
+            
+            if (adsInRadius.length > 0) {
+              adsWithDistance = adsInRadius;
+              console.log(`📍 Found ${adsInRadius.length} ads within ${radiusKm}km radius`);
+            }
+          } else if (state) {
+            // STEP 2: Try state filtering
+            const adsInState = ads.filter(ad => {
+              const adState = ad.location?.state || ad.state;
+              return adState && adState.toLowerCase() === state.toLowerCase();
+            });
+            
+            if (adsInState.length > 0) {
+              adsWithDistance = adsInState;
+              locationKey = state;
+              console.log(`📍 Found ${adsInState.length} ads in state: ${state}`);
+            }
+          }
+          
+          // STEP 3: Fallback to All India if no location matches
+          if (adsWithDistance.length === 0) {
+            adsWithDistance = ads; // Show all ads - NEVER HIDE
+            locationKey = 'all';
+            console.log(`📍 No ads in location, showing all ${ads.length} ads (All India fallback)`);
+          }
+        } else {
+          // No location provided - show all ads
+          adsWithDistance = ads;
+          locationKey = 'all';
+        }
       }
 
       // Ensure all ads have images as arrays
@@ -270,13 +445,17 @@ router.get('/',
         images: Array.isArray(ad.images) ? ad.images.filter(img => img && (typeof img === 'string' ? img.trim() !== '' : true)) : (ad.images && typeof ad.images === 'string' && ad.images.trim() !== '' ? [ad.images] : [])
       }));
 
-      // Apply package-based ranking system
-      // This handles: package priority, new ads (24h) at top, rotation, fair exposure
+      // Apply OLX-style ranking with 1-hour rotation
+      // Uses 3-tier system: Business → Premium → Free with time-based rotation
       let rankedAds = [];
       try {
         // Only rank if we have ads
         if (adsWithImages && adsWithImages.length > 0) {
-          rankedAds = await rankAds(adsWithImages, { updateLastShown: true });
+          // Use OLX ranking which now includes 1-hour rotation
+          rankedAds = await rankAdsOGNOX(adsWithImages, { 
+            locationKey: locationKey,
+            updateLastShown: true 
+          });
           
           // Fallback: if ranking returns empty but we have ads, use original order
           if (!rankedAds || rankedAds.length === 0) {
@@ -310,47 +489,26 @@ router.get('/',
         });
       }
       
+      // Calculate total count from filtered/ranked ads (for accurate pagination)
+      const totalCount = rankedAds.length;
+      
+      console.log(`📊 Ads processing: initial=${ads.length}, afterLocation=${adsWithDistance.length}, afterRanking=${rankedAds.length}, totalCount=${totalCount}`);
+      
       // Apply pagination after ranking
       const paginatedAds = rankedAds.slice(skip, skip + parseInt(limit));
       
-      // For distance-based sorting, re-sort within package groups if location provided
-      let sortedAds = paginatedAds;
-      if (latitude && longitude) {
-        // Maintain package priority but sort by distance within each package group
-        const packageGroups = {};
-        paginatedAds.forEach(ad => {
-          const priority = ad.packageType || 1;
-          if (!packageGroups[priority]) packageGroups[priority] = [];
-          packageGroups[priority].push(ad);
-        });
-        
-        // Sort each group by distance
-        Object.keys(packageGroups).forEach(priority => {
-          packageGroups[priority].sort((a, b) => {
-            if (a.distance !== null && b.distance !== null) {
-              return a.distance - b.distance;
-            }
-            if (a.distance !== null) return -1;
-            if (b.distance !== null) return 1;
-            return 0;
-          });
-        });
-        
-        // Recombine in priority order
-        sortedAds = [
-          ...(packageGroups[4] || []),
-          ...(packageGroups[3] || []),
-          ...(packageGroups[2] || []),
-          ...(packageGroups[1] || [])
-        ];
-      }
+      console.log(`📄 Pagination: skip=${skip}, limit=${limit}, paginatedAds=${paginatedAds.length}`);
+      
+      // REMOVED: Distance-based sorting and package grouping
+      const sortedAds = paginatedAds;
 
-      // Filter phone numbers based on privacy settings
+      // Filter phone numbers based on privacy settings + viewer auth
+      // Rule: show phone only if seller enabled AND viewer is authenticated
       const adsWithPrivacy = sortedAds.map(ad => ({
         ...ad,
         user: ad.user ? {
           ...ad.user,
-          phone: ad.user.showPhone ? ad.user.phone : null
+          phone: (req.user && ad.user.showPhone) ? ad.user.phone : null
         } : ad.user
       }));
 
@@ -408,14 +566,21 @@ router.get('/',
         }
       }
 
+      // Final logging before response
+      console.log(`✅ Final response: sending ${adsWithPrivacy.length} ads, total=${totalCount}, page=${page}, limit=${limit}`);
+      if (adsWithPrivacy.length === 0) {
+        console.warn(`⚠️ WARNING: Returning 0 ads in response!`);
+        console.warn(`⚠️ Debug info: initialAds=${ads.length}, afterLocation=${adsWithDistance.length}, afterRanking=${rankedAds.length}, afterPagination=${paginatedAds.length}`);
+      }
+      
       res.json({
         success: true,
         ads: adsWithPrivacy,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
-          total: total, // Total from database (before expiry filtering in ranking)
-          pages: Math.ceil(total / parseInt(limit))
+          total: totalCount, // Total from filtered/ranked ads
+          pages: Math.ceil(totalCount / parseInt(limit))
         },
         ...(quota && { quota })
       });
@@ -982,13 +1147,10 @@ router.get('/price-suggestion',
   }
 );
 
-// Live Location Feed - Get ads within 100km radius
+// Live Location Feed - REMOVED: location filtering
 router.get('/live-location',
   cacheMiddleware(30 * 1000), // Cache for 30 seconds (shorter for live feed)
   [
-    query('latitude').notEmpty().isFloat().withMessage('Latitude is required'),
-    query('longitude').notEmpty().isFloat().withMessage('Longitude is required'),
-    query('radius').optional().isFloat({ min: 1, max: 200 }).withMessage('Radius must be between 1 and 200 km'),
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('category').optional().isString(),
@@ -1010,9 +1172,6 @@ router.get('/live-location',
       }
 
       const {
-        latitude,
-        longitude,
-        radius = 100, // Default 100km for live location feed
         page = 1,
         limit = 20,
         category,
@@ -1022,22 +1181,13 @@ router.get('/live-location',
         search,
         condition
       } = req.query;
-
-      const userLat = parseFloat(latitude);
-      const userLng = parseFloat(longitude);
-      const radiusKm = parseFloat(radius) || 100;
       const skip = (parseInt(page) - 1) * parseInt(limit);
       const now = new Date();
 
-      // Build where clause
+      // Build where clause - REMOVED: location coordinate filtering
       const where = {
         // Only show APPROVED ads (excludes INACTIVE)
         status: 'APPROVED',
-        // Only include ads with location coordinates
-        location: {
-          latitude: { not: null },
-          longitude: { not: null }
-        },
         // Filter out expired ads
         AND: [
           {
@@ -1085,8 +1235,7 @@ router.get('/live-location',
         });
       }
 
-      // Get all ads with location data (we'll filter by distance in memory)
-      // Note: For better performance with large datasets, consider using PostGIS or similar
+      // REMOVED: Location-based distance filtering
       const ads = await prisma.ad.findMany({
         where,
         select: {
@@ -1114,52 +1263,12 @@ router.get('/live-location',
           _count: { select: { favorites: true } }
         },
         orderBy: [
-          { isPremium: 'desc' },
           { createdAt: 'desc' }
         ]
       });
 
-      // Haversine formula to calculate distance
-      const calculateDistance = (lat1, lon1, lat2, lon2) => {
-        const R = 6371; // Earth's radius in kilometers
-        const dLat = (lat2 - lat1) * Math.PI / 180;
-        const dLon = (lon2 - lon1) * Math.PI / 180;
-        const a = 
-          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-          Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c; // Distance in kilometers
-      };
-
-      // Calculate distance for each ad and filter by radius
-      const adsWithDistance = ads
-        .map(ad => {
-          if (ad.location?.latitude && ad.location?.longitude) {
-            const distance = calculateDistance(
-              userLat,
-              userLng,
-              ad.location.latitude,
-              ad.location.longitude
-            );
-            return { ...ad, distance };
-          }
-          return null;
-        })
-        .filter(ad => ad !== null && ad.distance <= radiusKm)
-        .sort((a, b) => {
-          // Sort by distance first (nearest first), then by premium status
-          if (a.distance !== null && b.distance !== null) {
-            if (Math.abs(a.distance - b.distance) < 0.1) {
-              // If distances are very close, prioritize premium ads
-              if (a.isPremium && !b.isPremium) return -1;
-              if (!a.isPremium && b.isPremium) return 1;
-              return 0;
-            }
-            return a.distance - b.distance;
-          }
-          return 0;
-        });
+      // REMOVED: Distance calculation and radius filtering
+      const adsWithDistance = ads;
 
       // Apply pagination
       const total = adsWithDistance.length;
@@ -1173,23 +1282,8 @@ router.get('/live-location',
           : (ad.images && typeof ad.images === 'string' && ad.images.trim() !== '' ? [ad.images] : [])
       }));
 
-      // Sort ads to prioritize premium types within same distance
-      const sortedAds = adsWithImages.sort((a, b) => {
-        // If distances are very close (within 1km), prioritize premium
-        if (a.distance && b.distance && Math.abs(a.distance - b.distance) < 1) {
-          if (a.isPremium && !b.isPremium) return -1;
-          if (!a.isPremium && b.isPremium) return 1;
-          
-          // If both premium, sort by premium type
-          if (a.isPremium && b.isPremium) {
-            const premiumPriority = { 'TOP': 1, 'FEATURED': 2, 'BUMP_UP': 3 };
-            const aPriority = premiumPriority[a.premiumType] || 4;
-            const bPriority = premiumPriority[b.premiumType] || 4;
-            if (aPriority !== bPriority) return aPriority - bPriority;
-          }
-        }
-        return 0; // Maintain distance-based order
-      });
+      // REMOVED: Distance-based sorting and premium prioritization
+      const sortedAds = adsWithImages;
 
       // Set cache headers for live feed (shorter cache)
       res.set({
@@ -1206,11 +1300,6 @@ router.get('/live-location',
           total,
           pages: Math.ceil(total / parseInt(limit))
         },
-        location: {
-          latitude: userLat,
-          longitude: userLng,
-          radius: radiusKm
-        }
       });
     } catch (error) {
       console.error('Live location feed error:', error);
@@ -1273,8 +1362,9 @@ router.get('/:id', cacheMiddleware(60 * 1000), async (req, res) => {
       data: { views: { increment: 1 } }
     });
 
-    // Apply phone privacy filtering
-    if (ad.user && !ad.user.showPhone) {
+    // Apply phone privacy filtering + viewer auth
+    // Rule: show phone only if seller enabled AND viewer is authenticated
+    if (ad.user && (!req.user || !ad.user.showPhone)) {
       ad.user.phone = null;
     }
 
@@ -2034,6 +2124,21 @@ router.post('/',
       console.log('⏳ Ad will be approved/rejected after 5-minute review period');
       // ==================== END MODERATION ====================
 
+      // Update user's phone visibility preference (from ad posting checkbox)
+      // Note: This is a user-level setting (applies to all ads). Phone is filtered in GET /ads and GET /ads/:id.
+      if (req.body && typeof req.body.showPhone !== 'undefined') {
+        const raw = req.body.showPhone;
+        const showPhone = raw === true || raw === 'true' || raw === '1' || raw === 1;
+        try {
+          await prisma.user.update({
+            where: { id: req.user.id },
+            data: { showPhone }
+          });
+        } catch (e) {
+          console.warn('⚠️ Failed to update user.showPhone preference:', e?.message || e);
+        }
+      }
+
       // Build include object conditionally
       const includeObj = {
         category: { select: { id: true, name: true, slug: true } },
@@ -2439,6 +2544,20 @@ router.post('/',
       // Clear cache after creation
       clearCache('ads');
       
+      // Update clusters when ad is created (non-blocking)
+      try {
+        const { onAdCreated } = require('../services/clusterAutoUpdate');
+        // Only update if ad is approved (or will be auto-approved)
+        if (ad.status === 'APPROVED' || ad.status === 'PENDING') {
+          onAdCreated(ad.id).catch(err => {
+            console.error('⚠️ Error updating clusters for new ad:', err);
+          });
+        }
+      } catch (clusterError) {
+        console.error('⚠️ Error initializing cluster update:', clusterError);
+        // Don't fail ad creation if cluster update fails
+      }
+      
       res.status(201).json({ success: true, ad: adWithImages });
     } catch (error) {
       console.error('❌ Create ad error:', error);
@@ -2638,6 +2757,17 @@ router.put('/:id',
       clearCache('ads');
       clearCache(`ads/${req.params.id}`);
 
+      // Update clusters when ad is updated (non-blocking)
+      try {
+        const { onAdUpdated } = require('../services/clusterAutoUpdate');
+        onAdUpdated(updatedAd.id).catch(err => {
+          console.error('⚠️ Error updating clusters for updated ad:', err);
+        });
+      } catch (clusterError) {
+        console.error('⚠️ Error initializing cluster update:', clusterError);
+        // Don't fail ad update if cluster update fails
+      }
+
       res.json({ success: true, ad: updatedAd });
     } catch (error) {
       console.error('Update ad error:', error);
@@ -2675,6 +2805,17 @@ router.delete('/:id', authenticate, async (req, res) => {
     // Clear cache after deletion
     clearCache('ads');
     clearCache(`ads/${req.params.id}`);
+
+    // Update clusters when ad is deleted (non-blocking)
+    try {
+      const { onAdDeleted } = require('../services/clusterAutoUpdate');
+      onAdDeleted(req.params.id).catch(err => {
+        console.error('⚠️ Error updating clusters for deleted ad:', err);
+      });
+    } catch (clusterError) {
+      console.error('⚠️ Error initializing cluster update:', clusterError);
+      // Don't fail ad deletion if cluster update fails
+    }
 
     res.json({ success: true, message: 'Ad deleted successfully' });
   } catch (error) {

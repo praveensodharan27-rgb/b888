@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { FiX, FiCreditCard, FiLock, FiCheckCircle, FiAlertCircle, FiRefreshCw, FiShield, FiZap, FiTrendingUp, FiStar, FiPackage, FiUsers, FiEye, FiLayers, FiPhone } from 'react-icons/fi';
+import { useEffect, useRef, useState } from 'react';
+import { FiX, FiCreditCard, FiLock, FiCheckCircle, FiAlertCircle, FiRefreshCw, FiShield, FiZap, FiTrendingUp, FiStar, FiPackage, FiUsers, FiEye, FiLayers, FiPhone, FiInfo } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import api from '@/lib/api';
 
@@ -68,18 +68,73 @@ export default function PaymentModal({
   const [razorpayLoaded, setRazorpayLoaded] = useState(false);
   const [paymentState, setPaymentState] = useState<PaymentState>('summary');
   const [paymentId, setPaymentId] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'card' | 'upi' | 'netbanking'>('card');
+  const [cardholderName, setCardholderName] = useState('');
   const [showQRCode, setShowQRCode] = useState(false);
   const [qrCodeData, setQrCodeData] = useState<{ qrCode: string; upiString: string; amount: string; merchantName: string } | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrPolling, setQrPolling] = useState(false);
+  const qrPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // UI display values (screenshot-style)
+  const TAX_RATE = 0.18; // 18%
+  const serviceFee = 0;
+  const subtotal = Math.max(0, (Number(amount) || 0) / (1 + TAX_RATE));
+  const taxAmount = Math.max(0, (Number(amount) || 0) - subtotal);
+  const formatMoney = (v: number) =>
+    `₹${v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const handlePayNow = async () => {
+    // Complete payment based on selected option (same page/modal)
+    if (paymentMethod === 'upi') {
+      if (!showQRCode) {
+        setPaymentState('processing');
+        await generateQRCode();
+      } else {
+        toast('Waiting for UPI payment confirmation...');
+      }
+      return;
+    }
+
+    // Card + NetBanking are handled via Razorpay Checkout overlay (no page navigation)
+    handlePayment();
+  };
+
+  const stopQRPolling = () => {
+    if (qrPollIntervalRef.current) {
+      clearInterval(qrPollIntervalRef.current);
+      qrPollIntervalRef.current = null;
+    }
+    setQrPolling(false);
+  };
+
+  const handleClose = () => {
+    stopQRPolling();
+    setShowQRCode(false);
+    setQrCodeData(null);
+    setQrLoading(false);
+    setLoading(false);
+    setPaymentState('summary');
+    onClose();
+  };
 
   // Reset state when modal opens/closes
   useEffect(() => {
     if (isOpen) {
       setPaymentState('summary');
       setPaymentId(null);
+      setPaymentMethod('card');
+      setCardholderName('');
+      setShowQRCode(false);
+      setQrCodeData(null);
+      stopQRPolling();
     }
   }, [isOpen]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => stopQRPolling();
+  }, []);
 
   useEffect(() => {
     if (isOpen && !razorpayLoaded) {
@@ -171,7 +226,7 @@ export default function PaymentModal({
         );
       },
       prefill: {
-        name: '',
+        name: cardholderName || '',
         email: '',
         contact: ''
       },
@@ -235,6 +290,7 @@ export default function PaymentModal({
     setLoading(false);
     setShowQRCode(false);
     setQrCodeData(null);
+    stopQRPolling();
   };
 
   // Generate QR code for UPI payment
@@ -251,6 +307,7 @@ export default function PaymentModal({
 
     setQrLoading(true);
     try {
+      stopQRPolling();
       const response = await api.post('/premium/qr-code', { orderId });
       
       if (response.data.success) {
@@ -271,27 +328,24 @@ export default function PaymentModal({
 
   // Poll payment status when QR code is active
   const startQRPolling = () => {
-    if (qrPolling) return; // Already polling
-    
+    if (qrPollIntervalRef.current) return; // already polling
     setQrPolling(true);
     let pollCount = 0;
     const maxPolls = 300; // 15 minutes (300 * 3 seconds)
     
-    const pollInterval = setInterval(async () => {
+    qrPollIntervalRef.current = setInterval(async () => {
       pollCount++;
       
       try {
         // Check payment status via payment gateway
         if (!api) {
-          clearInterval(pollInterval);
-          setQrPolling(false);
+          stopQRPolling();
           return;
         }
         const response = await api.get(`/payment-gateway/order/${orderId}`);
         
         if (response.data.success && response.data.order?.status === 'paid') {
-          clearInterval(pollInterval);
-          setQrPolling(false);
+          stopQRPolling();
           setPaymentState('success');
           setPaymentId(response.data.order?.paymentId || null);
           
@@ -308,8 +362,7 @@ export default function PaymentModal({
           
           toast.success('Payment confirmed!');
         } else if (pollCount >= maxPolls) {
-          clearInterval(pollInterval);
-          setQrPolling(false);
+          stopQRPolling();
           if (paymentState === 'summary' && showQRCode) {
             toast.error('QR code expired. Please generate a new one or use checkout.');
           }
@@ -317,8 +370,7 @@ export default function PaymentModal({
       } catch (error) {
         // Continue polling on error (order might not be paid yet)
         if (pollCount >= maxPolls) {
-          clearInterval(pollInterval);
-          setQrPolling(false);
+          stopQRPolling();
         }
       }
     }, 3000); // Poll every 3 seconds
@@ -492,265 +544,362 @@ export default function PaymentModal({
   // Main Payment Summary Screen
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 my-4 overflow-hidden">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold">Complete Payment</h2>
+      <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full mx-4 my-6 overflow-hidden">
+        {/* Top header (breadcrumb + title) */}
+        <div className="border-b border-gray-200 bg-white px-6 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="mt-1 text-xl font-extrabold text-gray-900">Complete Your Payment</h2>
+              <p className="mt-1 text-sm text-gray-600">{description}</p>
+            </div>
             <button
-              onClick={onClose}
-              className="text-white hover:text-gray-200 transition-colors"
+              onClick={handleClose}
+              className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
               disabled={loading}
+              aria-label="Close"
+              type="button"
             >
-              <FiX className="w-6 h-6" />
+              <FiX className="h-5 w-5" />
             </button>
           </div>
-          <p className="text-indigo-100 text-sm">{description}</p>
         </div>
 
-        <div className="p-6 space-y-6">
-          {/* Ad Title Display */}
-          {packageDetails?.adTitle && (
-            <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl p-4">
-              <p className="text-xs text-gray-500 mb-1">Posting Ad</p>
-              <p className="font-semibold text-gray-900 line-clamp-2">{packageDetails.adTitle}</p>
-            </div>
-          )}
+        {/* Body */}
+        <div className="grid grid-cols-1 gap-6 bg-gray-50 p-6 lg:grid-cols-12">
+          {/* Left: Order Summary */}
+          <div className="lg:col-span-4">
+            <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+              <div className="text-sm font-extrabold text-gray-900">Order Summary</div>
 
-          {/* Package Summary Card */}
-          {packageDetails && (
-            <div className={`bg-gradient-to-br ${getPackageColor()} p-5 rounded-xl text-white shadow-lg`}>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0">
-                  <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur-sm">
-                    {getPackageIcon()}
-                  </div>
+              <div className="mt-4 flex items-start gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+                  <FiPackage className="h-6 w-6" />
                 </div>
-                <div className="flex-1">
-                  <h3 className="font-bold text-xl mb-1">{packageDetails.name}</h3>
-                  {packageDetails.validity && (
-                    <p className="text-sm opacity-90 mb-3">
-                      Valid for {packageDetails.validity} {packageDetails.validityUnit || 'days'}
-                    </p>
-                  )}
-                  
-                  {/* Benefits List */}
-                  {packageDetails.benefits && packageDetails.benefits.length > 0 && (
-                    <div className="space-y-2">
-                      {packageDetails.benefits.map((benefit, index) => (
-                        <div key={index} className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-4 h-4 flex-shrink-0" />
-                          <span>{benefit}</span>
-                        </div>
-                      ))}
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-gray-900">
+                    {packageDetails?.name || 'Payment'}
+                  </div>
+                  <div className="mt-1 text-xs text-gray-600">
+                    {packageDetails?.type === 'BUSINESS_PACKAGE'
+                      ? 'Business package for classified listings.'
+                      : packageDetails?.type === 'PREMIUM_AD'
+                        ? 'Boost your ad visibility with premium placement.'
+                        : 'Standard visibility package for classified listings.'}
+                  </div>
+                  {packageDetails?.validity ? (
+                    <div className="mt-2 inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-700">
+                      {packageDetails.validity} {packageDetails.validityUnit || 'days'}
                     </div>
-                  )}
-                  
-                  {/* Additional Info */}
-                  <div className="mt-3 pt-3 border-t border-white/20 flex flex-wrap gap-4 text-xs">
-                    {packageDetails.adCount && (
-                      <div>
-                        <span className="opacity-75">Ads Included:</span>
-                        <span className="font-semibold ml-1">{packageDetails.adCount}</span>
-                      </div>
-                    )}
-                    {packageDetails.visibilityLevel && (
-                      <div>
-                        <span className="opacity-75">Visibility:</span>
-                        <span className="font-semibold ml-1">{packageDetails.visibilityLevel}</span>
-                      </div>
-                    )}
-                  </div>
+                  ) : null}
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-extrabold text-blue-600">{formatMoney(Number(amount) || 0)}</div>
+                </div>
+              </div>
+
+              <div className="mt-5 space-y-2 border-t border-gray-100 pt-4 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Subtotal</span>
+                  <span className="text-gray-900">{formatMoney(subtotal)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Service Fee</span>
+                  <span className="text-gray-900">{formatMoney(serviceFee)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Tax (18%)</span>
+                  <span className="text-gray-900">{formatMoney(taxAmount)}</span>
+                </div>
+                <div className="pt-2 border-t border-gray-100 flex items-center justify-between">
+                  <span className="font-bold text-gray-900">Total Amount</span>
+                  <span className="text-lg font-extrabold text-blue-600">
+                    {formatMoney(Number(amount) || 0)}
+                  </span>
                 </div>
               </div>
             </div>
-          )}
 
-          {/* Price Breakdown */}
-          <div className="bg-gray-50 rounded-xl p-5 border border-gray-200">
-            {packageDetails?.priceBreakdown && (
-              <div className="space-y-2 mb-4">
-                {packageDetails.priceBreakdown.baseAdPrice !== undefined && packageDetails.priceBreakdown.baseAdPrice > 0 && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-600">Ad Posting Fee</span>
-                    <span className="text-gray-900 font-medium">₹{packageDetails.priceBreakdown.baseAdPrice.toLocaleString('en-IN')}</span>
-                  </div>
-                )}
-                {packageDetails.priceBreakdown.premiumPrice !== undefined && packageDetails.priceBreakdown.premiumPrice > 0 && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-600">
-                      {packageDetails.premiumType === 'TOP' ? 'Top Ad Feature' : 
-                       packageDetails.premiumType === 'FEATURED' ? 'Featured Ad Feature' : 
-                       packageDetails.premiumType === 'BUMP_UP' ? 'Bump Up Feature' : 'Premium Feature'}
-                    </span>
-                    <span className="text-gray-900 font-medium">₹{packageDetails.priceBreakdown.premiumPrice.toLocaleString('en-IN')}</span>
-                  </div>
-                )}
-                {packageDetails.priceBreakdown.urgentBadge !== undefined && packageDetails.priceBreakdown.urgentBadge > 0 && (
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-600">Urgent Badge</span>
-                    <span className="text-gray-900 font-medium">₹{packageDetails.priceBreakdown.urgentBadge.toLocaleString('en-IN')}</span>
-                  </div>
-                )}
-                {(packageDetails.priceBreakdown.baseAdPrice !== undefined || 
-                  packageDetails.priceBreakdown.premiumPrice !== undefined) && (
-                  <div className="pt-2 border-t border-gray-300"></div>
-                )}
+            <div className="mt-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+              <div className="text-[11px] font-extrabold tracking-widest text-gray-500">SECURE PAYMENT PARTNER</div>
+              <div className="mt-3 flex items-center gap-2 text-sm text-gray-700">
+                <FiLock className="h-4 w-4 text-blue-600" />
+                <span className="font-semibold">Razorpay</span>
+                <span className="text-gray-400">•</span>
+                <span className="text-gray-600">256-bit SSL</span>
               </div>
-            )}
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-gray-600 font-medium">Total Amount</span>
-              <span className="text-3xl font-bold text-indigo-600">
-                ₹{amount.toLocaleString('en-IN')}
+              <div className="mt-4 flex items-center gap-3 text-gray-500">
+                <FiShield className="h-5 w-5" />
+                <FiCheckCircle className="h-5 w-5" />
+                <FiCreditCard className="h-5 w-5" />
+                <FiLayers className="h-5 w-5" />
+              </div>
+              <p className="mt-3 text-xs text-gray-500">
+                Transactions are secured with industry-standard encryption. We do not store your full card details.
+              </p>
+            </div>
+          </div>
+
+          {/* Right: Payment Method */}
+          <div className="lg:col-span-8">
+            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="text-sm font-extrabold text-gray-900">Select Payment Method</div>
+
+              <div className="mt-4 grid grid-cols-3 gap-2 rounded-xl bg-gray-50 p-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMethod('card');
+                    setShowQRCode(false);
+                    setQrCodeData(null);
+                    stopQRPolling();
+                  }}
+                  className={[
+                    'flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-colors',
+                    paymentMethod === 'card'
+                      ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                      : 'text-gray-600 hover:text-gray-800',
+                  ].join(' ')}
+                >
+                  <FiCreditCard className="h-4 w-4" />
+                  Card
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod('upi')}
+                  className={[
+                    'flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-colors',
+                    paymentMethod === 'upi'
+                      ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                      : 'text-gray-600 hover:text-gray-800',
+                  ].join(' ')}
+                >
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-blue-600 text-[10px] font-extrabold text-white">
+                    QR
+                  </span>
+                  UPI / QR
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMethod('netbanking');
+                    setShowQRCode(false);
+                    setQrCodeData(null);
+                    stopQRPolling();
+                  }}
+                  className={[
+                    'flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-xs font-semibold transition-colors',
+                    paymentMethod === 'netbanking'
+                      ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-200'
+                      : 'text-gray-600 hover:text-gray-800',
+                  ].join(' ')}
+                >
+                  <FiShield className="h-4 w-4" />
+                  Net Banking
+                </button>
+              </div>
+
+              {/* Form (UI only) */}
+              <div className="mt-6 space-y-4">
+                {paymentMethod === 'card' ? (
+                  <>
+                    <div>
+                      <label className="text-xs font-semibold text-gray-700">Cardholder Name</label>
+                      <input
+                        type="text"
+                        placeholder="John Doe"
+                        value={cardholderName}
+                        onChange={(e) => setCardholderName(e.target.value)}
+                        className="mt-2 w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-gray-700">Card Number</label>
+                      <div className="relative mt-2">
+                        <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4">
+                          <FiCreditCard className="h-4 w-4 text-gray-400" />
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="0000 0000 0000 0000"
+                          disabled
+                          className="w-full rounded-lg border border-gray-200 bg-gray-50 pl-11 pr-16 py-3 text-sm text-gray-900 placeholder:text-gray-400"
+                        />
+                        {/* Right-side mini “card” placeholders (visual only) */}
+                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-2 pr-4">
+                          <span className="h-4 w-6 rounded bg-gray-200" />
+                          <span className="h-4 w-6 rounded bg-gray-200" />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-xs font-semibold text-gray-700">Expiry Date</label>
+                        <input
+                          type="text"
+                          placeholder="MM / YY"
+                          disabled
+                          className="mt-2 w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder:text-gray-400"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-gray-700">CVV</label>
+                        <div className="relative mt-2">
+                          <input
+                            type="password"
+                            placeholder="•••"
+                            disabled
+                            className="w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 pr-10 text-sm text-gray-900 placeholder:text-gray-400"
+                          />
+                          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+                            <FiInfo className="h-4 w-4 text-gray-400" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <label className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-gray-700">
+                      <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                      <span>
+                        <span className="font-semibold">Save this card</span> for faster future payments. Information is encrypted according to PCI-DSS
+                        standards.
+                      </span>
+                    </label>
+                    <p className="text-[11px] text-gray-500">
+                      Card details are entered securely in Razorpay checkout after you click Pay.
+                    </p>
+                  </>
+                ) : null}
+
+                {paymentMethod === 'netbanking' ? (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-4 text-sm text-gray-700">
+                    You will be redirected to your bank to complete the payment securely via Razorpay.
+                  </div>
+                ) : null}
+
+                {paymentMethod === 'upi' ? (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                    {!showQRCode ? (
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-bold text-gray-900">Pay via UPI QR</div>
+                          <div className="mt-1 text-xs text-gray-600">Generate a QR code and scan with any UPI app.</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={generateQRCode}
+                          disabled={qrLoading || loading}
+                          className="inline-flex items-center justify-center rounded-lg border border-green-300 bg-white px-4 py-2 text-xs font-semibold text-green-700 hover:bg-green-50 disabled:opacity-50"
+                        >
+                          {qrLoading ? 'Generating...' : 'Generate QR'}
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {showQRCode && qrCodeData ? (
+                      <div className="mt-4">
+                        <div className="flex flex-col items-center">
+                          <div className="rounded-xl bg-white p-3 shadow-sm">
+                            <img src={qrCodeData.qrCode} alt="UPI QR Code" className="h-56 w-56" />
+                          </div>
+                          <div className="mt-3 text-xs text-gray-600">
+                            Scan with GPay / PhonePe / Paytm
+                          </div>
+                          {qrPolling ? (
+                            <div className="mt-2 flex items-center gap-2 text-xs font-semibold text-green-700">
+                              <div className="animate-spin rounded-full h-4 w-4 border-2 border-green-600 border-t-transparent"></div>
+                              Waiting for confirmation...
+                            </div>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowQRCode(false);
+                              setQrCodeData(null);
+                              stopQRPolling();
+                            }}
+                            className="mt-3 text-xs font-semibold text-gray-600 hover:text-gray-800"
+                          >
+                            Generate a new QR
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Test Mode Notice */}
+              {(process.env.NODE_ENV === 'development' || process.env.NEXT_PUBLIC_NODE_ENV === 'development') && (
+                <div className="mt-6 bg-yellow-50 border border-yellow-200 rounded-xl p-4">
+                  <p className="text-xs font-semibold text-yellow-800 mb-2">💡 Test Mode</p>
+                  <p className="text-xs text-yellow-700 mb-1">Use Indian cards only. Test card:</p>
+                  <p className="text-xs text-yellow-700 font-mono font-bold">4111 1111 1111 1111</p>
+                  <p className="text-xs text-yellow-700">CVV: Any 3 digits | Expiry: Any future date</p>
+                </div>
+              )}
+
+              {/* Pay button */}
+              <div className="mt-6">
+                {(() => {
+                  const payDisabled =
+                    loading ||
+                    (paymentMethod !== 'upi' && !razorpayLoaded) ||
+                    (paymentMethod === 'upi' && (qrLoading || (showQRCode && qrPolling)));
+                  const payLabel =
+                    paymentMethod === 'upi'
+                      ? showQRCode
+                        ? 'Waiting for UPI payment...'
+                        : `Generate UPI QR (${formatMoney(Number(amount) || 0)})`
+                      : `Pay ${formatMoney(Number(amount) || 0)} Now`;
+                  return (
+                    <button
+                      onClick={handlePayNow}
+                      disabled={payDisabled}
+                      className="w-full rounded-lg bg-blue-600 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 flex items-center justify-center gap-2 shadow-sm"
+                    >
+                      {loading ? (
+                        'Processing...'
+                      ) : (
+                        <>
+                          <FiLock className="h-4 w-4" />
+                          <span>{payLabel}</span>
+                        </>
+                      )}
+                    </button>
+                  );
+                })()}
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  disabled={loading || qrLoading}
+                  className="mt-3 w-full text-center text-xs font-semibold text-gray-500 hover:text-gray-800"
+                >
+                  Cancel
+                </button>
+
+                {!razorpayLoaded ? (
+                  <p className="mt-3 text-xs text-gray-500 text-center">
+                    Loading payment gateway...
+                  </p>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Bottom trust badges */}
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-[11px] text-gray-500">
+              <span className="inline-flex items-center gap-2">
+                <FiShield className="h-4 w-4" />
+                PCI-DSS COMPLIANT
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <FiLock className="h-4 w-4" />
+                NORTON SECURED
+              </span>
+              <span className="inline-flex items-center gap-2">
+                <FiCheckCircle className="h-4 w-4" />
+                AES-256 ENCRYPTION
               </span>
             </div>
-            <div className="pt-3 border-t border-gray-200">
-              <div className="flex items-center justify-between text-sm text-gray-500">
-                <span>Including all taxes</span>
-                <span>GST included</span>
-              </div>
-            </div>
           </div>
-
-          {/* Trust Elements */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-center gap-2 text-sm text-gray-600">
-              <FiLock className="w-4 h-4 text-indigo-600" />
-              <span>Secure payment by</span>
-              <span className="font-bold text-indigo-600">Razorpay</span>
-            </div>
-            
-            {/* Payment Methods Icons */}
-            <div className="flex items-center justify-center gap-4 pt-2">
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded flex items-center justify-center text-white font-bold text-xs">
-                  UPI
-                </div>
-                <span>UPI</span>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <FiCreditCard className="w-8 h-8 text-gray-400" />
-                <span>Cards</span>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <FiShield className="w-8 h-8 text-gray-400" />
-                <span>Net Banking</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Test Mode Notice */}
-          {(process.env.NODE_ENV === 'development' || process.env.NEXT_PUBLIC_NODE_ENV === 'development') && (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
-              <p className="text-xs font-semibold text-yellow-800 mb-2">💡 Test Mode</p>
-              <p className="text-xs text-yellow-700 mb-1">Use Indian cards only. Test card:</p>
-              <p className="text-xs text-yellow-700 font-mono font-bold">4111 1111 1111 1111</p>
-              <p className="text-xs text-yellow-700">CVV: Any 3 digits | Expiry: Any future date</p>
-            </div>
-          )}
-
-          {/* QR Code Section - Optional UPI Payment */}
-          {showQRCode && qrCodeData && (
-            <div className="bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-6">
-              <div className="text-center mb-4">
-                <div className="inline-flex items-center justify-center w-12 h-12 bg-green-500 rounded-full mb-3">
-                  <FiLayers className="w-6 h-6 text-white" />
-                </div>
-                <h3 className="font-bold text-lg text-gray-900 mb-1">Scan to Pay via UPI</h3>
-                <p className="text-sm text-gray-600">Use any UPI app to scan and pay</p>
-              </div>
-              
-              <div className="flex justify-center mb-4">
-                <div className="bg-white p-4 rounded-xl shadow-lg">
-                  <img 
-                    src={qrCodeData.qrCode} 
-                    alt="UPI QR Code" 
-                    className="w-64 h-64 mx-auto"
-                  />
-                </div>
-              </div>
-              
-              <div className="bg-white rounded-lg p-3 mb-4">
-                <div className="flex items-center justify-between text-sm mb-2">
-                  <span className="text-gray-600">Amount:</span>
-                  <span className="font-bold text-gray-900">₹{qrCodeData.amount}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">Merchant:</span>
-                  <span className="font-medium text-gray-900">{qrCodeData.merchantName}</span>
-                </div>
-              </div>
-              
-              {qrPolling && (
-                <div className="flex items-center justify-center gap-2 text-sm text-green-700 mb-3">
-                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-green-600 border-t-transparent"></div>
-                  <span>Waiting for payment confirmation...</span>
-                </div>
-              )}
-              
-              <div className="flex items-center justify-center gap-2 text-xs text-gray-600">
-                <FiPhone className="w-4 h-4" />
-                <span>Open any UPI app (GPay, PhonePe, Paytm) and scan</span>
-              </div>
-            </div>
-          )}
-
-          {/* Action Buttons */}
-          <div className="space-y-3 pt-2">
-            {/* Primary: Razorpay Checkout */}
-            <button
-              onClick={handlePayment}
-              disabled={loading || !razorpayLoaded}
-              className="w-full px-4 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent"></div>
-                  <span>Processing...</span>
-                </>
-              ) : (
-                <>
-                  <FiCreditCard className="w-5 h-5" />
-                  <span>Pay with Razorpay Checkout</span>
-                </>
-              )}
-            </button>
-
-            {/* Optional: UPI QR Code */}
-            {!showQRCode && (
-              <button
-                onClick={generateQRCode}
-                disabled={qrLoading || loading}
-                className="w-full px-4 py-3 border-2 border-green-500 text-green-700 font-semibold rounded-xl hover:bg-green-50 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
-              >
-                {qrLoading ? (
-                  <>
-                    <div className="animate-spin rounded-full h-5 w-5 border-2 border-green-600 border-t-transparent"></div>
-                    <span>Generating QR...</span>
-                  </>
-                ) : (
-                  <>
-                    <FiLayers className="w-5 h-5" />
-                    <span>Pay via UPI QR Code</span>
-                  </>
-                )}
-              </button>
-            )}
-
-            <button
-              onClick={onClose}
-              disabled={loading || qrLoading}
-              className="w-full px-4 py-3 border-2 border-gray-300 text-gray-700 font-semibold rounded-xl hover:bg-gray-50 disabled:opacity-50 transition-all"
-            >
-              Cancel
-            </button>
-          </div>
-
-          {!razorpayLoaded && (
-            <p className="text-xs text-gray-500 text-center">
-              Loading payment gateway...
-            </p>
-          )}
         </div>
       </div>
     </div>

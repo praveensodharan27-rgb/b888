@@ -1,7 +1,20 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { FiBell } from 'react-icons/fi';
+import { 
+  FiBell, 
+  FiGift, 
+  FiCheckCircle, 
+  FiXCircle, 
+  FiMessageCircle, 
+  FiCreditCard, 
+  FiClock, 
+  FiUserPlus, 
+  FiDollarSign,
+  FiAlertCircle,
+  FiStar,
+  FiShoppingBag
+} from 'react-icons/fi';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
@@ -43,6 +56,45 @@ export default function NotificationIcon() {
   const unreadNotifications = notifications.filter((n) => !n.isRead);
   const offerNotifications = notifications.filter((n) => n.type === 'offer_update' && !n.isRead);
   const displayNotifications = notifications.slice(0, 10); // Show latest 10
+
+  // Get icon for notification type
+  const getNotificationIcon = (type: string) => {
+    const baseClass = "w-5 h-5 flex-shrink-0";
+    
+    switch (type) {
+      case 'offer_update':
+        return <FiGift className={`${baseClass} text-yellow-500`} />;
+      case 'ad_approved':
+        return <FiCheckCircle className={`${baseClass} text-green-500`} />;
+      case 'ad_rejected':
+        return <FiXCircle className={`${baseClass} text-red-500`} />;
+      case 'new_message':
+        return <FiMessageCircle className={`${baseClass} text-blue-500`} />;
+      case 'payment':
+      case 'payment_success':
+        return <FiCreditCard className={`${baseClass} text-green-600`} />;
+      case 'payment_failed':
+        return <FiCreditCard className={`${baseClass} text-red-500`} />;
+      case 'ad_expiry':
+      case 'ad_expired':
+        return <FiClock className={`${baseClass} text-orange-500`} />;
+      case 'new_follower':
+        return <FiUserPlus className={`${baseClass} text-purple-500`} />;
+      case 'referral_reward':
+        return <FiDollarSign className={`${baseClass} text-green-600`} />;
+      case 'order_placed':
+      case 'order_update':
+        return <FiShoppingBag className={`${baseClass} text-blue-600`} />;
+      case 'important':
+      case 'alert':
+        return <FiAlertCircle className={`${baseClass} text-red-600`} />;
+      case 'featured':
+      case 'promotion':
+        return <FiStar className={`${baseClass} text-yellow-500`} />;
+      default:
+        return <FiBell className={`${baseClass} text-gray-500`} />;
+    }
+  };
 
   if (!isAuthenticated) {
     return null;
@@ -104,9 +156,7 @@ export default function NotificationIcon() {
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          {notification.type === 'offer_update' && (
-                            <span className="flex-shrink-0 text-yellow-500 text-lg">🎉</span>
-                          )}
+                          {getNotificationIcon(notification.type || 'default')}
                           <p
                             className={`text-sm font-medium ${
                               !notification.isRead ? 'text-gray-900' : 'text-gray-700'

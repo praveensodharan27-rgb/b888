@@ -4,9 +4,10 @@ import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
-import { FiX, FiChevronDown } from 'react-icons/fi';
+import { FiX, FiMail, FiPhone, FiLock, FiUser, FiEye, FiEyeOff, FiUserPlus } from 'react-icons/fi';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
+import { getOrCreateSessionAuthQuote } from '@/lib/authQuotes';
 
 interface SignupModalProps {
   isOpen: boolean;
@@ -32,9 +33,16 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
   const [step, setStep] = useState<'register' | 'otp'>('register');
   const [formData, setFormData] = useState<any>({});
   const [receiveUpdates, setReceiveUpdates] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [backgroundImage, setBackgroundImage] = useState<string>('');
   const { register, handleSubmit, formState: { errors }, watch, setValue, reset } = useForm();
+  
+  // Typing effect for quote
+  const [quoteText, setQuoteText] = useState<string>('');
+  const [displayQuote, setDisplayQuote] = useState('');
+  const [quoteIndex, setQuoteIndex] = useState(0);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Change background image every time modal opens
   useEffect(() => {
@@ -45,15 +53,65 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
     }
   }, [isOpen]);
 
+  // Typing effect for quote
+  useEffect(() => {
+    if (!isOpen || !quoteText) {
+      setDisplayQuote('');
+      setQuoteIndex(0);
+      setIsDeleting(false);
+      return;
+    }
+
+    const isAtEnd = quoteIndex >= quoteText.length;
+    const isAtStart = quoteIndex <= 0;
+
+    let delay = isDeleting ? 30 : 50;
+    if (!isDeleting && isAtEnd) delay = 2000;
+    if (isDeleting && isAtStart) delay = 500;
+
+    const timeout = setTimeout(() => {
+      if (!isDeleting) {
+        if (!isAtEnd) {
+          const next = quoteIndex + 1;
+          setDisplayQuote(quoteText.slice(0, next));
+          setQuoteIndex(next);
+        } else {
+          setIsDeleting(true);
+        }
+      } else {
+        if (!isAtStart) {
+          const next = quoteIndex - 1;
+          setDisplayQuote(quoteText.slice(0, next));
+          setQuoteIndex(next);
+        } else {
+          setIsDeleting(false);
+        }
+      }
+    }, delay);
+
+    return () => clearTimeout(timeout);
+  }, [quoteIndex, isDeleting, quoteText, isOpen]);
+
   // Reset form when modal opens/closes
   useEffect(() => {
     if (!isOpen) {
       reset();
       setStep('register');
       setReceiveUpdates(false);
+      setShowPassword(false);
       setIsSubmitting(false);
+      setDisplayQuote('');
+      setQuoteIndex(0);
+      setIsDeleting(false);
     }
   }, [isOpen, reset]);
+
+  // Pick ONE random quote per browser session (same for entire session)
+  useEffect(() => {
+    if (!isOpen) return;
+    const q = getOrCreateSessionAuthQuote();
+    setQuoteText(q ? `"${q}"` : '');
+  }, [isOpen]);
 
   // Referral code will be handled via URL when navigating to register page
   // For modal, we don't need searchParams
@@ -143,7 +201,7 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
     <>
       {/* Backdrop */}
       <div 
-        className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 transition-opacity"
+        className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 transition-opacity"
         onClick={onClose}
       />
       
@@ -163,85 +221,90 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
           </button>
 
           <div className="flex flex-col lg:flex-row">
-            {/* Left Side - Image Background */}
+            {/* Left Side - Image Background with Overlay Text Only (No Container/Card) */}
             <div 
-              className="hidden lg:block lg:w-1/2 bg-cover bg-center relative bg-gradient-to-br from-green-900 via-green-800 to-green-900"
+              className="hidden lg:block lg:w-1/2 bg-cover bg-center relative"
               style={{
                 backgroundImage: backgroundImage 
-                  ? `url('${backgroundImage}'), linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))`
+                  ? `url('${backgroundImage}')`
                   : 'linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))',
                 transition: 'background-image 0.5s ease-in-out',
               }}
             >
-              {/* Overlay */}
-              <div className="absolute inset-0 bg-gradient-to-br from-green-900/90 via-green-800/85 to-green-900/90"></div>
-              
-              {/* Content */}
-              <div className="relative z-10 h-full flex flex-col justify-between p-12 text-white">
-                {/* Top Area - Empty for visual balance */}
-                <div></div>
+              {/* Dark overlay for readability */}
+              <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/35 to-black/65" />
 
-                {/* Center Message - Empty for visual balance */}
-                <div></div>
+              {/* Overlay Text - Directly on Image, No Container */}
+              <div className="absolute inset-0 flex flex-col justify-between p-12 text-white z-10">
+                {/* Top: Logo */}
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">🌱</span>
+                  <span className="text-2xl font-bold text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)]">SellIt</span>
+                </div>
 
-                {/* Bottom - Logo and Text */}
-                <div className="flex flex-col items-start gap-3">
-                  <span className="text-4xl font-bold text-white">
-                    SellIt
-                  </span>
-                  <h2 className="text-3xl font-bold">Join the Green Revolution</h2>
-                  <p className="text-green-50 text-base">
+                {/* Center: Main Heading and Sub-heading */}
+                <div className="flex flex-col gap-4">
+                  <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight drop-shadow-[0_2px_10px_rgba(0,0,0,0.7)]">
+                    Join the Green Revolution
+                  </h1>
+                  <p className="text-white/95 text-lg leading-relaxed max-w-md drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)]">
                     Connect with eco-conscious innovators and build a sustainable future together.
                   </p>
                 </div>
+
+                {/* Bottom: Quote with Typing Effect */}
+                <p className="text-white text-base italic min-h-[1.5rem] drop-shadow-[0_2px_10px_rgba(0,0,0,0.65)]">
+                  {displayQuote}
+                  <span className="animate-pulse">|</span>
+                </p>
               </div>
             </div>
 
             {/* Right Side - Sign Up Form */}
-            <div className="w-full lg:w-1/2 p-8 lg:p-12 flex items-center justify-center">
+            <div className="w-full lg:w-1/2 p-8 lg:p-12 flex items-center justify-center bg-white">
               <div className="w-full max-w-md">
             {step === 'register' ? (
               <>
                 {/* Title */}
-                <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                  Sign Up
-                  <span className="inline-block w-2 h-2 rounded-full bg-orange-500 ml-1 align-super"></span>
-                </h2>
-                <p className="text-gray-600 mb-8">
-                  Already have an account?{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClose();
-                      if (onSwitchToLogin) {
-                        onSwitchToLogin();
-                      }
-                    }}
-                    className="text-orange-500 hover:text-orange-600 font-semibold"
-                  >
-                    Log In
-                  </button>
-                </p>
+                <div className="mb-8">
+                  <h2 className="text-4xl font-bold text-gray-900 mb-3">
+                    Create Account
+                  </h2>
+                  <p className="text-gray-600 text-base">
+                    Join our community and start your journey today
+                  </p>
+                </div>
 
                 <form onSubmit={handleSubmit(onSubmitRegister)} className="space-y-5">
                   {/* Full Name */}
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Full Name</label>
-                    <input
-                      {...register('name', { required: 'Name is required' })}
-                      type="text"
-                      className="w-full px-4 py-3 border-2 border-orange-500 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 text-gray-900"
-                      placeholder=""
-                    />
+                    <label className="block text-sm font-semibold text-gray-700 mb-2.5">Full Name</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                        <FiUser className="h-5 w-5 text-gray-400" />
+                      </div>
+                      <input
+                        {...register('name', { required: 'Name is required' })}
+                        type="text"
+                        className="w-full pl-12 pr-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900 placeholder:text-gray-400 bg-white hover:border-gray-300"
+                        placeholder="Enter your full name"
+                      />
+                    </div>
                     {errors.name && (
-                      <p className="text-red-500 text-xs mt-1">{errors.name.message as string}</p>
+                      <p className="text-red-500 text-sm mt-2 flex items-center gap-1">
+                        <span>⚠️</span>
+                        {errors.name.message as string}
+                      </p>
                     )}
                   </div>
 
-                  {/* Country (Phone) */}
+                  {/* Contact Number */}
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Country</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2.5">Contact Number</label>
                     <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                        <FiPhone className="h-5 w-5 text-gray-400" />
+                      </div>
                       <input
                         {...register('phone', {
                           validate: (value) => {
@@ -253,50 +316,82 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                           }
                         })}
                         type="tel"
-                        className="w-full px-4 py-3 border-2 border-orange-500 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 text-gray-900 pr-10"
-                        placeholder="+1234567890"
+                        className="w-full pl-12 pr-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900 placeholder:text-gray-400 bg-white hover:border-gray-300"
+                        placeholder="Enter your phone number"
                       />
-                      <FiChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5 pointer-events-none" />
                     </div>
                     {errors.phone && (
-                      <p className="text-red-500 text-xs mt-1">{errors.phone.message as string}</p>
+                      <p className="text-red-500 text-sm mt-2 flex items-center gap-1">
+                        <span>⚠️</span>
+                        {errors.phone.message as string}
+                      </p>
                     )}
                   </div>
 
                   {/* Email */}
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Email</label>
-                    <input
-                      {...register('email', { 
-                        pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Invalid email' },
-                        validate: (value) => {
-                          const phone = watch('phone');
-                          if (!value && !phone) {
-                            return 'Email or phone is required';
+                    <label className="block text-sm font-semibold text-gray-700 mb-2.5">Email</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                        <FiMail className="h-5 w-5 text-gray-400" />
+                      </div>
+                      <input
+                        {...register('email', { 
+                          pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Invalid email' },
+                          validate: (value) => {
+                            const phone = watch('phone');
+                            if (!value && !phone) {
+                              return 'Email or phone is required';
+                            }
+                            return true;
                           }
-                          return true;
-                        }
-                      })}
-                      type="email"
-                      className="w-full px-4 py-3 border-2 border-orange-500 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 text-gray-900"
-                      placeholder=""
-                    />
+                        })}
+                        type="email"
+                        className="w-full pl-12 pr-4 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900 placeholder:text-gray-400 bg-white hover:border-gray-300"
+                        placeholder="Enter your email address"
+                      />
+                    </div>
                     {errors.email && (
-                      <p className="text-red-500 text-xs mt-1">{errors.email.message as string}</p>
+                      <p className="text-red-500 text-sm mt-2 flex items-center gap-1">
+                        <span>⚠️</span>
+                        {errors.email.message as string}
+                      </p>
                     )}
                   </div>
 
                   {/* Password */}
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Password</label>
-                    <input
-                      {...register('password', { minLength: { value: 6, message: 'Password must be at least 6 characters' } })}
-                      type="password"
-                      className="w-full px-4 py-3 border-2 border-orange-500 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 text-gray-900"
-                      placeholder=""
-                    />
+                    <label className="block text-sm font-semibold text-gray-700 mb-2.5">Password</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                        <FiLock className="h-5 w-5 text-gray-400" />
+                      </div>
+                      <input
+                        {...register('password', { 
+                          required: 'Password is required',
+                          minLength: { value: 6, message: 'Password must be at least 6 characters' } 
+                        })}
+                        type={showPassword ? 'text' : 'password'}
+                        className="w-full pl-12 pr-12 py-3.5 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-gray-900 placeholder:text-gray-400 bg-white hover:border-gray-300"
+                        placeholder="Create a password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        {showPassword ? (
+                          <FiEyeOff className="h-5 w-5" />
+                        ) : (
+                          <FiEye className="h-5 w-5" />
+                        )}
+                      </button>
+                    </div>
                     {errors.password && (
-                      <p className="text-red-500 text-xs mt-1">{errors.password.message as string}</p>
+                      <p className="text-red-500 text-sm mt-2 flex items-center gap-1">
+                        <span>⚠️</span>
+                        {errors.password.message as string}
+                      </p>
                     )}
                   </div>
 
@@ -307,16 +402,16 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                   />
 
                   {/* Receive Updates Checkbox */}
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 group">
                     <input
                       type="checkbox"
                       checked={receiveUpdates}
                       onChange={(e) => setReceiveUpdates(e.target.checked)}
-                      className="w-5 h-5 border-2 border-gray-300 rounded focus:ring-2 focus:ring-orange-500 text-orange-500"
+                      className="w-4 h-4 border-2 border-gray-300 rounded focus:ring-2 focus:ring-blue-500 text-blue-600 cursor-pointer"
                       id="updates"
                     />
-                    <label htmlFor="updates" className="text-sm text-gray-700 cursor-pointer">
-                      Receive email updates
+                    <label htmlFor="updates" className="text-sm text-gray-700 cursor-pointer group-hover:text-gray-900 transition-colors">
+                      I agree to receive email updates and newsletters
                     </label>
                   </div>
 
@@ -324,59 +419,109 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full bg-blue-500 hover:bg-blue-600 text-white px-6 py-3.5 rounded-lg font-bold text-lg transition-all shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white py-4 rounded-xl font-semibold text-base hover:from-blue-700 hover:to-blue-800 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
                   >
-                    {isSubmitting ? 'CREATING ACCOUNT...' : 'SIGN UP'}
+                    {isSubmitting ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span>Creating Account...</span>
+                      </>
+                    ) : (
+                      <>
+                        <FiUserPlus className="w-5 h-5" />
+                        <span>Create Account</span>
+                      </>
+                    )}
                   </button>
 
                   {/* Privacy Policy & Terms */}
-                  <p className="text-xs text-gray-500 text-center mt-4">
-                    By signing up you agree to our{' '}
-                    <Link href="/privacy" className="text-gray-600 hover:text-gray-800 underline">
+                  <p className="text-xs text-gray-500 text-center mt-6">
+                    By creating an account, you agree to our{' '}
+                    <Link href="/privacy" className="text-blue-600 hover:text-blue-700 underline font-medium">
                       Privacy Policy
                     </Link>
-                    {' '}&{' '}
-                    <Link href="/terms" className="text-gray-600 hover:text-gray-800 underline">
+                    {' '}and{' '}
+                    <Link href="/terms" className="text-blue-600 hover:text-blue-700 underline font-medium">
                       Terms of Service
                     </Link>
                   </p>
                 </form>
+
+                {/* Login Link */}
+                <div className="text-center mt-6 pt-6 border-t border-gray-200">
+                  <p className="text-gray-600 text-sm">
+                    Already have an account?{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        if (onSwitchToLogin) {
+                          onSwitchToLogin();
+                        }
+                      }}
+                      className="text-blue-600 hover:text-blue-700 font-semibold transition-colors"
+                    >
+                      Sign In
+                    </button>
+                  </p>
+                </div>
               </>
             ) : (
               <>
                 {/* OTP Verification */}
-                <h2 className="text-3xl font-bold text-gray-900 mb-2">Verify Your Account</h2>
-                <p className="text-gray-600 mb-8">
-                  OTP has been sent to <strong>{formData.email || formData.phone}</strong>
-                </p>
+                <div className="text-center lg:text-left mb-8">
+                  <h2 className="text-4xl font-bold text-gray-900 mb-3">
+                    Verify Your Account
+                  </h2>
+                  <p className="text-gray-600 text-base">
+                    We've sent a verification code to{' '}
+                    <strong className="text-gray-900">{formData.email || formData.phone}</strong>
+                  </p>
+                </div>
 
                 <form onSubmit={handleSubmit(onSubmitOTP)} className="space-y-5">
-                  <div className="text-center mb-6 bg-yellow-50 p-4 rounded-lg border border-yellow-200">
-                    <p className="text-xs text-gray-500">
+                  <div className="text-center mb-6 bg-blue-50 p-4 rounded-xl border-2 border-blue-100">
+                    <p className="text-sm text-blue-800">
                       💡 <strong>Development Mode:</strong> Check backend console for OTP
                     </p>
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2 text-center">Enter OTP Code</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2.5 text-center">Enter OTP Code</label>
                     <input
                       {...register('code', { required: 'OTP is required' })}
                       type="text"
                       maxLength={6}
-                      className="w-full px-4 py-3 border-2 border-orange-500 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 text-center text-2xl tracking-widest font-bold text-gray-900"
+                      className="w-full px-4 py-4 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-center text-2xl tracking-widest font-bold text-gray-900 bg-white hover:border-gray-300 transition-all"
                       placeholder="000000"
                     />
                     {errors.code && (
-                      <p className="text-red-500 text-xs mt-1 text-center">{errors.code.message as string}</p>
+                      <p className="text-red-500 text-sm mt-2 text-center flex items-center justify-center gap-1">
+                        <span>⚠️</span>
+                        {errors.code.message as string}
+                      </p>
                     )}
                   </div>
                   
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full bg-orange-500 hover:bg-orange-600 text-white px-6 py-3.5 rounded-lg font-bold text-lg transition-all shadow-lg hover:shadow-xl disabled:opacity-50"
+                    className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white py-4 rounded-xl font-semibold text-base hover:from-blue-700 hover:to-blue-800 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
                   >
-                    {isSubmitting ? 'VERIFYING...' : 'VERIFY OTP'}
+                    {isSubmitting ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <span>Verify OTP</span>
+                    )}
                   </button>
                   
                   <button
@@ -386,7 +531,7 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                         onSuccess: () => toast.success('OTP resent successfully'),
                       });
                     }}
-                    className="w-full text-orange-500 hover:text-orange-600 font-semibold transition-colors"
+                    className="w-full text-blue-600 hover:text-blue-700 font-semibold text-sm transition-colors"
                   >
                     Resend OTP
                   </button>

@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
-import { FiCreditCard, FiPackage, FiClock, FiCheckCircle, FiXCircle, FiAlertCircle, FiEye, FiDownload } from 'react-icons/fi';
+import { FiCreditCard, FiPackage, FiClock, FiCheckCircle, FiXCircle, FiAlertCircle, FiEye, FiDownload, FiFileText } from 'react-icons/fi';
 import { format, differenceInDays, isAfter } from 'date-fns';
 import Link from 'next/link';
 import ImageWithFallback from '@/components/ImageWithFallback';
+import Invoice from '@/components/Invoice';
+import toast from 'react-hot-toast';
 
 export default function OrdersPage() {
   const router = useRouter();
@@ -16,6 +18,7 @@ export default function OrdersPage() {
   const [mounted, setMounted] = useState(false);
   const [filter, setFilter] = useState<'all' | 'premium' | 'ad-posting'>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'paid' | 'failed'>('all');
+  const [selectedInvoice, setSelectedInvoice] = useState<{ orderId: string; orderType: string } | null>(null);
 
   // Prevent hydration mismatch
   useEffect(() => {
@@ -240,9 +243,16 @@ export default function OrdersPage() {
                     )}
                   </div>
 
-                  {/* Download Invoice Button */}
+                  {/* Invoice Buttons */}
                   {order.status === 'paid' && (
-                    <div className="mt-4">
+                    <div className="mt-4 flex gap-3">
+                      <button
+                        onClick={() => setSelectedInvoice({ orderId: order.id, orderType: order.type })}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                      >
+                        <FiFileText className="w-4 h-4" />
+                        View Invoice
+                      </button>
                       <button
                         onClick={async () => {
                           try {
@@ -262,15 +272,16 @@ export default function OrdersPage() {
                             a.click();
                             window.URL.revokeObjectURL(url);
                             document.body.removeChild(a);
+                            toast.success('Invoice downloaded successfully');
                           } catch (error: any) {
                             console.error('Error downloading invoice:', error);
-                            alert(error.response?.data?.message || 'Failed to download invoice. Please try again.');
+                            toast.error(error.response?.data?.message || 'Failed to download invoice. Please try again.');
                           }
                         }}
                         className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
                       >
                         <FiDownload className="w-4 h-4" />
-                        Download Invoice
+                        Download PDF
                       </button>
                     </div>
                   )}
@@ -279,6 +290,16 @@ export default function OrdersPage() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Invoice Modal */}
+      {selectedInvoice && (
+        <Invoice
+          orderId={selectedInvoice.orderId}
+          orderType={selectedInvoice.orderType}
+          isOpen={!!selectedInvoice}
+          onClose={() => setSelectedInvoice(null)}
+        />
       )}
 
       {/* Pagination */}

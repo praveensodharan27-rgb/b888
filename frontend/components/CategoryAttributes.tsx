@@ -715,8 +715,7 @@ export default function CategoryAttributes({
   };
 
   return (
-    <div className="bg-gray-50 rounded-lg p-6 space-y-4">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4">Product Specifications</h3>
+    <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {attributes.map((attr) => {
           const fieldName = `attributes.${attr.name}`;
@@ -730,7 +729,7 @@ export default function CategoryAttributes({
                 </label>
                 <select
                   {...register(fieldName, { required: attr.required })}
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white"
                 >
                   <option value="">Select {attr.label}</option>
                   {attr.options?.map((option) => (
@@ -759,7 +758,7 @@ export default function CategoryAttributes({
                         type="checkbox"
                         checked={(watch(fieldName) || []).includes(option)}
                         onChange={(e) => handleMultiSelect(attr.name, option, e.target.checked)}
-                        className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                        className="w-4 h-4 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
                       />
                       <span className="text-sm text-gray-700">{option}</span>
                     </label>
@@ -784,7 +783,7 @@ export default function CategoryAttributes({
                   valueAsNumber: attr.type === 'number'
                 })}
                 placeholder={attr.placeholder}
-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
               />
               {error && (
                 <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
