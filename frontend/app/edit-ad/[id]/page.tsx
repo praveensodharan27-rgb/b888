@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { useUpdateAd, useAd } from '@/hooks/useAds';
@@ -9,6 +9,7 @@ import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { FiX, FiUpload, FiNavigation } from 'react-icons/fi';
 import ImageWithFallback from '@/components/ImageWithFallback';
+import CategoryAttributes from '@/components/CategoryAttributes';
 import toast from 'react-hot-toast';
 
 export default function EditAdPage() {
@@ -24,6 +25,8 @@ export default function EditAdPage() {
   const [existingImages, setExistingImages] = useState<string[]>([]);
   const [mounted, setMounted] = useState(false);
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [specSchema, setSpecSchema] = useState<any | null>(null);
+  const [attributes, setAttributes] = useState<Record<string, any>>({});
 
   const { data: categories, isLoading: categoriesLoading, isError: categoriesError } = useQuery({
     queryKey: ['categories'],
@@ -37,7 +40,15 @@ export default function EditAdPage() {
   });
 
   const selectedCategoryId = watch('categoryId');
-  const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
+  const selectedSubcategoryId = watch('subcategoryId');
+  const selectedCategory = useMemo(
+    () => categories?.find((c: any) => c.id === selectedCategoryId),
+    [categories, selectedCategoryId]
+  );
+  const selectedSubcategory = useMemo(
+    () => selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId),
+    [selectedCategory, selectedSubcategoryId]
+  );
 
 
   // Load ad data into form
@@ -56,6 +67,12 @@ export default function EditAdPage() {
         city: ad.city || '',
         neighbourhood: ad.neighbourhood || '',
       });
+      const adAttributes = (ad.attributes || {}) as Record<string, any>;
+      setAttributes(adAttributes);
+      // Also set form values for attributes
+      Object.keys(adAttributes).forEach((key) => {
+        setValue(`attributes.${key}`, adAttributes[key]);
+      });
       // Ensure images is an array and filter out empty/null values
       const imagesArray = Array.isArray(ad.images) 
         ? ad.images.filter((img: any) => img && (typeof img === 'string' ? img.trim() !== '' : true))
@@ -65,6 +82,43 @@ export default function EditAdPage() {
       console.log('Loaded existing images:', imagesArray);
     }
   }, [ad, reset]);
+
+  // Load spec schema whenever category or subcategory changes
+  useEffect(() => {
+    const loadSpecSchema = async () => {
+      if (!selectedCategoryId) {
+        setSpecSchema(null);
+        return;
+      }
+      try {
+        const params = new URLSearchParams();
+        if (selectedSubcategoryId) params.append('subcategoryId', selectedSubcategoryId as string);
+        const response = await api.get(`/categories/${selectedCategoryId}/spec-schema?${params.toString()}`);
+        if (response.data?.success) {
+          setSpecSchema(response.data.specSchema);
+
+          // When category changes, keep only attributes allowed by new schema
+          if (response.data.specSchema?.fields) {
+            const allowedKeys = new Set(response.data.specSchema.fields.map((f: any) => f.key));
+            setAttributes((prev) => {
+              const next: Record<string, any> = {};
+              for (const [k, v] of Object.entries(prev || {})) {
+                if (allowedKeys.has(k)) next[k] = v;
+              }
+              return next;
+            });
+          }
+        } else {
+          setSpecSchema(null);
+        }
+      } catch (error) {
+        console.error('Failed to load spec schema', error);
+        setSpecSchema(null);
+      }
+    };
+
+    loadSpecSchema();
+  }, [selectedCategoryId, selectedSubcategoryId]);
 
   // Prevent hydration mismatch
   useEffect(() => {
@@ -199,13 +253,31 @@ export default function EditAdPage() {
       return;
     }
 
+    // Get attributes from form data
+    const formAttributes = watch('attributes') || {};
+    
+    // Build payload for new JSON-based update endpoint for attributes/category
+    const payload: any = {
+      categoryId: data.categoryId,
+      subcategoryId: data.subcategoryId || null,
+      attributes: formAttributes || {}
+    };
+
+    try {
+      await api.put(`/ads/${adId}`, payload);
+    } catch (error: any) {
+      console.error('Failed to update product specs', error);
+      toast.error(error.response?.data?.message || 'Failed to update product specifications');
+      return;
+    }
+
+    // Images + basic fields still handled via existing multipart endpoint
     const formData = new FormData();
     formData.append('title', data.title);
     formData.append('description', data.description);
     formData.append('price', data.price);
     if (data.originalPrice) {
       formData.append('originalPrice', data.originalPrice);
-      // Calculate discount automatically
       const discount = ((parseFloat(data.originalPrice) - parseFloat(data.price)) / parseFloat(data.originalPrice) * 100).toFixed(2);
       formData.append('discount', discount);
     }
@@ -215,13 +287,11 @@ export default function EditAdPage() {
     if (data.state) formData.append('state', data.state);
     if (data.city) formData.append('city', data.city);
     if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
-    
-    // Append existing images that should be kept
+
     existingImages.forEach((img) => {
       formData.append('existingImages', img);
     });
 
-    // Append new images
     images.forEach((image) => {
       formData.append('images', image);
     });
@@ -292,6 +362,30 @@ export default function EditAdPage() {
             <p className="text-xs text-gray-500 mt-1">Leave empty if no discount</p>
           </div>
         </div>
+
+        {/* Specifications - Show when category and subcategory are selected */}
+        {selectedCategory && selectedSubcategory && (
+          <div className="mt-6 pt-6 border-t border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
+            <CategoryAttributes
+              categoryId={selectedCategory.id}
+              subcategoryId={selectedSubcategory.id}
+              categorySlug={selectedCategory.slug}
+              subcategorySlug={selectedSubcategory.slug}
+              register={register}
+              watch={watch}
+              setValue={(name, value, options) => {
+                setValue(name, value, options);
+                // Also update local attributes state
+                if (name.startsWith('attributes.')) {
+                  const key = name.replace('attributes.', '');
+                  setAttributes((prev) => ({ ...prev, [key]: value }));
+                }
+              }}
+              errors={errors}
+            />
+          </div>
+        )}
 
         {/* Discount is automatically calculated from originalPrice - price */}
 
@@ -416,6 +510,30 @@ export default function EditAdPage() {
             </div>
           </div>
         </div>
+
+        {/* Specifications - Show when category and subcategory are selected */}
+        {selectedCategory && selectedSubcategory && (
+          <div className="mt-6 pt-6 border-t border-gray-200">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
+            <CategoryAttributes
+              categoryId={selectedCategory.id}
+              subcategoryId={selectedSubcategory.id}
+              categorySlug={selectedCategory.slug}
+              subcategorySlug={selectedSubcategory.slug}
+              register={register}
+              watch={watch}
+              setValue={(name, value, options) => {
+                setValue(name, value, options);
+                // Also update local attributes state
+                if (name.startsWith('attributes.')) {
+                  const key = name.replace('attributes.', '');
+                  setAttributes((prev) => ({ ...prev, [key]: value }));
+                }
+              }}
+              errors={errors}
+            />
+          </div>
+        )}
 
         <div>
           <label className="block text-sm font-medium mb-2">Images (Max 4) *</label>

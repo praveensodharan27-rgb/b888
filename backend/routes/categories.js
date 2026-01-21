@@ -80,41 +80,41 @@ router.get('/:categoryId/spec-schema', async (req, res) => {
 
     if (key.includes('mobile')) {
       fields = [
-        { key: 'brand', type: 'select', required: true, label: 'Brand' },
-        { key: 'model', type: 'select', required: true, label: 'Model', parentField: 'brand' },
-        { key: 'storage', type: 'select', required: false, label: 'Storage' },
-        { key: 'ram', type: 'select', required: false, label: 'RAM' },
-        { key: 'color', type: 'select', required: false, label: 'Color' },
-        { key: 'warranty', type: 'select', required: false, label: 'Warranty' },
-        { key: 'batteryHealth', type: 'select', required: false, label: 'Battery Health' }
+        { key: 'brand', type: 'select', required: true, label: 'Brand', options: specOptions.brand || [] },
+        { key: 'model', type: 'select', required: true, label: 'Model', options: specOptions.model || [], parentField: 'brand' },
+        { key: 'storage', type: 'select', required: false, label: 'Storage', options: specOptions.storage || [] },
+        { key: 'ram', type: 'select', required: false, label: 'RAM', options: specOptions.ram || [] },
+        { key: 'color', type: 'select', required: false, label: 'Color', options: specOptions.color || [] },
+        { key: 'warranty', type: 'select', required: false, label: 'Warranty', options: specOptions.warranty || [] },
+        { key: 'batteryHealth', type: 'select', required: false, label: 'Battery Health', options: specOptions.batteryHealth || [] }
       ];
     } else if (key.includes('laptop')) {
       fields = [
-        { key: 'brand', type: 'select', required: true, label: 'Brand' },
-        { key: 'model', type: 'select', required: true, label: 'Model', parentField: 'brand' },
-        { key: 'processor', type: 'select', required: false, label: 'Processor' },
-        { key: 'ram', type: 'select', required: false, label: 'RAM' },
-        { key: 'storage', type: 'select', required: false, label: 'Storage' },
-        { key: 'screenSize', type: 'select', required: false, label: 'Screen Size' },
-        { key: 'color', type: 'select', required: false, label: 'Color' }
+        { key: 'brand', type: 'select', required: true, label: 'Brand', options: specOptions.brand || [] },
+        { key: 'model', type: 'select', required: true, label: 'Model', options: specOptions.model || [], parentField: 'brand' },
+        { key: 'processor', type: 'select', required: false, label: 'Processor', options: specOptions.processor || [] },
+        { key: 'ram', type: 'select', required: false, label: 'RAM', options: specOptions.ram || [] },
+        { key: 'storage', type: 'select', required: false, label: 'Storage', options: specOptions.storage || [] },
+        { key: 'screenSize', type: 'select', required: false, label: 'Screen Size', options: specOptions.screenSize || [] },
+        { key: 'color', type: 'select', required: false, label: 'Color', options: specOptions.color || [] }
       ];
     } else if (key.includes('car') || key.includes('vehicle')) {
       fields = [
-        { key: 'brand', type: 'select', required: true, label: 'Brand' },
-        { key: 'model', type: 'select', required: true, label: 'Model', parentField: 'brand' },
-        { key: 'year', type: 'select', required: true, label: 'Year' },
-        { key: 'fuelType', type: 'select', required: true, label: 'Fuel Type' },
+        { key: 'brand', type: 'select', required: true, label: 'Brand', options: specOptions.brand || [] },
+        { key: 'model', type: 'select', required: true, label: 'Model', options: specOptions.model || [], parentField: 'brand' },
+        { key: 'year', type: 'select', required: true, label: 'Year', options: specOptions.year || [] },
+        { key: 'fuelType', type: 'select', required: true, label: 'Fuel Type', options: specOptions.fuelType || [] },
         { key: 'kmDriven', type: 'number', required: false, label: 'KM Driven' },
-        { key: 'color', type: 'select', required: false, label: 'Color' },
-        { key: 'insurance', type: 'select', required: false, label: 'Insurance' }
+        { key: 'color', type: 'select', required: false, label: 'Color', options: specOptions.color || [] },
+        { key: 'insurance', type: 'select', required: false, label: 'Insurance', options: specOptions.insurance || [] }
       ];
     } else {
       // Generic fallback schema
       fields = [
-        { key: 'brand', type: 'select', required: false, label: 'Brand' },
-        { key: 'model', type: 'select', required: false, label: 'Model', parentField: 'brand' },
-        { key: 'year', type: 'select', required: false, label: 'Year' },
-        { key: 'color', type: 'select', required: false, label: 'Color' }
+        { key: 'brand', type: 'select', required: false, label: 'Brand', options: specOptions.brand || [] },
+        { key: 'model', type: 'select', required: false, label: 'Model', options: specOptions.model || [], parentField: 'brand' },
+        { key: 'year', type: 'select', required: false, label: 'Year', options: specOptions.year || [] },
+        { key: 'color', type: 'select', required: false, label: 'Color', options: specOptions.color || [] }
       ];
     }
 

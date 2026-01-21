@@ -1,7 +1,6 @@
 'use client';
 
 import { ReactNode } from 'react';
-import SmartFiltersPanel from './SmartFiltersPanel';
 import EmptyState from './EmptyState';
 import AdCardOGNOX from './AdCardOGNOX';
 import SortDropdown from './SortDropdown';
