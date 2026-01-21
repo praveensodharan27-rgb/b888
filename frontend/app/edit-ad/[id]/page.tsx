@@ -168,8 +168,8 @@ export default function EditAdPage() {
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     const totalImages = existingImages.length + images.length + files.length;
-    if (totalImages > 12) {
-      alert('Maximum 12 images allowed');
+    if (totalImages > 4) {
+      alert('Maximum 4 images allowed');
       return;
     }
 
@@ -418,7 +418,7 @@ export default function EditAdPage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-2">Images (Max 12) *</label>
+          <label className="block text-sm font-medium mb-2">Images (Max 4) *</label>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
             {/* Existing images */}
             {existingImages.map((img, index) => (
@@ -463,7 +463,7 @@ export default function EditAdPage() {
             ))}
             
             {/* Upload button */}
-            {existingImages.length + previews.length < 12 && (
+            {existingImages.length + previews.length < 4 && (
               <label className="border-2 border-dashed border-gray-300 rounded-lg h-32 flex items-center justify-center cursor-pointer hover:border-primary-500">
                 <FiUpload className="w-6 h-6 text-gray-400" />
                 <input

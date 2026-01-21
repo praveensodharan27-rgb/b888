@@ -110,5 +110,64 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { authenticate, authorize };
+// Optional authentication - sets req.user if token is valid, but doesn't fail if token is missing
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+
+    if (!token) {
+      // No token provided - continue without setting req.user
+      return next();
+    }
+
+    if (!process.env.JWT_SECRET) {
+      // JWT_SECRET not set - continue without authentication
+      return next();
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (jwtError) {
+      // Invalid or expired token - continue without setting req.user
+      return next();
+    }
+
+    if (!decoded.userId) {
+      // Invalid token format - continue without setting req.user
+      return next();
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        name: true,
+        tokenInvalidatedAt: true,
+        avatar: true,
+        role: true,
+        isVerified: true,
+        provider: true,
+        providerId: true,
+        isDeactivated: true,
+        deactivatedAt: true
+      }
+    });
+
+    if (user && !user.isDeactivated) {
+      // Set req.user only if user exists and is not deactivated
+      // For optional auth, we don't check token invalidation (allows expired tokens)
+      req.user = user;
+    }
+
+    next();
+  } catch (error) {
+    // On any error, continue without authentication
+    next();
+  }
+};
+
+module.exports = { authenticate, authorize, optionalAuthenticate };
 

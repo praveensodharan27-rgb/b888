@@ -5,6 +5,7 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { requireAdmin } = require('../middleware/admin');
 const { uploadImages } = require('../middleware/upload');
 
+// Prisma client instance
 const router = express.Router();
 const prisma = new PrismaClient();
 
@@ -371,10 +372,30 @@ router.put('/ads/:id/status',
         updateData.moderationStatus = 'manually_rejected';
       }
 
-      await prisma.ad.update({
+      const updatedAd = await prisma.ad.update({
         where: { id: req.params.id },
-        data: updateData
+        data: updateData,
+        include: {
+          category: { select: { id: true, name: true } },
+          subcategory: { select: { id: true, name: true } },
+          location: { select: { id: true, name: true } },
+        }
       });
+
+      // Sync with Meilisearch when ad status changes
+      try {
+        const { indexAd, deleteAd } = require('../services/meilisearch');
+        if (status === 'APPROVED') {
+          await indexAd(updatedAd);
+          console.log(`✅ Indexed approved ad in Meilisearch: ${updatedAd.id}`);
+        } else if (status === 'REJECTED') {
+          // Remove rejected ad from index
+          await deleteAd(updatedAd.id);
+          console.log(`✅ Removed rejected ad from Meilisearch: ${updatedAd.id}`);
+        }
+      } catch (indexError) {
+        console.error(`⚠️ Error syncing ad ${updatedAd.id} with Meilisearch:`, indexError);
+      }
 
       // Create notification
       await prisma.notification.create({
@@ -1125,6 +1146,313 @@ router.get('/categories', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to fetch categories' });
   }
 });
+
+// ==================== Bulk Product Specifications Update ====================
+
+/**
+ * Bulk update product specifications (ad.attributes) for all ads in a category
+ * Endpoint: PUT /api/admin/products/bulk-spec-update
+ *
+ * Request body:
+ * {
+ *   "category": "Mobiles",          // optional - category name (case-insensitive)
+ *   "categorySlug": "mobiles",      // optional - category slug
+ *   "categoryId": "..." ,           // optional - category id
+ *   "updates": {                    // required - fields to set/overwrite in attributes
+ *     "brand": "Xiaomi",
+ *     "storage": "128GB",
+ *     "ram": "6GB"
+ *   },
+ *   "where": {                      // optional - filter on existing attributes
+ *     "brand": "Mi"
+ *   },
+ *   "previewOnly": true             // optional - if true, do not update, just return preview
+ * }
+ */
+router.put(
+  '/products/bulk-spec-update',
+  [
+    body('category').optional().isString().trim(),
+    body('categorySlug').optional().isString().trim(),
+    body('categoryId').optional().isString().trim(),
+    body('updates')
+      .custom((value) => value && typeof value === 'object' && !Array.isArray(value))
+      .withMessage('updates object is required'),
+    body('where')
+      .optional()
+      .custom((value) => !value || (typeof value === 'object' && !Array.isArray(value)))
+      .withMessage('where must be an object'),
+    body('previewOnly').optional().isBoolean()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { category, categorySlug, categoryId, updates, where = {}, previewOnly = false } = req.body;
+
+      if (!category && !categorySlug && !categoryId) {
+        return res.status(400).json({
+          success: false,
+          message: 'One of category, categorySlug, or categoryId is required'
+        });
+      }
+
+      // Resolve category
+      let categoryRecord = null;
+      if (categoryId) {
+        categoryRecord = await prisma.category.findUnique({ where: { id: categoryId } });
+      } else if (categorySlug) {
+        categoryRecord = await prisma.category.findUnique({ where: { slug: categorySlug } });
+      } else if (category) {
+        categoryRecord = await prisma.category.findFirst({
+          where: {
+            name: {
+              equals: category,
+              mode: 'insensitive'
+            }
+          }
+        });
+      }
+
+      if (!categoryRecord) {
+        return res.status(404).json({ success: false, message: 'Category not found' });
+      }
+
+      // Fetch all ads in this category (admin-side operation, can be heavy but is controlled)
+      const adsInCategory = await prisma.ad.findMany({
+        where: { categoryId: categoryRecord.id },
+        select: {
+          id: true,
+          title: true,
+          attributes: true,
+          status: true,
+          slug: true
+        }
+      });
+
+      // Apply in-memory filter on attributes based on "where" object
+      const whereFilters = where || {};
+      const filteredAds = adsInCategory.filter((ad) => {
+        const attrs = ad.attributes || {};
+        for (const [key, value] of Object.entries(whereFilters)) {
+          if (value === undefined || value === null || value === '') continue;
+          const attrVal = attrs ? attrs[key] : undefined;
+          if (attrVal === undefined || attrVal === null) return false;
+
+          if (typeof attrVal === 'string' && typeof value === 'string') {
+            // Case-insensitive contains match (e.g., brand contains "Mi")
+            if (!attrVal.toLowerCase().includes(value.toLowerCase())) {
+              return false;
+            }
+          } else if (attrVal !== value) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      const matchedCount = filteredAds.length;
+
+      // If previewOnly, just return summary + sample ads
+      if (previewOnly) {
+        const sampleAds = filteredAds.slice(0, 50); // limit sample size
+        return res.json({
+          success: true,
+          preview: true,
+          category: {
+            id: categoryRecord.id,
+            name: categoryRecord.name,
+            slug: categoryRecord.slug
+          },
+          matchedCount,
+          sampleAds
+        });
+      }
+
+      if (matchedCount === 0) {
+        return res.json({
+          success: true,
+          updatedCount: 0,
+          message: 'No products matched the given filters',
+          rollbackToken: null
+        });
+      }
+
+      // Perform bulk update inside a transaction and log audit entry
+      const result = await prisma.$transaction(async (tx) => {
+        const adIds = filteredAds.map((ad) => ad.id);
+
+        // Re-fetch only the ads we are going to update, with current attributes
+        const adsToUpdate = await tx.ad.findMany({
+          where: { id: { in: adIds } },
+          select: {
+            id: true,
+            attributes: true
+          }
+        });
+
+        const previousAttributes = {};
+
+        for (const ad of adsToUpdate) {
+          const currentAttrs = ad.attributes || {};
+          previousAttributes[ad.id] = currentAttrs;
+
+          const newAttrs = { ...currentAttrs };
+          for (const [key, value] of Object.entries(updates)) {
+            if (value === null || value === '') {
+              // Allow clearing a field by sending null/empty string
+              delete newAttrs[key];
+            } else {
+              newAttrs[key] = value;
+            }
+          }
+
+          await tx.ad.update({
+            where: { id: ad.id },
+            data: { attributes: newAttrs }
+          });
+        }
+
+        // Audit log with rollback metadata
+        const auditEntry = await tx.auditLog.create({
+          data: {
+            actorId: req.user.id,
+            action: 'BULK_AD_SPEC_UPDATE',
+            reason: req.body.reason || null,
+            metadata: {
+              categoryId: categoryRecord.id,
+              categoryName: categoryRecord.name,
+              categorySlug: categoryRecord.slug,
+              updates,
+              where: whereFilters,
+              updatedAdIds: adIds,
+              updatedCount: adIds.length,
+              previousAttributes,
+              timestamp: new Date().toISOString()
+            }
+          }
+        });
+
+        return {
+          updatedCount: adIds.length,
+          rollbackToken: auditEntry.id
+        };
+      });
+
+      return res.json({
+        success: true,
+        updatedCount: result.updatedCount,
+        message: 'Specifications updated successfully',
+        rollbackToken: result.rollbackToken
+      });
+    } catch (error) {
+      console.error('Bulk spec update error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to bulk update product specifications'
+      });
+    }
+  }
+);
+
+/**
+ * Rollback a previous bulk spec update using rollbackToken (audit log ID)
+ *
+ * Request body:
+ * {
+ *   "rollbackToken": "auditLogId"
+ * }
+ */
+router.post(
+  '/products/bulk-spec-rollback',
+  [body('rollbackToken').notEmpty().withMessage('rollbackToken is required')],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { rollbackToken } = req.body;
+
+      const auditEntry = await prisma.auditLog.findUnique({
+        where: { id: rollbackToken }
+      });
+
+      if (!auditEntry) {
+        return res.status(404).json({ success: false, message: 'Rollback token not found' });
+      }
+
+      if (auditEntry.action !== 'BULK_AD_SPEC_UPDATE') {
+        return res.status(400).json({
+          success: false,
+          message: 'Rollback token is not for a bulk spec update action'
+        });
+      }
+
+      const metadata = auditEntry.metadata || {};
+      const previousAttributes = metadata.previousAttributes || {};
+      const updatedAdIds = metadata.updatedAdIds || [];
+
+      if (!previousAttributes || Object.keys(previousAttributes).length === 0 || updatedAdIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'No previous attributes data found for rollback'
+        });
+      }
+
+      const restoredResult = await prisma.$transaction(async (tx) => {
+        let restoredCount = 0;
+
+        for (const adId of updatedAdIds) {
+          const attrs = previousAttributes[adId];
+          // If for some reason we don't have data for this ad, skip it
+          if (attrs === undefined) continue;
+
+          await tx.ad.update({
+            where: { id: adId },
+            data: { attributes: attrs }
+          });
+          restoredCount++;
+        }
+
+        // Log rollback action
+        await tx.auditLog.create({
+          data: {
+            actorId: req.user.id,
+            action: 'BULK_AD_SPEC_ROLLBACK',
+            reason: req.body.reason || null,
+            metadata: {
+              rollbackFrom: rollbackToken,
+              restoredCount,
+              categoryId: metadata.categoryId,
+              categoryName: metadata.categoryName,
+              categorySlug: metadata.categorySlug,
+              timestamp: new Date().toISOString()
+            }
+          }
+        });
+
+        return restoredCount;
+      });
+
+      return res.json({
+        success: true,
+        restoredCount: restoredResult,
+        message: 'Rollback completed successfully'
+      });
+    } catch (error) {
+      console.error('Bulk spec rollback error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to rollback bulk product specifications update'
+      });
+    }
+  }
+);
 
 // Create category
 router.post('/categories',
@@ -2574,6 +2902,323 @@ router.get('/cache/stats', async (req, res) => {
     });
   }
 });
+
+// ========== SPEC OPTIONS MANAGEMENT (DROPDOWN VALUES) ==========
+
+// Get spec options for a category
+// Get spec options for category or subcategory
+router.get('/spec-options/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { subcategoryId } = req.query;
+    
+    // If subcategoryId is provided, get subcategory spec options
+    if (subcategoryId) {
+      const subcategory = await prisma.subcategory.findUnique({
+        where: { id: subcategoryId },
+        select: { id: true, name: true, slug: true, specOptions: true, categoryId: true }
+      });
+
+      if (!subcategory) {
+        return res.status(404).json({ success: false, message: 'Subcategory not found' });
+      }
+
+      if (subcategory.categoryId !== categoryId) {
+        return res.status(400).json({ success: false, message: 'Subcategory does not belong to this category' });
+      }
+
+      return res.json({
+        success: true,
+        category: { id: categoryId },
+        subcategory: {
+          id: subcategory.id,
+          name: subcategory.name,
+          slug: subcategory.slug
+        },
+        specOptions: subcategory.specOptions || {}
+      });
+    }
+    
+    // Otherwise get category spec options
+    const category = await prisma.category.findUnique({
+      where: { id: categoryId },
+      select: { id: true, name: true, slug: true, specOptions: true }
+    });
+
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    res.json({
+      success: true,
+      category: {
+        id: category.id,
+        name: category.name,
+        slug: category.slug
+      },
+      specOptions: category.specOptions || {}
+    });
+  } catch (error) {
+    console.error('Get spec options error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch spec options' });
+  }
+});
+
+// Update spec options for a category or subcategory (add/edit/delete option)
+router.put('/spec-options/:categoryId',
+  [
+    body('field').notEmpty().withMessage('Field name is required'),
+    body('action').isIn(['add', 'edit', 'delete']).withMessage('Action must be add, edit, or delete'),
+    body('value').optional(),
+    body('oldValue').optional(),
+    body('parentField').optional().isString(),
+    body('parentValue').optional().isString(),
+    body('subcategoryId').optional().isString()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { categoryId } = req.params;
+      const { field, action, value, oldValue, parentField, parentValue, subcategoryId } = req.body;
+
+      // Manual validation based on action
+      if ((action === 'add' || action === 'edit') && !value) {
+        return res.status(400).json({ success: false, message: 'Value is required for add/edit actions' });
+      }
+      if ((action === 'edit' || action === 'delete') && !oldValue) {
+        return res.status(400).json({ success: false, message: 'Old value is required for edit/delete actions' });
+      }
+
+      // If subcategoryId is provided, update subcategory spec options
+      if (subcategoryId) {
+        const subcategory = await prisma.subcategory.findUnique({
+          where: { id: subcategoryId },
+          select: { specOptions: true, categoryId: true }
+        });
+
+        if (!subcategory) {
+          return res.status(404).json({ success: false, message: 'Subcategory not found' });
+        }
+
+        if (subcategory.categoryId !== categoryId) {
+          return res.status(400).json({ success: false, message: 'Subcategory does not belong to this category' });
+        }
+
+        let specOptions = subcategory.specOptions || {};
+        
+        // Handle nested options (e.g., model based on brand)
+        if (parentField && parentValue) {
+          if (!specOptions[field]) {
+            specOptions[field] = {};
+          }
+          if (typeof specOptions[field] !== 'object' || Array.isArray(specOptions[field])) {
+            specOptions[field] = {};
+          }
+          
+          if (!specOptions[field][parentValue]) {
+            specOptions[field][parentValue] = [];
+          }
+
+          if (action === 'add') {
+            if (!specOptions[field][parentValue].includes(value)) {
+              specOptions[field][parentValue].push(value);
+            }
+          } else if (action === 'edit') {
+            const index = specOptions[field][parentValue].indexOf(oldValue);
+            if (index !== -1) {
+              specOptions[field][parentValue][index] = value;
+            }
+          } else if (action === 'delete') {
+            specOptions[field][parentValue] = specOptions[field][parentValue].filter(v => v !== oldValue);
+            if (specOptions[field][parentValue].length === 0) {
+              delete specOptions[field][parentValue];
+            }
+          }
+        } else {
+          // Handle flat options (e.g., brand, storage, ram)
+          if (!specOptions[field]) {
+            specOptions[field] = [];
+          }
+          if (!Array.isArray(specOptions[field])) {
+            specOptions[field] = [];
+          }
+
+          if (action === 'add') {
+            if (!specOptions[field].includes(value)) {
+              specOptions[field].push(value);
+            }
+          } else if (action === 'edit') {
+            const index = specOptions[field].indexOf(oldValue);
+            if (index !== -1) {
+              specOptions[field][index] = value;
+            }
+          } else if (action === 'delete') {
+            specOptions[field] = specOptions[field].filter(v => v !== oldValue);
+          }
+        }
+
+        // Update subcategory
+        const updated = await prisma.subcategory.update({
+          where: { id: subcategoryId },
+          data: { specOptions }
+        });
+
+        console.log('✅ Subcategory specOptions updated:', {
+          subcategoryId,
+          categoryId,
+          field,
+          action,
+          specOptions: updated.specOptions
+        });
+
+        return res.json({
+          success: true,
+          message: `Option ${action}ed successfully`,
+          specOptions: updated.specOptions
+        });
+      }
+
+      // Otherwise update category spec options
+      const category = await prisma.category.findUnique({
+        where: { id: categoryId },
+        select: { specOptions: true }
+      });
+
+      if (!category) {
+        return res.status(404).json({ success: false, message: 'Category not found' });
+      }
+
+      let specOptions = category.specOptions || {};
+      
+      // Handle nested options (e.g., model based on brand)
+      if (parentField && parentValue) {
+        if (!specOptions[field]) {
+          specOptions[field] = {};
+        }
+        if (typeof specOptions[field] !== 'object' || Array.isArray(specOptions[field])) {
+          specOptions[field] = {};
+        }
+        
+        if (!specOptions[field][parentValue]) {
+          specOptions[field][parentValue] = [];
+        }
+
+        if (action === 'add') {
+          if (!specOptions[field][parentValue].includes(value)) {
+            specOptions[field][parentValue].push(value);
+          }
+        } else if (action === 'edit') {
+          const index = specOptions[field][parentValue].indexOf(oldValue);
+          if (index !== -1) {
+            specOptions[field][parentValue][index] = value;
+          }
+        } else if (action === 'delete') {
+          specOptions[field][parentValue] = specOptions[field][parentValue].filter(v => v !== oldValue);
+          if (specOptions[field][parentValue].length === 0) {
+            delete specOptions[field][parentValue];
+          }
+        }
+      } else {
+        // Handle flat options (e.g., brand, storage, ram)
+        if (!specOptions[field]) {
+          specOptions[field] = [];
+        }
+        if (!Array.isArray(specOptions[field])) {
+          specOptions[field] = [];
+        }
+
+        if (action === 'add') {
+          if (!specOptions[field].includes(value)) {
+            specOptions[field].push(value);
+          }
+        } else if (action === 'edit') {
+          const index = specOptions[field].indexOf(oldValue);
+          if (index !== -1) {
+            specOptions[field][index] = value;
+          }
+        } else if (action === 'delete') {
+          specOptions[field] = specOptions[field].filter(v => v !== oldValue);
+        }
+      }
+
+      // Update category
+      const updated = await prisma.category.update({
+        where: { id: categoryId },
+        data: { specOptions }
+      });
+
+      console.log('✅ Category specOptions updated:', {
+        categoryId,
+        field,
+        action,
+        specOptions: updated.specOptions
+      });
+
+      res.json({
+        success: true,
+        message: `Option ${action}ed successfully`,
+        specOptions: updated.specOptions
+      });
+    } catch (error) {
+      console.error('Update spec options error:', error);
+      console.error('Error details:', {
+        categoryId: req.params.categoryId,
+        body: req.body,
+        errorMessage: error.message,
+        errorStack: error.stack
+      });
+      res.status(500).json({ 
+        success: false, 
+        message: 'Failed to update spec options',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  }
+);
+
+// Bulk update spec options (replace entire specOptions object)
+router.put('/spec-options/:categoryId/bulk',
+  [
+    body('specOptions').isObject().withMessage('specOptions must be an object')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { categoryId } = req.params;
+      const { specOptions } = req.body;
+
+      const category = await prisma.category.findUnique({
+        where: { id: categoryId }
+      });
+
+      if (!category) {
+        return res.status(404).json({ success: false, message: 'Category not found' });
+      }
+
+      const updated = await prisma.category.update({
+        where: { id: categoryId },
+        data: { specOptions }
+      });
+
+      res.json({
+        success: true,
+        message: 'Spec options updated successfully',
+        specOptions: updated.specOptions
+      });
+    } catch (error) {
+      console.error('Bulk update spec options error:', error);
+      res.status(500).json({ success: false, message: 'Failed to update spec options' });
+    }
+  }
+);
 
 module.exports = router;
 

@@ -14,6 +14,9 @@ interface AdsFilters {
   maxPrice?: number | string;
   search?: string;
   condition?: string;
+  // New UI filters
+  premiumOnly?: boolean | string;
+  brands?: string; // comma-separated brand slugs/names
   sort?: 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
 }
 

@@ -263,7 +263,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
     <>
       {/* Backdrop */}
       <div 
-        className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 transition-opacity"
+        className="fixed inset-0 bg-black/30 z-50 transition-opacity"
         onClick={onClose}
       />
       

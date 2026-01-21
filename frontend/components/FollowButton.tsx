@@ -39,9 +39,14 @@ export default function FollowButton({
       }
     } catch (error: any) {
       // Handle 401 (unauthorized) gracefully - user is not logged in
-      if (error.response?.status === 401) {
+      // Silently handle expected 401s (marked by interceptor)
+      if (error.response?.status === 401 || (error as any)?.isExpected) {
         setIsFollowing(false);
-      } else {
+        // Don't log expected 401s
+        return;
+      }
+      // Only log unexpected errors
+      if (!(error as any)?.isExpected) {
         console.error('Check following error:', error);
       }
     } finally {

@@ -11,6 +11,7 @@ import AdminPremiumSettings from './AdminPremiumSettings';
 import AdminInterstitialAds from './AdminInterstitialAds';
 import AdminBusinessPackages from './AdminBusinessPackages';
 import AdminAuthPages from './AdminAuthPages';
+import AdminSpecOptions from './AdminSpecOptions';
 
 export default function AdminDashboard() {
   const searchParams = useSearchParams();
@@ -23,6 +24,7 @@ export default function AdminDashboard() {
       {activeTab === 'users' && <AdminUsers />}
       {activeTab === 'banners' && <AdminBanners />}
       {activeTab === 'categories' && <AdminCategories />}
+      {activeTab === 'spec-options' && <AdminSpecOptions />}
       {activeTab === 'premium' && <AdminPremiumAds />}
       {activeTab === 'offers' && <AdminPremiumSettings />}
       {activeTab === 'interstitial' && <AdminInterstitialAds />}

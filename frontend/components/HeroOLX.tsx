@@ -27,11 +27,36 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
   const [isFocused, setIsFocused] = useState(false);
   const [placeholder, setPlaceholder] = useState('');
   const [currentExampleIndex, setCurrentExampleIndex] = useState(0);
-  const [showCursor, setShowCursor] = useState(true);
+  const [showInputCursor, setShowInputCursor] = useState(true);
   const [exampleSearches, setExampleSearches] = useState(BASE_EXAMPLE_SEARCHES);
   const inputRef = useRef<HTMLInputElement>(null);
   const typewriterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const cursorIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [isUiFrozen, setIsUiFrozen] = useState(false);
+  const resumeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Typewriter effect for rotating phrases
+  const [animatedText, setAnimatedText] = useState('');
+  const [showTypewriterCursor, setShowTypewriterCursor] = useState(true);
+  const typewriterRef = useRef<NodeJS.Timeout | null>(null);
+  const cursorBlinkRef = useRef<NodeJS.Timeout | null>(null);
+  const phraseCharIndexRef = useRef(0);
+  const phraseDeletingRef = useRef(false);
+
+  // Placeholder typewriter refs (resume without restart)
+  const placeholderCharIndexRef = useRef(0);
+  const placeholderDeletingRef = useRef(false);
+  
+  // Phrases to rotate through
+  const PHRASES = ['you need', 'you love', 'near you', 'for you'];
+  const [currentPhraseIndex, setCurrentPhraseIndex] = useState(0);
+  
+  // Animation timings (optimized for smooth, natural feel)
+  const TYPE_SPEED = 70; // ms per character (smooth & readable)
+  const ERASE_SPEED = 55; // ms per character (smooth erase)
+  const PAUSE_AFTER_TYPE = 700; // ms pause after typing (short pause)
+  const PAUSE_AFTER_ERASE = 0; // No gap – start next phrase immediately
+  const START_DELAY = 0; // Start immediately (no initial delay)
 
   // Check user location and update examples (check localStorage first, then try geolocation)
   useEffect(() => {
@@ -145,10 +170,18 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
     }
   };
 
-  // Cursor blinking animation
+  // Input cursor blinking animation
   useEffect(() => {
+    if (isUiFrozen) {
+      setShowInputCursor(false);
+      if (cursorIntervalRef.current) {
+        clearInterval(cursorIntervalRef.current);
+        cursorIntervalRef.current = null;
+      }
+      return;
+    }
     if (search) {
-      setShowCursor(false);
+      setShowInputCursor(false);
       if (cursorIntervalRef.current) {
         clearInterval(cursorIntervalRef.current);
       }
@@ -156,7 +189,7 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
     }
 
     cursorIntervalRef.current = setInterval(() => {
-      setShowCursor(prev => !prev);
+      setShowInputCursor(prev => !prev);
     }, 530);
 
     return () => {
@@ -166,8 +199,113 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
     };
   }, [search]);
 
+  // Typewriter cursor blinking animation (independent of typing)
+  useEffect(() => {
+    if (isUiFrozen) {
+      setShowTypewriterCursor(false);
+      if (cursorBlinkRef.current) {
+        clearInterval(cursorBlinkRef.current);
+        cursorBlinkRef.current = null;
+      }
+      return;
+    }
+    cursorBlinkRef.current = setInterval(() => {
+      setShowTypewriterCursor(prev => !prev);
+    }, 530); // Smooth blink rate
+
+    return () => {
+      if (cursorBlinkRef.current) {
+        clearInterval(cursorBlinkRef.current);
+      }
+    };
+  }, [isUiFrozen]);
+
+  // Typewriter effect for rotating phrases - improved continuous looping
+  useEffect(() => {
+    const currentPhrase = PHRASES[currentPhraseIndex];
+
+    if (isUiFrozen) {
+      if (typewriterRef.current) {
+        clearTimeout(typewriterRef.current);
+        typewriterRef.current = null;
+      }
+      return;
+    }
+
+    let isActive = true;
+    // Seed from current state so resume doesn't restart
+    phraseCharIndexRef.current = Math.min(phraseCharIndexRef.current, currentPhrase.length);
+
+    const typeChar = () => {
+      if (!isActive || isUiFrozen) return;
+
+      if (phraseCharIndexRef.current < currentPhrase.length) {
+        setAnimatedText(currentPhrase.substring(0, phraseCharIndexRef.current + 1));
+        phraseCharIndexRef.current++;
+        typewriterRef.current = setTimeout(typeChar, TYPE_SPEED);
+      } else {
+        // Finished typing - pause before erasing
+        typewriterRef.current = setTimeout(() => {
+          if (isActive && !isUiFrozen) {
+            phraseDeletingRef.current = true;
+            eraseChar();
+          }
+        }, PAUSE_AFTER_TYPE);
+      }
+    };
+
+    const eraseChar = () => {
+      if (!isActive || isUiFrozen) return;
+
+      if (phraseCharIndexRef.current > 0) {
+        setAnimatedText(currentPhrase.substring(0, phraseCharIndexRef.current - 1));
+        phraseCharIndexRef.current--;
+        typewriterRef.current = setTimeout(eraseChar, ERASE_SPEED);
+      } else {
+        // Finished erasing - clear text and immediately move to next phrase
+        setAnimatedText('');
+        phraseDeletingRef.current = false;
+        
+        // Move to next phrase immediately (for continuous looping)
+        const nextIndex = (currentPhraseIndex + 1) % PHRASES.length;
+        
+        // Start typing next phrase immediately (no waiting)
+        typewriterRef.current = setTimeout(() => {
+          if (isActive && !isUiFrozen) {
+            phraseCharIndexRef.current = 0;
+            setCurrentPhraseIndex(nextIndex);
+            // Start typing will be triggered by the useEffect dependency
+          }
+        }, PAUSE_AFTER_ERASE);
+      }
+    };
+
+    if (currentPhrase) {
+      // Continue from current position + direction
+      if (phraseDeletingRef.current) {
+        eraseChar();
+      } else {
+        typeChar();
+      }
+    }
+
+    return () => {
+      isActive = false;
+      if (typewriterRef.current) {
+        clearTimeout(typewriterRef.current);
+      }
+    };
+  }, [currentPhraseIndex, isUiFrozen]); // Re-run when phrase changes for continuous loop
+
   // Typewriter effect for placeholder
   useEffect(() => {
+    if (isUiFrozen) {
+      if (typewriterTimeoutRef.current) {
+        clearTimeout(typewriterTimeoutRef.current);
+        typewriterTimeoutRef.current = null;
+      }
+      return;
+    }
     // Don't animate if user has typed something
     if (search) {
       setPlaceholder('');
@@ -178,31 +316,32 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
     }
 
     const currentExample = exampleSearches[currentExampleIndex];
-    let charIndex = 0;
     let isActive = true;
 
     const typeChar = () => {
-      if (!isActive || search) return;
+      if (!isActive || search || isUiFrozen) return;
 
-      if (charIndex < currentExample.length) {
-        setPlaceholder(currentExample.substring(0, charIndex + 1));
-        charIndex++;
+      if (placeholderCharIndexRef.current < currentExample.length) {
+        setPlaceholder(currentExample.substring(0, placeholderCharIndexRef.current + 1));
+        placeholderCharIndexRef.current++;
         typewriterTimeoutRef.current = setTimeout(typeChar, 80);
       } else {
         // Wait before deleting
         typewriterTimeoutRef.current = setTimeout(() => {
           const deleteChars = () => {
-            if (!isActive || search) return;
+            if (!isActive || search || isUiFrozen) return;
 
-            if (charIndex > 0) {
-              setPlaceholder(currentExample.substring(0, charIndex - 1));
-              charIndex--;
+            if (placeholderCharIndexRef.current > 0) {
+              setPlaceholder(currentExample.substring(0, placeholderCharIndexRef.current - 1));
+              placeholderCharIndexRef.current--;
               typewriterTimeoutRef.current = setTimeout(deleteChars, 40);
             } else {
               // Move to next example
+              placeholderDeletingRef.current = false;
               setCurrentExampleIndex((prev) => (prev + 1) % exampleSearches.length);
             }
           };
+          placeholderDeletingRef.current = true;
           deleteChars();
         }, 2000);
       }
@@ -217,10 +356,45 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
         clearTimeout(typewriterTimeoutRef.current);
       }
     };
-  }, [search, currentExampleIndex]);
+  }, [search, currentExampleIndex, isUiFrozen]);
+
+  // Freeze Hero animations when auth modal opens (from Navbar)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleOpen = () => {
+      if (resumeTimeoutRef.current) {
+        clearTimeout(resumeTimeoutRef.current);
+        resumeTimeoutRef.current = null;
+      }
+      setIsUiFrozen(true);
+    };
+
+    const handleClose = () => {
+      if (resumeTimeoutRef.current) {
+        clearTimeout(resumeTimeoutRef.current);
+      }
+      // Resume only after modal fade-out finishes
+      resumeTimeoutRef.current = setTimeout(() => {
+        setIsUiFrozen(false);
+      }, 220);
+    };
+
+    window.addEventListener('onLoginModalOpen', handleOpen as EventListener);
+    window.addEventListener('onLoginModalClose', handleClose as EventListener);
+
+    return () => {
+      window.removeEventListener('onLoginModalOpen', handleOpen as EventListener);
+      window.removeEventListener('onLoginModalClose', handleClose as EventListener);
+      if (resumeTimeoutRef.current) {
+        clearTimeout(resumeTimeoutRef.current);
+        resumeTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   return (
-    <div className="relative w-full h-[350px] md:h-[400px] overflow-hidden">
+    <div className={`relative w-full h-[350px] md:h-[400px] overflow-hidden ${isUiFrozen ? 'ui-frozen' : ''}`}>
       {/* Dark blurred background with bokeh effect */}
       <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
         <div className="absolute inset-0 opacity-30">
@@ -235,59 +409,29 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
       {/* Content */}
       <div className="relative z-10 h-full flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
         {/* Heading */}
-        <div className="text-center mb-8 md:mb-12">
+        <div className="text-center">
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-white mb-3 md:mb-4">
-            Find anything in your city
+            Find everything{' '}
+            <span className="inline-block min-w-[120px] text-left">
+              <span className="font-bold" style={{ color: '#FFD700' }}>
+                {animatedText}
+              </span>
+              <span 
+                className={`inline-block w-0.5 h-[1em] ml-1 align-middle transition-opacity duration-300 ${
+                  showTypewriterCursor ? 'opacity-100' : 'opacity-0'
+                }`}
+                style={{ 
+                  backgroundColor: '#FFD700',
+                  verticalAlign: 'baseline'
+                }}
+              >
+                |
+              </span>
+            </span>
           </h1>
-          <p className="text-lg md:text-xl text-gray-200">
-            Buy and sell cars, properties, and more near you
+          <p className="text-lg md:text-xl text-white">
+            Buy smart. Sell fast. Right near you.
           </p>
-        </div>
-
-        {/* Large Search Bar */}
-        <div className="w-full max-w-4xl">
-          <div className={`bg-white rounded-lg shadow-2xl flex flex-col md:flex-row items-stretch md:items-center overflow-hidden transition-all duration-300 ease-out ${
-            isFocused ? 'md:scale-[1.01] md:shadow-[0_20px_40px_-12px_rgba(0,0,0,0.25)] ring-2 ring-yellow-400/40' : ''
-          }`}>
-            {/* Search Input */}
-            <div className="flex-1 flex items-center px-4 md:px-6 py-4 md:py-5">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="text-sm md:text-base text-gray-500 hidden sm:inline">Looking for?</span>
-                <div className="flex-1 relative">
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    onFocus={() => setIsFocused(true)}
-                    onBlur={() => setIsFocused(false)}
-                    placeholder=""
-                    className="w-full text-sm md:text-base text-gray-700 border-none outline-none bg-transparent transition-all duration-300"
-                  />
-                  {!search && (
-                    <div className="absolute inset-0 flex items-center pointer-events-none">
-                      <span className="text-sm md:text-base text-gray-400">
-                        {placeholder}
-                        <span className={`inline-block w-0.5 h-4 md:h-5 bg-yellow-400 ml-0.5 align-middle ${showCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
-                          {' '}
-                        </span>
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Search Button */}
-            <button
-              onClick={handleSearch}
-              className="bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-semibold px-6 md:px-8 py-4 md:py-5 flex items-center justify-center gap-2 transition-all duration-300"
-            >
-              <FiSearch className={`w-5 h-5 transition-transform duration-300 ease-out ${isFocused ? 'scale-105' : 'scale-100'}`} />
-              <span className="hidden sm:inline">Search</span>
-            </button>
-          </div>
         </div>
       </div>
     </div>

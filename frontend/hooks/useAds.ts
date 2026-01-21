@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import { getSocket } from '@/lib/socket';
+import Cookies from 'js-cookie';
 
 export interface Ad {
   id: string;
@@ -309,6 +310,10 @@ export const useToggleFavorite = () => {
 };
 
 export const useIsFavorite = (adId: string, enabled: boolean = true) => {
+  // Check if token exists to avoid unnecessary 401 errors
+  const token = typeof window !== 'undefined' ? Cookies.get('token') : null;
+  const shouldFetch = !!adId && enabled && !!token;
+  
   return useQuery({
     queryKey: ['favorite', adId],
     queryFn: async () => {
@@ -318,15 +323,18 @@ export const useIsFavorite = (adId: string, enabled: boolean = true) => {
       } catch (error: any) {
         // For 401 errors (not authenticated), return false instead of throwing
         // This allows unauthenticated users to view ads without redirects
-        if (error.response?.status === 401) {
+        if (error.response?.status === 401 || (error as any)?.isExpected) {
           return false; // Not authenticated = not favorite
         }
         // For other errors, return false as well (don't break the page)
-        console.error('Error checking favorite status:', error);
+        // Only log unexpected errors
+        if (!(error as any)?.isExpected) {
+          console.error('Error checking favorite status:', error);
+        }
         return false;
       }
     },
-    enabled: !!adId && enabled, // Only fetch if adId exists and enabled
+    enabled: shouldFetch, // Only fetch if adId exists, enabled is true, and token exists
     staleTime: 30 * 1000, // Consider fresh for 30 seconds
     refetchOnWindowFocus: false,
     retry: false, // Don't retry on errors

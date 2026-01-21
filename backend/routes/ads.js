@@ -10,6 +10,7 @@ const { generateUniqueAdSlug } = require('../utils/slug');
 const { rankAds } = require('../services/adRankingService');
 const { rankAdsOGNOX } = require('../services/ognoxRankingService');
 const { rankAdsWithRotation, insertAdsIntoFeed, categorizeAd } = require('../services/ognoxAdsRotationService');
+const { rankAdsWithSmartScoring, getCurrentLocationFromRequest } = require('../services/smartAdScoringService');
 const Razorpay = require('razorpay');
 
 // Ensure dotenv is loaded
@@ -37,6 +38,8 @@ const AD_POSTING_PRICE = 49;
 const FREE_ADS_LIMIT = 2;
 
 // Get all ads with filters, search, and sorting
+// PUBLIC ENDPOINT: /ads?scope=all_india (no auth required)
+// Other endpoints may require auth based on their specific handlers
 router.get('/',
   cacheMiddleware(60 * 1000), // Cache for 60 seconds (increased from 30)
   [
@@ -53,7 +56,8 @@ router.get('/',
     query('maxPrice').optional().isFloat({ min: 0 }),
     query('search').optional().isString(),
     query('condition').optional().isIn(['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED']),
-    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped'])
+    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped']),
+    query('scope').optional().isIn(['all_india']) // Public scope parameter
   ],
   async (req, res) => {
     try {
@@ -72,7 +76,8 @@ router.get('/',
         search,
         condition,
         sort = 'newest',
-        userId // Filter by user ID
+        userId, // Filter by user ID
+        scope // Public scope parameter (e.g., 'all_india')
       } = req.query;
 
       const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -234,15 +239,22 @@ router.get('/',
             const adsMap = new Map(ads.map(ad => [ad.id, ad]));
             ads = adIds.map(id => adsMap.get(id)).filter(Boolean);
             
-            // Apply Premium → Business → Free ranking to search results
+            // Apply smart ranking with location boost for search results
             if (ads.length > 0) {
               try {
-                const { rankAdsWithRotation } = require('../services/ognoxAdsRotationService');
-                ads = await rankAdsWithRotation(ads, {
-                  locationKey: 'search', // Use 'search' as location key for search results
-                  updateLastShown: true
+                // Get current location for ranking
+                let currentLocationForRanking = null;
+                if (city || state) {
+                  currentLocationForRanking = { city, state };
+                }
+                
+                // Use smart scoring with location boost (isSearch = true)
+                ads = rankAdsWithSmartScoring(ads, {
+                  query: search.trim(),
+                  currentLocation: currentLocationForRanking,
+                  isSearch: true // Enable search location boost
                 });
-                console.log(`✅ Applied Premium → Business → Free ranking to search results`);
+                console.log(`✅ Applied smart ranking with location boost to search results`);
               } catch (rankingError) {
                 console.error('⚠️ Error applying ranking to search results:', rankingError);
                 // Continue with unranked results if ranking fails
@@ -314,7 +326,7 @@ router.get('/',
               premiumType: true,
               isUrgent: true,
               views: true,
-              postedAt: true,
+              postedAt: true, // For displaying "time ago" in ad cards
               expiresAt: true,
               createdAt: true,
               updatedAt: true,
@@ -322,6 +334,9 @@ router.get('/',
               lastShownAt: true,
               userId: true,
               attributes: true,
+              slug: true, // For SEO-friendly URLs in ad cards
+              city: true, // Direct city field from Ad model
+              state: true, // Direct state field from Ad model
               category: { select: { id: true, name: true, slug: true } },
               subcategory: { select: { id: true, name: true, slug: true } },
               location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
@@ -342,17 +357,51 @@ router.get('/',
 
       // LOCATION-BASED ADS FETCHING with fallback hierarchy
       // Strategy: City/Radius → State → All India (NEVER HIDE ADS)
-      // IMPORTANT: When a search keyword is present, we DO NOT hard-filter by location.
-      // Search results should NOT disappear when user selects a location.
       let locationKey = 'all'; // For rotation seed
       let adsWithDistance = [];
 
-      // If a text search is active, completely skip location filtering.
-      // This ensures: search + location will still show all search results (location only affects messaging, not filtering).
+      // Get current location for city-first filtering in search
+      let currentLocation = null;
+      if (city || state) {
+        currentLocation = { city, state };
+      }
+
+      // If a text search is active, apply CITY-FIRST filtering
+      // City ads appear at top, state ads as fallback if city results are low
       if (search && search.trim()) {
-        adsWithDistance = ads;
-        locationKey = 'all';
-        console.log('🔎 Search active -> skipping strict location filtering. Showing all search results.');
+        if (currentLocation && currentLocation.city) {
+          // Separate city ads and other ads
+          const cityAdsList = ads.filter(ad => {
+            const adCity = (ad.city || ad.location?.city || '').toLowerCase();
+            return adCity === currentLocation.city.toLowerCase();
+          });
+          
+          const otherAds = ads.filter(ad => {
+            const adCity = (ad.city || ad.location?.city || '').toLowerCase();
+            return adCity !== currentLocation.city.toLowerCase();
+          });
+
+          // If city results are low (< 10), include state-level ads
+          if (cityAdsList.length < 10 && currentLocation.state) {
+            const stateAdsList = otherAds.filter(ad => {
+              const adState = (ad.state || ad.location?.state || '').toLowerCase();
+              return adState === currentLocation.state.toLowerCase();
+            });
+            
+            // Combine: city ads first, then state ads
+            adsWithDistance = [...cityAdsList, ...stateAdsList];
+            console.log(`🔎 Search: ${cityAdsList.length} city ads + ${stateAdsList.length} state ads`);
+          } else {
+            // Enough city results or no state - use only city ads
+            adsWithDistance = cityAdsList;
+            console.log(`🔎 Search: ${cityAdsList.length} city ads (enough results)`);
+          }
+        } else {
+          // No location - show all search results
+          adsWithDistance = ads;
+          console.log('🔎 Search active -> no location filter, showing all search results.');
+        }
+        locationKey = currentLocation?.city || 'all';
       } else {
         // If no search keyword, apply normal location-based filtering with fallback
         if (city || state || (latitude && longitude)) {
@@ -502,8 +551,14 @@ router.get('/',
       // REMOVED: Distance-based sorting and package grouping
       const sortedAds = paginatedAds;
 
+      // PUBLIC ENDPOINT: /ads?scope=all_india (no authentication required)
+      // When scope=all_india is present, this endpoint is explicitly public
+      // Other query parameters work the same way, but scope=all_india makes it clear this is public
+      const isPublicScope = scope === 'all_india';
+      
       // Filter phone numbers based on privacy settings + viewer auth
       // Rule: show phone only if seller enabled AND viewer is authenticated
+      // For public scope, req.user will be undefined, so phone numbers won't be shown
       const adsWithPrivacy = sortedAds.map(ad => ({
         ...ad,
         user: ad.user ? {
@@ -518,9 +573,9 @@ router.get('/',
         'Vary': 'Accept-Encoding'
       });
 
-      // Include quota information if user is authenticated
+      // Include quota information only if user is authenticated (not for public scope)
       let quota = null;
-      if (req.user) {
+      if (req.user && !isPublicScope) {
         try {
           const FREE_ADS_LIMIT = 2;
           const now = new Date();
@@ -587,6 +642,474 @@ router.get('/',
     } catch (error) {
       console.error('Get ads error:', error);
       res.status(500).json({ success: false, message: 'Failed to fetch ads' });
+    }
+  }
+);
+
+// Update a single product/ad (attributes + category change with schema validation)
+// PUT /api/ads/:id
+router.put('/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { categoryId, subcategoryId, attributes = {} } = req.body;
+
+    const ad = await prisma.ad.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        subcategory: true,
+        user: true
+      }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    // Only admin or owner can update
+    const isAdmin = req.user?.role === 'ADMIN';
+    const isOwner = ad.userId === req.user?.id;
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({ success: false, message: 'Not authorized to update this product' });
+    }
+
+    // Resolve category / subcategory (if changed)
+    let newCategoryId = categoryId || ad.categoryId;
+    let newSubcategoryId = subcategoryId || ad.subcategoryId;
+
+    const category = await prisma.category.findUnique({
+      where: { id: newCategoryId }
+    });
+
+    if (!category) {
+      return res.status(400).json({ success: false, message: 'Invalid category' });
+    }
+
+    let subcategory = null;
+    if (newSubcategoryId) {
+      subcategory = await prisma.subcategory.findUnique({
+        where: { id: newSubcategoryId }
+      });
+      if (!subcategory || subcategory.categoryId !== category.id) {
+        return res.status(400).json({ success: false, message: 'Invalid subcategory for this category' });
+      }
+    }
+
+    // Build spec schema (same logic as categories spec-schema endpoint)
+    const key = (subcategory?.slug || category.slug || category.name || '').toLowerCase();
+    let fields = [];
+
+    if (key.includes('mobile')) {
+      fields = [
+        { key: 'brand', required: true },
+        { key: 'model', required: true },
+        { key: 'storage', required: false },
+        { key: 'ram', required: false },
+        { key: 'color', required: false },
+        { key: 'warranty', required: false },
+        { key: 'batteryHealth', required: false }
+      ];
+    } else if (key.includes('laptop')) {
+      fields = [
+        { key: 'brand', required: true },
+        { key: 'model', required: true },
+        { key: 'processor', required: false },
+        { key: 'ram', required: false },
+        { key: 'storage', required: false },
+        { key: 'screenSize', required: false },
+        { key: 'color', required: false }
+      ];
+    } else if (key.includes('car') || key.includes('vehicle')) {
+      fields = [
+        { key: 'brand', required: true },
+        { key: 'model', required: true },
+        { key: 'year', required: true },
+        { key: 'fuelType', required: true },
+        { key: 'kmDriven', required: false },
+        { key: 'color', required: false },
+        { key: 'insurance', required: false }
+      ];
+    } else {
+      fields = [
+        { key: 'brand', required: false },
+        { key: 'model', required: false },
+        { key: 'year', required: false },
+        { key: 'color', required: false }
+      ];
+    }
+
+    const allowedKeys = new Set(fields.map((f) => f.key));
+
+    // Validate attributes against schema: keep only allowed keys, drop others
+    const cleanedAttributes = {};
+    if (attributes && typeof attributes === 'object') {
+      for (const [keyAttr, value] of Object.entries(attributes)) {
+        if (!allowedKeys.has(keyAttr)) continue;
+        if (value === null || value === undefined || value === '') continue;
+        cleanedAttributes[keyAttr] = value;
+      }
+    }
+
+    // Check required fields
+    const missingRequired = fields
+      .filter((f) => f.required)
+      .filter((f) => !cleanedAttributes[f.key]);
+
+    if (missingRequired.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required specification fields',
+        missingFields: missingRequired.map((f) => f.key)
+      });
+    }
+
+    // If category changed, clear any old attributes not in new schema (already done by cleaning)
+    const updatedAd = await prisma.ad.update({
+      where: { id },
+      data: {
+        categoryId: category.id,
+        subcategoryId: subcategory ? subcategory.id : null,
+        attributes: cleanedAttributes
+      },
+      include: {
+        category: { select: { id: true, name: true, slug: true } },
+        subcategory: { select: { id: true, name: true, slug: true } }
+      }
+    });
+
+    return res.json({
+      success: true,
+      ad: updatedAd
+    });
+  } catch (error) {
+    console.error('Update product error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update product' });
+  }
+});
+
+// Home Feed Endpoint - Uses navbar location with smart ranking
+router.get('/home-feed',
+  cacheMiddleware(60 * 1000), // Cache for 60 seconds
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('city').optional().isString(),
+    query('state').optional().isString(),
+    query('location').optional().isString(), // Location slug
+  ],
+  async (req, res) => {
+    try {
+      const {
+        page = 1,
+        limit = 12, // Default smaller batch for lazy loading
+        city,
+        state,
+        location: locationSlug
+      } = req.query;
+
+      const now = new Date();
+      
+      // Get current location from navbar (priority: query params > location slug)
+      let currentLocation = null;
+      if (city || state) {
+        currentLocation = { city, state };
+      } else if (locationSlug) {
+        try {
+          const location = await prisma.location.findFirst({
+            where: { slug: locationSlug },
+            select: { city: true, state: true, neighbourhood: true }
+          });
+          if (location) {
+            currentLocation = {
+              city: location.city,
+              state: location.state,
+              neighbourhood: location.neighbourhood
+            };
+          }
+        } catch (error) {
+          console.error('Error fetching location:', error);
+        }
+      }
+
+      // If no location provided, show "All India" ads (all categories)
+      // This ensures homepage is never empty
+      const isAllIndia = !currentLocation || !currentLocation.city;
+      
+      if (isAllIndia) {
+        // Fetch ads from all India (all categories, all locations)
+        const fetchLimit = Math.max(parseInt(limit) * 10, 200);
+        
+        let allIndiaAds = await prisma.ad.findMany({
+          where: {
+            status: 'APPROVED',
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: now } }
+            ]
+          },
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            price: true,
+            originalPrice: true,
+            discount: true,
+            condition: true,
+            images: true,
+            status: true,
+            isPremium: true,
+            premiumType: true,
+            isUrgent: true,
+            views: true,
+            postedAt: true,
+            expiresAt: true,
+            createdAt: true,
+            updatedAt: true,
+            packageType: true,
+            lastShownAt: true,
+            userId: true,
+            attributes: true,
+            slug: true,
+            city: true,
+            state: true,
+            neighbourhood: true,
+            category: { select: { id: true, name: true, slug: true } },
+            subcategory: { select: { id: true, name: true, slug: true } },
+            location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+            user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
+            _count: { select: { favorites: true } }
+          },
+          take: fetchLimit,
+          orderBy: { createdAt: 'desc' } // Newest first for All India
+        });
+
+        // Separate ads by package type for All India
+        const premiumAds = allIndiaAds.filter(ad => {
+          if (!ad || !ad.id) return false;
+          return ad.isPremium === true;
+        });
+        
+        const businessAds = allIndiaAds.filter(ad => {
+          if (!ad || !ad.id) return false;
+          if (ad.isPremium === true) return false;
+          return ad.packageType && ['SELLER_PRIME', 'SELLER_PLUS', 'MAX_VISIBILITY'].includes(ad.packageType);
+        });
+        
+        const freeAds = allIndiaAds.filter(ad => {
+          if (!ad || !ad.id) return false;
+          if (ad.isPremium === true) return false;
+          return !ad.packageType || ad.packageType === 'NORMAL';
+        });
+        
+        // Sort each group by date (newest first)
+        const sortByDate = (a, b) => {
+          const dateA = new Date(a.createdAt || 0);
+          const dateB = new Date(b.createdAt || 0);
+          return dateB - dateA;
+        };
+        
+        premiumAds.sort(sortByDate);
+        businessAds.sort(sortByDate);
+        freeAds.sort(sortByDate);
+        
+        // Combine: Premium → Business → Free
+        const rankedAds = [...premiumAds, ...businessAds, ...freeAds];
+
+        // Apply pagination
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const paginatedAds = rankedAds.slice(skip, skip + parseInt(limit));
+
+        // Filter phone numbers based on privacy
+        const adsWithPrivacy = paginatedAds.map(ad => ({
+          ...ad,
+          user: ad.user ? {
+            ...ad.user,
+            phone: (req.user && ad.user.showPhone) ? ad.user.phone : null
+          } : ad.user
+        }));
+
+        return res.json({
+          success: true,
+          ads: adsWithPrivacy,
+          pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total: rankedAds.length,
+            pages: Math.ceil(rankedAds.length / parseInt(limit))
+          },
+          locationLabel: 'All India', // Flag for frontend to show "All India Ads" label
+          isAllIndia: true
+        });
+      }
+
+      // STEP 1: Try to fetch ads from same city
+      let where = {
+        status: 'APPROVED',
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gt: now } }
+        ],
+        city: currentLocation.city
+      };
+
+      // Fetch enough ads to maintain priority across multiple pages
+      // We need to fetch more than one page to ensure proper ranking
+      const fetchLimit = Math.max(parseInt(limit) * 10, 200); // Fetch 10 pages worth or 200, whichever is larger
+      
+      let ads = await prisma.ad.findMany({
+        where,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          price: true,
+          originalPrice: true,
+          discount: true,
+          condition: true,
+          images: true,
+          status: true,
+          isPremium: true,
+          premiumType: true,
+          isUrgent: true,
+          views: true,
+          postedAt: true,
+          expiresAt: true,
+          createdAt: true,
+          updatedAt: true,
+          packageType: true,
+          lastShownAt: true,
+          userId: true,
+          attributes: true,
+          slug: true,
+          city: true,
+          state: true,
+          neighbourhood: true,
+          category: { select: { id: true, name: true, slug: true } },
+          subcategory: { select: { id: true, name: true, slug: true } },
+          location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+          user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
+          _count: { select: { favorites: true } }
+        },
+        take: fetchLimit // Fetch enough for multiple pages
+      });
+
+      // STEP 2: If results < 10, expand to state level
+      if (ads.length < 10 && currentLocation.state) {
+        const stateWhere = {
+          status: 'APPROVED',
+          OR: [
+            { expiresAt: null },
+            { expiresAt: { gt: now } }
+          ],
+          state: currentLocation.state
+        };
+
+        const stateAds = await prisma.ad.findMany({
+          where: stateWhere,
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            price: true,
+            originalPrice: true,
+            discount: true,
+            condition: true,
+            images: true,
+            status: true,
+            isPremium: true,
+            premiumType: true,
+            isUrgent: true,
+            views: true,
+            postedAt: true,
+            expiresAt: true,
+            createdAt: true,
+            updatedAt: true,
+            packageType: true,
+            lastShownAt: true,
+            userId: true,
+            attributes: true,
+            slug: true,
+            city: true,
+            state: true,
+            neighbourhood: true,
+            category: { select: { id: true, name: true, slug: true } },
+            subcategory: { select: { id: true, name: true, slug: true } },
+            location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+            user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
+            _count: { select: { favorites: true } }
+          },
+          take: fetchLimit // Fetch enough for multiple pages
+        });
+
+        // Merge: city ads first, then state ads (avoid duplicates)
+        const cityAdIds = new Set(ads.map(ad => ad.id));
+        const additionalStateAds = stateAds.filter(ad => !cityAdIds.has(ad.id));
+        ads = [...ads, ...additionalStateAds];
+      }
+
+      // STEP 3: Apply smart ranking with Premium → Business → Free priority
+      // Sort by: 1) Package priority (Premium → Business → Free), 2) Recency (newest first)
+      // This ensures Premium ads always appear first, then Business, then Free
+      // Within each package type, sort by date (newest first)
+      
+      // Separate ads by package type
+      const premiumAds = ads.filter(ad => {
+        if (!ad || !ad.id) return false;
+        return ad.isPremium === true;
+      });
+      
+      const businessAds = ads.filter(ad => {
+        if (!ad || !ad.id) return false;
+        if (ad.isPremium === true) return false; // Exclude premium
+        return ad.packageType && ['SELLER_PRIME', 'SELLER_PLUS', 'MAX_VISIBILITY'].includes(ad.packageType);
+      });
+      
+      const freeAds = ads.filter(ad => {
+        if (!ad || !ad.id) return false;
+        if (ad.isPremium === true) return false; // Exclude premium
+        return !ad.packageType || ad.packageType === 'NORMAL';
+      });
+      
+      // Sort each group by date (newest first)
+      const sortByDate = (a, b) => {
+        const dateA = new Date(a.createdAt || 0);
+        const dateB = new Date(b.createdAt || 0);
+        return dateB - dateA; // Newest first
+      };
+      
+      premiumAds.sort(sortByDate);
+      businessAds.sort(sortByDate);
+      freeAds.sort(sortByDate);
+      
+      // Combine: Premium → Business → Free (maintaining date order within each)
+      const rankedAds = [...premiumAds, ...businessAds, ...freeAds];
+
+      // Apply pagination (maintains priority across pages)
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const paginatedAds = rankedAds.slice(skip, skip + parseInt(limit));
+
+      // Filter phone numbers based on privacy
+      const adsWithPrivacy = paginatedAds.map(ad => ({
+        ...ad,
+        user: ad.user ? {
+          ...ad.user,
+          phone: (req.user && ad.user.showPhone) ? ad.user.phone : null
+        } : ad.user
+      }));
+
+      res.json({
+        success: true,
+        ads: adsWithPrivacy,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: rankedAds.length,
+          pages: Math.ceil(rankedAds.length / parseInt(limit))
+        }
+      });
+    } catch (error) {
+      console.error('Home feed error:', error);
+      res.status(500).json({ success: false, message: 'Failed to fetch home feed' });
     }
   }
 );
@@ -1309,7 +1832,8 @@ router.get('/live-location',
 );
 
 // Get single ad
-router.get('/:id', cacheMiddleware(60 * 1000), async (req, res) => {
+// NOTE: No cache middleware - view count needs to increment on every request
+router.get('/:id', async (req, res) => {
   try {
     const ad = await prisma.ad.findUnique({
       where: { id: req.params.id },
@@ -1361,6 +1885,9 @@ router.get('/:id', cacheMiddleware(60 * 1000), async (req, res) => {
       where: { id: ad.id },
       data: { views: { increment: 1 } }
     });
+    
+    // Update the ad object with incremented view count for response
+    ad.views = (ad.views || 0) + 1;
 
     // Apply phone privacy filtering + viewer auth
     // Rule: show phone only if seller enabled AND viewer is authenticated
@@ -1448,8 +1975,8 @@ router.post('/',
         });
       }
 
-      if (req.uploadedImages.length > 12) {
-        return res.status(400).json({ success: false, message: 'Maximum 12 images allowed' });
+      if (req.uploadedImages.length > 4) {
+        return res.status(400).json({ success: false, message: 'Maximum 4 images allowed' });
       }
 
       // Ad posting is now FREE - only premium features require payment
@@ -2169,6 +2696,17 @@ router.post('/',
           });
           console.log('✅ Ad slug generated:', slug);
         }
+
+        // Index ad in Meilisearch if approved (sync with database)
+        if (ad.status === 'APPROVED') {
+          try {
+            await indexAd(ad);
+            console.log(`✅ Indexed ad in Meilisearch: ${ad.id}`);
+          } catch (indexError) {
+            console.error('⚠️ Error indexing ad in Meilisearch:', indexError);
+            // Don't fail ad creation if indexing fails
+          }
+        }
       } catch (createError) {
         console.error('❌ Prisma create error details:');
         console.error('   Code:', createError.code);
@@ -2426,50 +2964,17 @@ router.post('/',
         // Don't fail ad creation if socket emit fails
       }
 
-      // Create premium order record if premium was purchased
+      // NOTE: Premium order is NOT created separately anymore
+      // The AdPostingOrder already contains all premium information in its adData field
+      // This prevents duplicate orders in "My Orders" page
+      // Premium features are tracked via the Ad model's premiumType and isUrgent fields
       if (premiumType && paymentOrder) {
-        try {
-          // Get premium prices from database settings
-          const settingsRecord = await prisma.premiumSettings.findUnique({
-            where: { key: 'premium_settings' }
-          });
-          
-          let PREMIUM_PRICES = {
-            TOP: parseFloat(process.env.PREMIUM_PRICE_TOP || '299'),
-            FEATURED: parseFloat(process.env.PREMIUM_PRICE_FEATURED || '199'),
-            BUMP_UP: parseFloat(process.env.PREMIUM_PRICE_BUMP_UP || '99'),
-          };
-          
-          if (settingsRecord && settingsRecord.value) {
-            try {
-              const parsed = JSON.parse(settingsRecord.value);
-              PREMIUM_PRICES = parsed.prices || PREMIUM_PRICES;
-            } catch (e) {
-              console.error('Error parsing premium prices:', e);
-            }
-          }
-          
-          // Get razorpayPaymentId from paymentOrder
-          const razorpayPaymentId = paymentOrder.razorpayPaymentId || null;
-          
-          await prisma.premiumOrder.create({
-            data: {
-              type: premiumType,
-              amount: PREMIUM_PRICES[premiumType] || 0,
-              razorpayOrderId: paymentOrderId,
-              razorpayPaymentId: razorpayPaymentId,
-              userId: req.user.id,
-              adId: ad.id,
-              status: 'paid',
-              expiresAt: premiumExpiresAt
-            }
-          });
-          
-          console.log('✅ Premium order created for ad:', ad.id);
-        } catch (premiumError) {
-          console.error('⚠️ Error creating premium order:', premiumError);
-          // Don't fail ad creation if premium order creation fails
-        }
+        console.log('✅ Premium features applied via payment order (no separate PremiumOrder created):', {
+          adId: ad.id,
+          premiumType,
+          isUrgent,
+          paymentOrderId
+        });
       }
 
       // Link ad to payment order if premium features were purchased

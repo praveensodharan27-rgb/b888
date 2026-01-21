@@ -33,6 +33,148 @@ router.get('/',
   }
 });
 
+// Get specification schema for a category (and optionally subcategory)
+// GET /api/categories/:categoryId/spec-schema
+router.get('/:categoryId/spec-schema', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { subcategoryId } = req.query;
+
+    const category = await prisma.category.findUnique({
+      where: { id: categoryId },
+      select: { id: true, name: true, slug: true, specOptions: true }
+    });
+
+    if (!category) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    // Optional: load subcategory, mainly for future fine-grained schemas
+    let subcategory = null;
+    if (subcategoryId) {
+      subcategory = await prisma.subcategory.findUnique({
+        where: { id: subcategoryId },
+        select: { id: true, name: true, slug: true, specOptions: true, categoryId: true }
+      });
+    }
+
+    const key = (subcategory?.slug || category.slug || category.name || '').toLowerCase();
+    
+    // Use subcategory specOptions if available, otherwise fall back to category specOptions
+    // Merge them so subcategory can override category options
+    const categorySpecOptions = category.specOptions || {};
+    const subcategorySpecOptions = subcategory?.specOptions || {};
+    
+    // Merge: subcategory options take priority, but if a field doesn't exist in subcategory, use category
+    const specOptions = { ...categorySpecOptions, ...subcategorySpecOptions };
+    
+    console.log('📦 Spec Options Merge:', {
+      categoryId,
+      subcategoryId: subcategory?.id,
+      categorySpecOptions,
+      subcategorySpecOptions,
+      mergedSpecOptions: specOptions
+    });
+
+    let fields = [];
+
+    if (key.includes('mobile')) {
+      fields = [
+        { key: 'brand', type: 'select', required: true, label: 'Brand' },
+        { key: 'model', type: 'select', required: true, label: 'Model', parentField: 'brand' },
+        { key: 'storage', type: 'select', required: false, label: 'Storage' },
+        { key: 'ram', type: 'select', required: false, label: 'RAM' },
+        { key: 'color', type: 'select', required: false, label: 'Color' },
+        { key: 'warranty', type: 'select', required: false, label: 'Warranty' },
+        { key: 'batteryHealth', type: 'select', required: false, label: 'Battery Health' }
+      ];
+    } else if (key.includes('laptop')) {
+      fields = [
+        { key: 'brand', type: 'select', required: true, label: 'Brand' },
+        { key: 'model', type: 'select', required: true, label: 'Model', parentField: 'brand' },
+        { key: 'processor', type: 'select', required: false, label: 'Processor' },
+        { key: 'ram', type: 'select', required: false, label: 'RAM' },
+        { key: 'storage', type: 'select', required: false, label: 'Storage' },
+        { key: 'screenSize', type: 'select', required: false, label: 'Screen Size' },
+        { key: 'color', type: 'select', required: false, label: 'Color' }
+      ];
+    } else if (key.includes('car') || key.includes('vehicle')) {
+      fields = [
+        { key: 'brand', type: 'select', required: true, label: 'Brand' },
+        { key: 'model', type: 'select', required: true, label: 'Model', parentField: 'brand' },
+        { key: 'year', type: 'select', required: true, label: 'Year' },
+        { key: 'fuelType', type: 'select', required: true, label: 'Fuel Type' },
+        { key: 'kmDriven', type: 'number', required: false, label: 'KM Driven' },
+        { key: 'color', type: 'select', required: false, label: 'Color' },
+        { key: 'insurance', type: 'select', required: false, label: 'Insurance' }
+      ];
+    } else {
+      // Generic fallback schema
+      fields = [
+        { key: 'brand', type: 'select', required: false, label: 'Brand' },
+        { key: 'model', type: 'select', required: false, label: 'Model', parentField: 'brand' },
+        { key: 'year', type: 'select', required: false, label: 'Year' },
+        { key: 'color', type: 'select', required: false, label: 'Color' }
+      ];
+    }
+
+    // Helper function to get nested options (e.g., model based on brand)
+    const enrichFieldsWithNestedOptions = (fields, specOptions) => {
+      return fields.map(field => {
+        // Check if this field has nested options (object, not array) - e.g., model: { "Apple": [...], "Samsung": [...] }
+        if (field.parentField && specOptions[field.key] && typeof specOptions[field.key] === 'object' && !Array.isArray(specOptions[field.key])) {
+          // This field has nested options
+          field.nestedOptions = specOptions[field.key];
+          // Set initial options to empty array, will be populated by frontend based on parent selection
+          field.options = [];
+        } else if (specOptions[field.key] !== undefined && specOptions[field.key] !== null) {
+          // specOptions has a value for this field - always use it (even if empty array)
+          if (Array.isArray(specOptions[field.key])) {
+            field.options = specOptions[field.key];
+          } else {
+            // Not an array, keep existing options or empty array
+            field.options = field.options || [];
+          }
+        } else {
+          // specOptions doesn't have this field - keep existing options from initial definition
+          field.options = field.options || [];
+        }
+        
+        console.log(`📋 Field "${field.key}" final options:`, field.options, 'Type:', Array.isArray(field.options) ? 'Array' : typeof field.options);
+        return field;
+      });
+    };
+
+    fields = enrichFieldsWithNestedOptions(fields, specOptions);
+
+    console.log('📦 Spec Schema Response:', {
+      categoryId,
+      subcategoryId,
+      specOptions,
+      fieldsCount: fields.length,
+      fields: fields.map(f => ({ key: f.key, optionsCount: Array.isArray(f.options) ? f.options.length : 'nested' }))
+    });
+
+    return res.json({
+      success: true,
+      category: {
+        id: category.id,
+        name: category.name,
+        slug: category.slug
+      },
+      subcategory: subcategory
+        ? { id: subcategory.id, name: subcategory.name, slug: subcategory.slug }
+        : null,
+      specSchema: {
+        fields
+      }
+    });
+  } catch (error) {
+    console.error('Get spec schema error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load spec schema' });
+  }
+});
+
 // IMPORTANT: More specific routes must come before less specific ones
 // Get single product/listing: /api/categories/:categorySlug/:subcategorySlug/:productSlug
 router.get('/:categorySlug/:subcategorySlug/:productSlug', async (req, res) => {

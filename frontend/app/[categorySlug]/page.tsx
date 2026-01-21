@@ -4,6 +4,10 @@ import CategoryPageClient from './CategoryPageClient';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
 
+type CategoryRouteParams = {
+  categorySlug: string;
+};
+
 async function getCategoryData(categorySlug: string) {
   try {
     const res = await fetch(`${API_URL}/categories/${categorySlug}`, {
@@ -22,8 +26,9 @@ async function getCategoryData(categorySlug: string) {
   }
 }
 
-export async function generateMetadata({ params }: { params: { categorySlug: string } }): Promise<Metadata> {
-  const data = await getCategoryData(params.categorySlug);
+export async function generateMetadata({ params }: { params: Promise<CategoryRouteParams> }): Promise<Metadata> {
+  const { categorySlug } = await params;
+  const data = await getCategoryData(categorySlug);
 
   if (!data || !data.category) {
     return {
@@ -51,13 +56,14 @@ export async function generateMetadata({ params }: { params: { categorySlug: str
   };
 }
 
-export default async function CategoryPage({ params }: { params: { categorySlug: string } }) {
-  const data = await getCategoryData(params.categorySlug);
+export default async function CategoryPage({ params }: { params: Promise<CategoryRouteParams> }) {
+  const { categorySlug } = await params;
+  const data = await getCategoryData(categorySlug);
 
   if (!data || !data.category) {
     notFound();
   }
 
-  return <CategoryPageClient data={data} categorySlug={params.categorySlug} />;
+  return <CategoryPageClient data={data} categorySlug={categorySlug} />;
 }
 

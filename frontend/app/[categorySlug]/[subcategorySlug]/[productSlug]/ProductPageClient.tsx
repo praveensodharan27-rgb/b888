@@ -67,7 +67,9 @@ export default function ProductPageClient({
       return imgStr;
     });
 
-  const images = validImages.map((img: string) => ({
+  type GalleryImage = { original: string; thumbnail: string };
+
+  const images: GalleryImage[] = validImages.map((img: string) => ({
     original: img,
     thumbnail: img,
   }));
@@ -233,7 +235,7 @@ export default function ProductPageClient({
                   </div>
 
                   <div className="flex flex-wrap gap-3 mt-4">
-                    {previewImages.map((img: string, index: number) => {
+                    {previewImages.map((img, index: number) => {
                       const actualIndex = index;
                       const isExtraTile = remainingImageCount > 0 && index === previewImages.length - 1;
 
@@ -355,45 +357,47 @@ export default function ProductPageClient({
         <div className="lg:col-span-1">
           <div className="bg-white rounded-lg shadow p-6 mb-6 sticky top-20">
             {product.user ? (
-              <Link 
-                href={`/user/${product.user.id}`}
-                className="flex items-center gap-4 mb-6 hover:bg-gray-50 p-3 -m-3 rounded-lg transition-colors"
-              >
-                {product.user.avatar ? (
-                  <ImageWithFallback
-                    src={product.user.avatar}
-                    alt={product.user.name || 'Seller'}
-                    width={64}
-                    height={64}
-                    className="rounded-full"
-                  />
-                ) : (
-                  <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center">
-                    <span className="text-2xl">{(product.user.name || 'S')[0].toUpperCase()}</span>
+              <div className="mb-6">
+                <Link 
+                  href={`/user/${product.user.id}`}
+                  className="flex items-center gap-4 hover:bg-gray-50 p-3 -m-3 rounded-lg transition-colors"
+                >
+                  {product.user.avatar ? (
+                    <ImageWithFallback
+                      src={product.user.avatar}
+                      alt={product.user.name || 'Seller'}
+                      width={64}
+                      height={64}
+                      className="rounded-full"
+                    />
+                  ) : (
+                    <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center">
+                      <span className="text-2xl">{(product.user.name || 'S')[0].toUpperCase()}</span>
+                    </div>
+                  )}
+                  <div>
+                    <h3 className="font-semibold hover:text-primary-600 transition-colors">
+                      {product.user.name || 'Unknown Seller'}
+                    </h3>
+                    <p className="text-sm text-gray-500">Seller • Click to view profile</p>
                   </div>
-                )}
-                <div>
-                  <h3 className="font-semibold hover:text-primary-600 transition-colors">
-                    {product.user.name || 'Unknown Seller'}
-                  </h3>
-                  <p className="text-sm text-gray-500">Seller • Click to view profile</p>
-                  {product.user.phone && product.user.showPhone !== false ? (
-                    <a 
-                      href={`tel:${product.user.phone}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1 mt-1"
-                    >
-                      <FiPhone className="w-4 h-4" />
-                      {product.user.phone}
-                    </a>
-                  ) : product.user.showPhone === false ? (
-                    <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                      <FiPhone className="w-3 h-3" />
-                      Phone hidden by seller
-                    </p>
-                  ) : null}
-                </div>
-              </Link>
+                </Link>
+                {/* Phone number outside Link to avoid nested anchor tags */}
+                {product.user.phone && product.user.showPhone !== false ? (
+                  <a 
+                    href={`tel:${product.user.phone}`}
+                    className="text-sm text-primary-600 hover:text-primary-700 flex items-center gap-1 mt-1 ml-20"
+                  >
+                    <FiPhone className="w-4 h-4" />
+                    {product.user.phone}
+                  </a>
+                ) : product.user.showPhone === false ? (
+                  <p className="text-xs text-gray-500 mt-1 flex items-center gap-1 ml-20">
+                    <FiPhone className="w-3 h-3" />
+                    Phone hidden by seller
+                  </p>
+                ) : null}
+              </div>
             ) : (
               <div className="flex items-center gap-4 mb-6">
                 <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center">

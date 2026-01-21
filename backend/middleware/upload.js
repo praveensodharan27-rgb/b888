@@ -194,7 +194,7 @@ const uploadImages = (req, res, next) => {
         }
       }
     });
-    return localUpload.array('images', 12)(req, res, async (err) => {
+    return localUpload.array('images', 4)(req, res, async (err) => {
       if (err) return res.status(400).json({ success: false, message: err.message });
       if (req.files && req.files.length > 0) {
         try {
@@ -279,7 +279,7 @@ const uploadImages = (req, res, next) => {
     return res.status(500).json({ success: false, message: 'File upload not configured' });
   }
   
-  const uploadMiddleware = upload.array('images', 12);
+  const uploadMiddleware = upload.array('images', 4);
 
   uploadMiddleware(req, res, async (err) => {
     if (err) {

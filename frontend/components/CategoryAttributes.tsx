@@ -1,17 +1,23 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { UseFormRegister, UseFormWatch, UseFormSetValue, FieldErrors } from 'react-hook-form';
+import { useQuery } from '@tanstack/react-query';
+import api from '@/lib/api';
 
-interface AttributeField {
-  name: string;
+interface SpecField {
+  key: string;
+  type: 'text' | 'number' | 'select';
+  required: boolean;
   label: string;
-  type: 'text' | 'number' | 'select' | 'multiselect' | 'checkbox';
   options?: string[];
-  required?: boolean;
-  placeholder?: string;
+  parentField?: string;
+  nestedOptions?: Record<string, string[]>;
 }
 
 interface CategoryAttributesProps {
+  categoryId?: string;
+  subcategoryId?: string;
   categorySlug?: string;
   subcategorySlug?: string;
   register: UseFormRegister<any>;
@@ -20,7 +26,16 @@ interface CategoryAttributesProps {
   errors: FieldErrors<any>;
 }
 
-// Define attributes for each category/subcategory
+// Define attributes for each category/subcategory (legacy - not used, kept for reference)
+interface AttributeField {
+  name: string;
+  label: string;
+  type: string;
+  required?: boolean;
+  placeholder?: string;
+  options?: string[];
+}
+
 const categoryAttributes: Record<string, Record<string, AttributeField[]>> = {
   mobiles: {
     'mobile-phones': [
@@ -687,6 +702,8 @@ const categoryAttributes: Record<string, Record<string, AttributeField[]>> = {
 };
 
 export default function CategoryAttributes({ 
+  categoryId,
+  subcategoryId,
   categorySlug, 
   subcategorySlug, 
   register, 
@@ -694,99 +711,257 @@ export default function CategoryAttributes({
   setValue, 
   errors 
 }: CategoryAttributesProps) {
+  const [selectedBrand, setSelectedBrand] = useState<string>('');
 
-  if (!categorySlug || !subcategorySlug) {
-    return null;
-  }
+  // Get category ID from slug if not provided
+  const { data: categories } = useQuery({
+    queryKey: ['categories'],
+    queryFn: async () => {
+      const response = await api.get('/categories');
+      return response.data.categories;
+    },
+    enabled: !categoryId && !!categorySlug,
+  });
 
-  const attributes = categoryAttributes[categorySlug]?.[subcategorySlug] || [];
+  const resolvedCategoryId = categoryId || categories?.find((c: any) => c.slug === categorySlug)?.id;
+  const resolvedCategorySlug =
+    categorySlug || categories?.find((c: any) => c.id === resolvedCategoryId)?.slug;
 
-  if (attributes.length === 0) {
-    return null;
-  }
+  // Load brands category-wise from API (for Brand dropdown in Post Ad)
+  const { data: brandsData } = useQuery({
+    queryKey: ['brands', resolvedCategorySlug || 'popular'],
+    queryFn: async () => {
+      try {
+        // Try category-specific brands first.
+        const params = resolvedCategorySlug ? `?category=${resolvedCategorySlug}` : '';
+        const response = await api.get(`/brands${params}`);
+        const categoryBrands = response.data.brands || [];
 
-  const handleMultiSelect = (fieldName: string, value: string, checked: boolean) => {
-    const currentValue = watch(`attributes.${fieldName}`) || [];
-    if (checked) {
-      setValue(`attributes.${fieldName}`, [...currentValue, value]);
-    } else {
-      setValue(`attributes.${fieldName}`, currentValue.filter((v: string) => v !== value));
+        // If no category brands, fall back to popular brands (no category filter).
+        if (categoryBrands.length === 0) {
+          const popularResponse = await api.get('/brands');
+          return popularResponse.data.brands || [];
+        }
+
+        return categoryBrands;
+      } catch {
+        return [];
+      }
+    },
+    enabled: true, // Allow fallback to popular brands even if slug is missing
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Load spec schema from backend
+  const { data: specSchemaData, isLoading, isRefetching, refetch } = useQuery({
+    queryKey: ['spec-schema', resolvedCategoryId, subcategoryId],
+    queryFn: async () => {
+      if (!resolvedCategoryId) return null;
+      const params = new URLSearchParams();
+      if (subcategoryId) params.append('subcategoryId', subcategoryId);
+      const response = await api.get(`/categories/${resolvedCategoryId}/spec-schema?${params.toString()}`);
+      console.log('📦 Spec Schema Response:', response.data);
+      console.log('📦 Spec Schema Fields:', response.data?.specSchema?.fields);
+      return response.data;
+    },
+    enabled: !!resolvedCategoryId,
+    staleTime: 1000, // Consider data stale after 1 second (allows refetch on invalidation)
+    refetchOnMount: 'always', // Always refetch when component mounts
+    refetchOnWindowFocus: false, // Don't refetch on window focus (too aggressive)
+    placeholderData: (previousData) => previousData, // Keep previous data while refetching to prevent empty state
+  });
+
+  // Listen for spec-schema updates and refetch
+  useEffect(() => {
+    const handleStorageChange = () => {
+      // Refetch when spec options are updated (triggered by admin panel)
+      // Use a small delay to ensure the update is complete and prevent rapid re-renders
+      setTimeout(() => {
+        refetch({ cancelRefetch: false });
+      }, 300);
+    };
+    
+    // Listen for custom event that admin panel can dispatch
+    window.addEventListener('spec-options-updated', handleStorageChange);
+    
+    return () => {
+      window.removeEventListener('spec-options-updated', handleStorageChange);
+    };
+  }, [refetch]);
+
+  // Watch brand selection for nested model options
+  const watchedBrand = watch('attributes.brand');
+  useEffect(() => {
+    if (watchedBrand !== selectedBrand) {
+      setSelectedBrand(watchedBrand || '');
+      // Reset model when brand changes
+      if (watchedBrand !== selectedBrand) {
+        setValue('attributes.model', '');
+      }
     }
+  }, [watchedBrand, selectedBrand, setValue]);
+
+  // Reset attributes when category changes
+  useEffect(() => {
+    if (resolvedCategoryId) {
+      // Clear brand + dependent model when category changes (avoid mismatched brand/model)
+      setValue('attributes.brand', '');
+      setValue('attributes.model', '');
+      setSelectedBrand('');
+
+      // Clear all attributes when category changes
+      const currentAttrs = watch('attributes') || {};
+      const newFields = specSchemaData?.specSchema?.fields || [];
+      const allowedKeys = new Set(newFields.map((f: SpecField) => f.key));
+      
+      // Remove attributes that are not in the new schema
+      Object.keys(currentAttrs).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+          setValue(`attributes.${key}`, undefined);
+        }
+      });
+    }
+  }, [resolvedCategoryId, specSchemaData, watch, setValue]);
+
+  if (!resolvedCategoryId) {
+    return null;
+  }
+
+  // Show loading only on initial load, not during refetch (to prevent dropdown flicker)
+  if (isLoading && !specSchemaData) {
+    return <div className="text-sm text-gray-500 py-2">Loading specifications...</div>;
+  }
+
+  if (!specSchemaData || !specSchemaData.specSchema) {
+    console.log('❌ No specSchemaData:', specSchemaData);
+    return <div className="text-sm text-gray-500 py-2">No specifications available for this category.</div>;
+  }
+
+  const fields: SpecField[] = specSchemaData.specSchema.fields || [];
+  console.log('📋 Fields:', fields);
+  console.log('📋 Fields count:', fields.length);
+
+  if (fields.length === 0) {
+    return <div className="text-sm text-gray-500 py-2">No specification fields configured for this category.</div>;
+  }
+
+  // Get options for a field (handles nested options)
+  const getFieldOptions = (field: SpecField): string[] => {
+    // For Post Ad: Brand should come from Brands API, scoped to selected category,
+    // with fallback to popular brands. Store the brand *name* as value so nested options (model) keep working.
+    if (field.key === 'brand' && brandsData && Array.isArray(brandsData) && brandsData.length > 0) {
+      return brandsData
+        .map((b: any) => b?.name)
+        .filter((n: any) => typeof n === 'string' && n.trim().length > 0);
+    }
+
+    if (field.nestedOptions && field.parentField) {
+      // Nested options (e.g., model based on brand)
+      const parentValue = watch(`attributes.${field.parentField}`) || '';
+      if (parentValue && field.nestedOptions[parentValue]) {
+        return field.nestedOptions[parentValue];
+      }
+      return [];
+    }
+    const options = field.options || [];
+    console.log(`📋 Field "${field.key}" options:`, options, 'Type:', Array.isArray(options) ? 'Array' : typeof options);
+    return options;
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" style={{ pointerEvents: 'auto', position: 'relative', zIndex: 1 }}>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {attributes.map((attr) => {
-          const fieldName = `attributes.${attr.name}`;
-          const error = (errors.attributes as any)?.[attr.name];
+        {fields.map((field) => {
+          const fieldName = `attributes.${field.key}`;
+          const error = (errors.attributes as any)?.[field.key];
+          const options = getFieldOptions(field);
+          const isDisabled = Boolean(field.nestedOptions && field.parentField && !watch(`attributes.${field.parentField}`));
+          
+          // Debug: Log field info
+          console.log(`🔍 Field "${field.key}":`, {
+            hasOptions: !!field.options,
+            optionsLength: field.options?.length || 0,
+            options: field.options,
+            hasNestedOptions: !!field.nestedOptions,
+            finalOptions: options,
+            finalOptionsLength: options?.length || 0
+          });
 
-          if (attr.type === 'select') {
-            return (
-              <div key={attr.name}>
-                <label className="block text-sm font-medium mb-2">
-                  {attr.label} {attr.required && <span className="text-red-500">*</span>}
-                </label>
-                <select
-                  {...register(fieldName, { required: attr.required })}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white"
-                >
-                  <option value="">Select {attr.label}</option>
-                  {attr.options?.map((option) => (
-                    <option key={option} value={option}>
-                      {option.charAt(0).toUpperCase() + option.slice(1)}
-                    </option>
-                  ))}
-                </select>
-                {error && (
-                  <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
-                )}
-              </div>
-            );
-          }
-
-          if (attr.type === 'multiselect') {
-            return (
-              <div key={attr.name} className="md:col-span-2">
-                <label className="block text-sm font-medium mb-2">
-                  {attr.label} {attr.required && <span className="text-red-500">*</span>}
-                </label>
-                <div className="flex flex-wrap gap-3">
-                  {attr.options?.map((option) => (
-                    <label key={option} className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={(watch(fieldName) || []).includes(option)}
-                        onChange={(e) => handleMultiSelect(attr.name, option, e.target.checked)}
-                        className="w-4 h-4 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
-                      />
-                      <span className="text-sm text-gray-700">{option}</span>
-                    </label>
-                  ))}
-                </div>
-                {error && (
-                  <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
-                )}
-              </div>
-            );
-          }
-
+          // All fields are dropdowns (type: 'select')
           return (
-            <div key={attr.name}>
+            <div key={`${resolvedCategoryId}-${subcategoryId}-${field.key}`} style={{ pointerEvents: 'auto', position: 'relative', zIndex: 1 }}>
               <label className="block text-sm font-medium mb-2">
-                {attr.label} {attr.required && <span className="text-red-500">*</span>}
+                {field.label} {field.required && <span className="text-red-500">*</span>}
+                {field.parentField && (
+                  <span className="text-xs text-gray-500 ml-2">
+                    (depends on {field.parentField})
+                  </span>
+                )}
               </label>
-              <input
-                type={attr.type}
-                {...register(fieldName, { 
-                  required: attr.required,
-                  valueAsNumber: attr.type === 'number'
-                })}
-                placeholder={attr.placeholder}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-              />
+              <select
+                {...register(fieldName, { required: field.required })}
+                disabled={isDisabled}
+                style={{ pointerEvents: isDisabled ? 'none' : 'auto', position: 'relative', zIndex: 10 }}
+                className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white ${
+                  isDisabled ? 'bg-gray-100 cursor-not-allowed' : 'cursor-pointer'
+                }`}
+                onChange={(e) => {
+                  setValue(fieldName, e.target.value);
+                  // If this is the parent field, reset child fields
+                  if (field.parentField === undefined && field.nestedOptions) {
+                    // This field is a parent, reset all fields that depend on it
+                    fields.forEach((f) => {
+                      if (f.parentField === field.key) {
+                        setValue(`attributes.${f.key}`, '');
+                      }
+                    });
+                  }
+                }}
+                onFocus={(e) => {
+                  // Ensure select is clickable
+                  const target = e.currentTarget;
+                  if (target) {
+                    target.style.pointerEvents = 'auto';
+                    target.style.zIndex = '9999';
+                  }
+                }}
+                onBlur={(e) => {
+                  // Reset z-index after blur
+                  const target = e.currentTarget;
+                  if (target) {
+                    setTimeout(() => {
+                      // Check if element still exists before accessing
+                      if (target && target.parentElement) {
+                        target.style.zIndex = '10';
+                      }
+                    }, 100);
+                  }
+                }}
+              >
+                <option value="">
+                  {isDisabled 
+                    ? `Select ${field.parentField} first` 
+                    : `Select ${field.label}`}
+                </option>
+                {options && options.length > 0 ? (
+                  options.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))
+                ) : (
+                  <option value="" disabled>
+                    No options available (Add options in Admin Panel)
+                  </option>
+                )}
+              </select>
               {error && (
                 <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
+              )}
+              {isDisabled && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Please select {field.parentField} first
+                </p>
               )}
             </div>
           );

@@ -19,7 +19,8 @@ import {
   FiShield,
   FiMenu,
   FiX,
-  FiEdit3
+  FiEdit3,
+  FiSettings
 } from 'react-icons/fi';
 
 const adminNavItems = [
@@ -29,6 +30,7 @@ const adminNavItems = [
   { href: '/admin/moderation', label: 'Moderation', icon: FiShield, tab: 'moderation' },
   { href: '/admin?tab=banners', label: 'Banners', icon: FiImage, tab: 'banners' },
   { href: '/admin?tab=categories', label: 'Categories', icon: FiTag, tab: 'categories' },
+  { href: '/admin?tab=spec-options', label: 'Category Specifications Manager', icon: FiSettings, tab: 'spec-options' },
   { href: '/admin?tab=auth-pages', label: 'Login/Signup Pages', icon: FiEdit3, tab: 'auth-pages' },
   { href: '/admin?tab=premium', label: 'Premium Ads', icon: FiStar, tab: 'premium' },
   { href: '/admin/orders', label: 'Orders', icon: FiShoppingBag, tab: 'orders' },

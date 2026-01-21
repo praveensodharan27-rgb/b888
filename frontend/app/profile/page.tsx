@@ -3,7 +3,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { FiMapPin, FiBriefcase, FiGlobe, FiCheckCircle, FiPackage, FiUsers, FiTrendingUp, FiFileText, FiEdit3, FiUserPlus, FiX } from 'react-icons/fi';
+import { FiMapPin, FiBriefcase, FiGlobe, FiCheckCircle, FiPackage, FiUsers, FiTrendingUp, FiFileText, FiEdit3, FiUserPlus, FiX, FiCalendar, FiFolder, FiVolume2, FiCamera, FiPlus, FiShoppingBag, FiSettings, FiArrowLeft } from 'react-icons/fi';
 import Link from 'next/link';
 import Image from 'next/image';
 import FollowButton from '@/components/FollowButton';
@@ -12,6 +12,7 @@ import { userService } from '@/src/application/services/UserService';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import { useQuery } from '@tanstack/react-query';
+import Cookies from 'js-cookie';
 
 export default function ProfilePage() {
   // ALL HOOKS MUST BE CALLED BEFORE ANY CONDITIONAL RETURNS
@@ -32,6 +33,9 @@ export default function ProfilePage() {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
+  // Check for token to prevent unnecessary 401 errors
+  const token = typeof window !== 'undefined' ? Cookies.get('token') : null;
+  
   // Fetch full profile data with business package and quota info
   const { data: profileData, isLoading: isLoadingProfile } = useQuery({
     queryKey: ['user-profile', user?.id],
@@ -39,10 +43,13 @@ export default function ProfilePage() {
       const response = await api.get('/user/profile');
       return response.data.user;
     },
-    enabled: !!user,
+    enabled: !!user && !!token, // Only fetch if user exists AND token exists
     staleTime: 5 * 1000, // 5 seconds - faster updates
     refetchOnWindowFocus: true,
     refetchOnMount: true, // Refetch when component mounts
+    retry: false, // Don't retry on 401 errors
+    // Suppress error logging for expected 401s (handled by interceptor)
+    throwOnError: false,
   });
 
   useEffect(() => {
@@ -101,46 +108,54 @@ export default function ProfilePage() {
 
   if (!user) return null;
 
+  // Calculate total ads
+  const totalAds = profileData 
+    ? (profileData.businessPackage?.totalRemaining || 
+       (profileData.businessPackage?.businessAdsRemaining || 0) + (profileData.freeAdsRemaining || 0) || 0)
+    : 0;
+
+  // Calculate free ads percentage
+  const freeAdsUsed = profileData?.freeAdsUsedThisMonth || 0;
+  const freeAdsLimit = profileData?.freeAdsLimit || 5;
+  const freeAdsPercentage = freeAdsLimit > 0 ? Math.round((freeAdsUsed / freeAdsLimit) * 100) : 0;
+
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4 max-w-5xl">
-        {/* Header Card */}
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden mb-6">
-          {/* Decorative Background Pattern */}
-          <div className="h-32 bg-gradient-to-br from-blue-50 to-blue-100 relative overflow-hidden">
-            <svg className="absolute inset-0 w-full h-full opacity-20" xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <pattern id="wave" x="0" y="0" width="100" height="100" patternUnits="userSpaceOnUse">
-                  <path d="M0 50 Q 25 30, 50 50 T 100 50" stroke="#3B82F6" fill="none" strokeWidth="1"/>
-                </pattern>
-              </defs>
-              <rect width="100%" height="100%" fill="url(#wave)" />
-            </svg>
-          </div>
+      <div className="container mx-auto px-4 max-w-7xl">
+        {/* Back Button */}
+        <Link
+          href="/"
+          className="inline-flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-6 transition-colors"
+        >
+          <FiArrowLeft className="w-5 h-5" />
+          <span className="font-medium">Back</span>
+        </Link>
 
-          {/* Profile Content */}
-          <div className="px-8 pb-8">
-            <div className="flex flex-col md:flex-row gap-6 -mt-16">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Column - Profile & Stats */}
+          <div className="lg:col-span-1 space-y-6">
+            {/* Profile Card */}
+            <div className="bg-white rounded-2xl shadow-sm p-6">
+              <div className="flex flex-col items-center text-center">
               {/* Profile Image with Status Badge */}
-              <div className="flex-shrink-0">
-                <div className="relative">
+                <div className="relative mb-4">
                   {user.avatar ? (
                     <Image
                       src={user.avatar}
                       alt={user.name}
-                      width={128}
-                      height={128}
+                      width={120}
+                      height={120}
                       priority
-                      className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-xl"
+                      className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg"
                     />
                   ) : (
-                    <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-5xl font-bold border-4 border-white shadow-xl">
+                    <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-4xl font-bold border-4 border-white shadow-lg">
                       {user.name.charAt(0).toUpperCase()}
                     </div>
                   )}
                   
-                  {/* Available Badge */}
-                  <div className="absolute -bottom-1 -left-1 bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg">
+                  {/* ACTIVE Badge */}
+                  <div className="absolute -bottom-1 -right-1 bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg">
                     ACTIVE
                   </div>
 
@@ -151,457 +166,133 @@ export default function ProfilePage() {
                     </div>
                   )}
                 </div>
-              </div>
 
-              {/* Profile Info */}
-              <div className="flex-1">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h1 className="text-3xl font-bold text-gray-900">{user.name}</h1>
+                {/* User Name */}
+                <h1 className="text-2xl font-bold text-gray-900 mb-1">{user.name}</h1>
+                <p className="text-gray-600 text-sm mb-4">{user.email}</p>
+
+                {/* Verified Seller & Member Since */}
+                <div className="flex flex-col gap-2 mb-4">
                       {user.isVerified && (
-                        <FiCheckCircle className="w-6 h-6 text-blue-600" />
-                      )}
+                    <div className="flex items-center justify-center gap-2 text-blue-600">
+                      <FiCheckCircle className="w-4 h-4" />
+                      <span className="text-sm font-medium">Verified Seller</span>
                     </div>
-                    <p className="text-gray-600 mt-2 max-w-2xl">
-                      {user.email ? `Active member with ${user.email}` : 'Active SellIt platform member'} • Join our community and start buying and selling today!
-                    </p>
+                  )}
+                  <div className="flex items-center justify-center gap-2 text-gray-600">
+                    <FiCalendar className="w-4 h-4" />
+                    <span className="text-sm">Member since {user.createdAt ? new Date(user.createdAt).getFullYear() : '2024'}</span>
                   </div>
-                  <Link 
-                    href="/settings"
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-                  >
-                    <FiEdit3 className="w-4 h-4" />
-                    <span className="text-sm font-medium">Edit</span>
-                  </Link>
-                </div>
-
-                {/* Follower/Following Stats */}
-                <div className="flex gap-6 mt-4 mb-4">
-                  <button 
-                    onClick={() => {
-                      setFollowModalType('followers');
-                      setShowFollowersModal(true);
-                    }}
-                    className="flex flex-col items-center hover:bg-blue-50 px-6 py-3 rounded-lg transition-colors group"
-                  >
-                    <span className="text-2xl font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
-                      {user.followersCount || 0}
-                    </span>
-                    <span className="text-sm text-gray-600 group-hover:text-blue-600 transition-colors">
-                      Followers
-                    </span>
-                  </button>
-                  <button 
-                    onClick={() => {
-                      setFollowModalType('following');
-                      setShowFollowersModal(true);
-                    }}
-                    className="flex flex-col items-center hover:bg-blue-50 px-6 py-3 rounded-lg transition-colors group"
-                  >
-                    <span className="text-2xl font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
-                      {user.followingCount || 0}
-                    </span>
-                    <span className="text-sm text-gray-600 group-hover:text-blue-600 transition-colors">
-                      Following
-                    </span>
-                  </button>
-                </div>
-
-                {/* Quick Info Tags */}
-                <div className="flex flex-wrap gap-3">
-                  {editingLocation ? (
-                    <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg w-full md:w-auto">
-                      <FiMapPin className="w-4 h-4 text-blue-600" />
-                      <select
-                        value={selectedLocation}
-                        onChange={(e) => setSelectedLocation(e.target.value)}
-                        className="flex-1 px-3 py-1 border border-blue-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value="">Select Location</option>
-                        {locations.map((loc: any) => (
-                          <option key={loc.id} value={loc.id}>
-                            {loc.name} {loc.city ? `, ${loc.city}` : ''} {loc.state ? `, ${loc.state}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={handleSaveLocation}
-                        disabled={savingLocation || !selectedLocation}
-                        className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {savingLocation ? 'Saving...' : 'Save'}
-                      </button>
-                      <button
-                        onClick={() => {
-                          setEditingLocation(false);
-                          setSelectedLocation('');
-                        }}
-                        className="p-1 text-gray-600 hover:text-gray-900"
-                      >
-                        <FiX className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setEditingLocation(true)}
-                      className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors group"
-                    >
-                      <FiMapPin className="w-4 h-4 text-blue-600" />
-                      <span className="text-sm text-gray-700 group-hover:text-blue-600">
-                        {selectedLocation 
-                          ? locations.find((l: any) => l.id === selectedLocation)?.name || user.location?.name || 'Location Set'
-                          : user.location?.name || 'Location: Not Set - Click to Set'}
-                      </span>
-                      <FiEdit3 className="w-3 h-3 text-gray-500 group-hover:text-blue-600" />
-                    </button>
-                  )}
-                  <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg">
-                    <FiBriefcase className="w-4 h-4 text-blue-600" />
-                    <span className="text-sm text-gray-700">Member Since: {user.createdAt ? new Date(user.createdAt).getFullYear() : '2024'}</span>
-                  </div>
-                  {user.phone && user.showPhone && (
-                    <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg">
-                      <FiGlobe className="w-4 h-4 text-blue-600" />
-                      <span className="text-sm text-gray-700">{user.phone}</span>
-                    </div>
-                  )}
-                  {user.phone && !user.showPhone && (
-                    <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg">
-                      <FiGlobe className="w-4 h-4 text-blue-600" />
-                      <span className="text-sm text-gray-700">Phone: Hidden (Privacy)</span>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
+
+            {/* Free Ads Usage */}
+            <div className="bg-white rounded-2xl shadow-sm p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Free Ads Usage</h3>
+              <div className="mb-2">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-2xl font-bold text-gray-900">{freeAdsPercentage}%</span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div 
+                    className="bg-blue-600 h-2 rounded-full transition-all"
+                    style={{ width: `${freeAdsPercentage}%` }}
+                  />
           </div>
         </div>
-
-        {/* Navigation Tabs */}
-        <div className="bg-white rounded-2xl shadow-sm mb-6">
-          <div className="border-b border-gray-200 px-8">
-            <div className="flex gap-8">
-              <button
-                onClick={() => setActiveTab('overview')}
-                className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors ${
-                  activeTab === 'overview'
-                    ? 'border-blue-600 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                Overview
-              </button>
-              <button
-                onClick={() => setActiveTab('reviews')}
-                className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors ${
-                  activeTab === 'reviews'
-                    ? 'border-blue-600 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                Activity (0)
-              </button>
-            </div>
+              <p className="text-sm text-gray-600 mt-2">
+                {freeAdsUsed} / {freeAdsLimit} ads used this month
+              </p>
           </div>
 
-          {activeTab === 'overview' && (
-            <div className="p-8">
-              {/* Account Details Section */}
-              <div className="mb-8">
-                <h2 className="text-xl font-bold text-gray-900 mb-6">Account Details</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <FiPackage className="w-5 h-5 text-blue-600" />
+            {/* Business Packages */}
+            {profileData?.businessPackage && (profileData.businessPackage.allPackages?.length > 0 || profileData.businessPackage.activePackages?.length > 0) && (
+              <div className="bg-white rounded-2xl shadow-sm p-6">
+                <div className="flex items-center gap-2 mb-4">
+                  <FiFolder className="w-5 h-5 text-blue-600" />
+                  <h3 className="text-lg font-semibold text-gray-900">Business Packages</h3>
                     </div>
-                    <div>
-                      <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Total Ads</div>
-                      <div className="text-gray-900 font-medium">0 Active Listings</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <FiUsers className="w-5 h-5 text-purple-600" />
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Account Type</div>
-                      <div className="text-gray-900 font-medium">Free Member</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <FiTrendingUp className="w-5 h-5 text-green-600" />
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Status</div>
-                      <div className="text-gray-900 font-medium">Active & Verified</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <FiGlobe className="w-5 h-5 text-orange-600" />
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Region</div>
-                      <div className="text-gray-900 font-medium">Worldwide</div>
-                    </div>
-                  </div>
-
-                  {/* Free Ads Section - Always Visible */}
-                  {profileData && (
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <FiFileText className="w-5 h-5 text-blue-600" />
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Free Ads (Monthly)</div>
-                        <div className="text-gray-900 font-medium">
-                          {isLoadingProfile ? 'Loading...' : (
-                            <>
-                              <span className={profileData.freeAdsRemaining > 0 ? 'text-blue-600' : 'text-gray-400'}>
-                                {profileData.freeAdsRemaining || 0} Remaining
-                              </span>
-                              <div className="text-xs text-gray-500 mt-1">
-                                {profileData.freeAdsUsedThisMonth || 0} / {profileData.freeAdsLimit || 2} used this month
-                              </div>
-                              {profileData?.nextResetDate && (
-                                <div className="text-xs text-gray-400 mt-0.5">
-                                  Resets: {new Date(profileData.nextResetDate).toLocaleDateString()}
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Business Package Ads - Always Visible if user has any packages */}
-                  {profileData?.businessPackage && (
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <FiBriefcase className="w-5 h-5 text-green-600" />
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Business Package Ads</div>
-                        <div className="text-gray-900 font-medium">
-                          {isLoadingProfile ? 'Loading...' : (
-                            <>
-                              <span className={profileData.businessPackage.businessAdsRemaining > 0 ? 'text-green-600' : 'text-orange-600'}>
-                                {profileData.businessPackage.businessAdsRemaining || 0} Remaining
-                              </span>
-                              <div className="text-xs text-gray-500 mt-1">
-                                {profileData.businessPackage.totalPurchased || 0} Total Purchase{profileData.businessPackage.totalPurchased !== 1 ? 's' : ''} • {profileData.businessPackage.activeCount || 0} Active Package{profileData.businessPackage.activeCount !== 1 ? 's' : ''}
-                              </div>
-                              {/* Sell Box Style: Show ALL packages (active + exhausted + expired) with full details */}
-                              {(profileData.businessPackage.allPackages || profileData.businessPackage.activePackages) && 
-                               (profileData.businessPackage.allPackages?.length > 0 || profileData.businessPackage.activePackages?.length > 0) ? (
-                                <div className="mt-2 space-y-2 max-h-64 overflow-y-auto">
-                                  {(profileData.businessPackage.allPackages || profileData.businessPackage.activePackages).map((pkg: any, index: number) => {
+                <div className="space-y-4">
+                  {(profileData.businessPackage.allPackages || profileData.businessPackage.activePackages).slice(0, 2).map((pkg: any, index: number) => {
                                     const remaining = pkg.adsRemaining || 0;
-                                    const used = pkg.usedAds || pkg.adsUsed || 0;
                                     const total = pkg.totalAds || pkg.totalAdsAllowed || 0;
-                                    const isExhausted = pkg.isExhausted || (remaining === 0 && total > 0 && !pkg.isExpired);
                                     const isExpired = pkg.isExpired || pkg.status === 'EXPIRED';
-                                    const isActive = !isExhausted && !isExpired && remaining > 0;
-                                    const isOldestWithAds = index === 0 && isActive; // First package (oldest) with ads
                                     const packageName = pkg.packageName || pkg.packageType?.replace('_', ' ') || 'Package';
+                    const expiresAt = pkg.expiresAt ? new Date(pkg.expiresAt) : null;
                                     
                                     return (
-                                      <div 
-                                        key={pkg.id || pkg.packageId} 
-                                        className={`text-xs p-2.5 rounded border ${
-                                          isActive 
-                                            ? 'bg-green-50 border-green-300' 
-                                            : isExhausted 
-                                              ? 'bg-orange-50 border-orange-300' 
-                                              : isExpired
-                                                ? 'bg-gray-50 border-gray-300'
-                                                : 'bg-blue-50 border-blue-200'
-                                        }`}
-                                      >
-                                        <div className="flex items-center justify-between mb-1.5">
-                                          <span className={`font-semibold ${
-                                            isActive ? 'text-green-700' : isExhausted ? 'text-orange-700' : isExpired ? 'text-gray-600' : 'text-blue-700'
-                                          }`}>
-                                            {packageName}
-                                          </span>
-                                          <div className="flex items-center gap-1">
-                                            {isOldestWithAds && (
-                                              <span className="px-1.5 py-0.5 bg-blue-600 text-white text-xs rounded font-bold">
-                                                USING
-                                              </span>
-                                            )}
-                                            {isExhausted && (
-                                              <span className="px-1.5 py-0.5 bg-orange-600 text-white text-xs rounded font-bold">
-                                                EXHAUSTED
-                                              </span>
-                                            )}
-                                            {isExpired && (
-                                              <span className="px-1.5 py-0.5 bg-gray-600 text-white text-xs rounded font-bold">
-                                                EXPIRED
-                                              </span>
-                                            )}
-                                            {isActive && !isOldestWithAds && (
-                                              <span className="font-bold text-green-600">
-                                                {remaining} left
-                                              </span>
+                      <div key={pkg.id || pkg.packageId} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <h4 className="font-semibold text-gray-900">{packageName.toUpperCase()}</h4>
+                            {pkg.packageType?.includes('PREMIUM') || packageName.includes('Premium') ? (
+                              <p className="text-sm text-gray-600 mt-1">{total} Premium Ad Credits</p>
+                            ) : (
+                              <p className="text-sm text-gray-600 mt-1">Auto-Refresh Boost</p>
+                            )}
+                            {remaining > 0 && (
+                              <p className="text-sm text-blue-600 font-medium mt-1">{remaining} remaining</p>
+                            )}
+                            {pkg.packageType?.includes('VISIBILITY') || packageName.includes('Visibility') && (
+                              <p className="text-sm text-gray-600 mt-1">Active on {pkg.activeItemsCount || 0} items</p>
                                             )}
                                           </div>
                                         </div>
-                                        <div className="grid grid-cols-2 gap-2 mb-1.5">
-                                          <div>
-                                            <span className="text-gray-500">Ads: </span>
-                                            <span className="font-medium">{used}/{total}</span>
-                                            {isActive && (
-                                              <span className="text-green-600 ml-1 font-semibold">({remaining} remaining)</span>
-                                            )}
-                                          </div>
-                                          {pkg.amount && (
-                                            <div>
-                                              <span className="text-gray-500">Amount: </span>
-                                              <span className="font-medium">₹{pkg.amount}</span>
-                                            </div>
-                                          )}
-                                        </div>
-                                        {pkg.purchasedAt && (
-                                          <div className="text-gray-500 mb-1">
-                                            <span className="text-gray-400">Purchased: </span>
-                                            {new Date(pkg.purchasedAt).toLocaleDateString('en-IN', { 
-                                              day: 'numeric', 
-                                              month: 'short', 
-                                              year: 'numeric',
-                                              hour: '2-digit',
-                                              minute: '2-digit'
-                                            })}
-                                          </div>
-                                        )}
-                                        {pkg.expiresAt && (
-                                          <div className={`text-xs mb-1.5 ${
-                                            isExpired ? 'text-gray-500' : 'text-gray-600'
-                                          }`}>
-                                            <span className="text-gray-400">{isExpired ? 'Expired: ' : 'Expires: '}</span>
-                                            {new Date(pkg.expiresAt).toLocaleDateString('en-IN', { 
-                                              day: 'numeric', 
-                                              month: 'short', 
-                                              year: 'numeric'
-                                            })}
-                                          </div>
-                                        )}
-                                        {/* Progress bar */}
-                                        {total > 0 && (
-                                          <div className="mt-1.5">
-                                            <div className="w-full bg-gray-200 rounded-full h-1.5">
-                                              <div 
-                                                className={`h-1.5 rounded-full transition-all ${
-                                                  isActive ? 'bg-green-500' : isExhausted ? 'bg-orange-400' : 'bg-gray-400'
-                                                }`}
-                                                style={{ width: `${Math.min(100, (used / total) * 100)}%` }}
-                                              />
-                                            </div>
+                        {expiresAt && (
+                          <div className="flex items-center justify-between mt-3">
+                            <span className="text-xs text-gray-500">
+                              Ends {expiresAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                            <Link href="/settings" className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+                              Manage
+                            </Link>
                                           </div>
                                         )}
                                       </div>
                                     );
                                   })}
-                                </div>
-                              ) : (
-                                <div className="text-xs text-gray-400 italic mt-1">
-                                  No business packages purchased
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
                       </div>
                     </div>
                   )}
 
-                  {/* Total Remaining Ads */}
-                  {profileData && (
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <FiTrendingUp className="w-5 h-5 text-indigo-600" />
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Total Ads Available</div>
-                        <div className="text-gray-900 font-medium text-lg">
-                          {isLoadingProfile ? 'Loading...' : (
-                            <>
-                              {profileData.businessPackage?.totalRemaining || 
-                               (profileData.businessPackage?.businessAdsRemaining || 0) + (profileData.freeAdsRemaining || 0) || 
-                               0}
-                            </>
-                          )}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1">
-                          {profileData.businessPackage?.businessAdsRemaining || 0} from packages + {profileData.freeAdsRemaining || 0} free
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex items-start gap-3">
-                    <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <FiBriefcase className="w-5 h-5 text-indigo-600" />
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500 uppercase font-semibold mb-1">Membership</div>
-                      <div className="text-gray-900 font-medium">Standard</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Categories/Tools Tags */}
-                <div className="mt-6">
-                  <div className="flex flex-wrap gap-2">
-                    <span className="px-4 py-2 bg-gray-100 text-gray-700 rounded-full text-sm font-medium">Electronics</span>
-                    <span className="px-4 py-2 bg-gray-100 text-gray-700 rounded-full text-sm font-medium">Fashion</span>
-                    <span className="px-4 py-2 bg-gray-100 text-gray-700 rounded-full text-sm font-medium">Home & Garden</span>
-                    <span className="px-4 py-2 bg-gray-100 text-gray-700 rounded-full text-sm font-medium">Vehicles</span>
-                    <span className="px-4 py-2 bg-gray-100 text-gray-700 rounded-full text-sm font-medium">Services</span>
-                  </div>
-                </div>
+            {/* Total Capacity */}
+            <div className="bg-blue-600 rounded-2xl shadow-sm p-6 text-white relative overflow-hidden">
+              <div className="absolute top-2 right-2">
+                <FiVolume2 className="w-8 h-8 text-white opacity-30" />
               </div>
-
-              {/* Summary Section */}
-              <div>
-                <h2 className="text-xl font-bold text-gray-900 mb-4">About</h2>
-                <p className="text-gray-600 leading-relaxed">
-                  {user.bio || `Welcome to my SellIt profile! I'm an active member of the marketplace community, 
-                  passionate about finding great deals and connecting with buyers and sellers. 
-                  I believe in honest transactions, clear communication, and building trust within 
-                  our community. Feel free to browse my listings and reach out if you have any questions!`}
+              <div className="relative z-10">
+                <div className="text-4xl font-bold mb-2">{totalAds} Ads</div>
+                <p className="text-blue-50 text-sm">
+                  Combine free and premium credits to reach more buyers.
                 </p>
               </div>
             </div>
-          )}
+          </div>
 
-          {activeTab === 'reviews' && (
-            <div className="p-8 text-center py-12">
-              <div className="text-gray-400 mb-4">
-                <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                </svg>
+          {/* Right Column - Welcome & Content */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Welcome Section */}
+            <div className="bg-white rounded-2xl shadow-sm p-8">
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Welcome to my profile</h2>
+              <div className="space-y-4 text-gray-600 leading-relaxed">
+                <p>
+                  {user.bio || `I'm an active buyer and seller since early ${user.createdAt ? new Date(user.createdAt).getFullYear() : '2024'}, specializing in vintage electronics and high-quality home furniture. I pride myself on quick response times and smooth experiences.`}
+                </p>
+                <p>
+                  I'm open to questions, reasonable offers, ship items within 24-48 hours, and only conduct verified transactions for safety.
+                </p>
               </div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">No Activity Yet</h3>
-              <p className="text-gray-600">Your activity history will appear here once you start buying or selling.</p>
-            </div>
-          )}
         </div>
 
-        {/* Suggested Users to Follow */}
+            {/* People You May Know */}
         {suggestedUsers.length > 0 && (
-          <div className="bg-white rounded-2xl shadow-sm p-8 mb-6">
+              <div className="bg-white rounded-2xl shadow-sm p-8">
             <h2 className="text-xl font-bold text-gray-900 mb-6">People You May Know</h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {suggestedUsers.map((suggestedUser) => (
                 <div key={suggestedUser.id} className="border border-gray-200 rounded-xl p-4 hover:border-blue-300 transition-colors">
-                  <Link href={`/user/${suggestedUser.id}`} className="flex flex-col items-center text-center mb-4">
+                      <div className="flex flex-col items-center text-center mb-4">
                     {suggestedUser.avatar ? (
                       <img
                         src={suggestedUser.avatar}
@@ -613,89 +304,186 @@ export default function ProfilePage() {
                         {suggestedUser.name.charAt(0).toUpperCase()}
                       </div>
                     )}
-                    <h3 className="font-semibold text-gray-900 hover:text-blue-600 transition-colors">
+                        <h3 className="font-semibold text-gray-900 mb-1">
                       {suggestedUser.name}
                     </h3>
                     {suggestedUser.isVerified && (
-                      <span className="flex items-center gap-1 text-xs text-blue-600 mt-1">
+                          <span className="flex items-center justify-center gap-1 text-xs text-blue-600 mb-2">
                         <FiCheckCircle className="w-3 h-3" />
                         Verified
                       </span>
                     )}
-                  </Link>
+                        <p className="text-xs text-gray-500 mb-3">
+                          {suggestedUser.bio || 'Active Seller'}
+                        </p>
+                      </div>
+                      <div className="flex flex-col gap-2">
                   <FollowButton
                     userId={suggestedUser.id}
                     className="w-full"
                   />
+                        <Link
+                          href={`/user/${suggestedUser.id}`}
+                          className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium text-center"
+                        >
+                          View Profile
+                        </Link>
+                      </div>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Quick Actions */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {/* Quick Actions Section */}
+            <div className="bg-white rounded-2xl shadow-sm p-8">
+              <h2 className="text-xl font-bold text-gray-900 mb-6">Quick Actions</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Link
             href="/my-ads"
-            className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-all border border-gray-100"
-          >
-            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4">
-              <FiPackage className="w-6 h-6 text-blue-600" />
+                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                >
+                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                    <FiPackage className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">My Ads</h3>
+                    <p className="text-sm text-gray-600">Manage your listings</p>
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">My Ads</h3>
-            <p className="text-sm text-gray-600">Manage listings</p>
           </Link>
 
           <Link
-            href="/contact-requests"
-            className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-all border border-gray-100"
-          >
-            <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4">
-              <FiUsers className="w-6 h-6 text-green-600" />
+                  href="/orders"
+                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                >
+                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                    <FiShoppingBag className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">Orders</h3>
+                    <p className="text-sm text-gray-600">View order history</p>
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">Contact Requests</h3>
-            <p className="text-sm text-gray-600">Pending requests</p>
           </Link>
 
           <Link
-            href="/favorites"
-            className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-all border border-gray-100"
-          >
-            <div className="w-12 h-12 bg-pink-100 rounded-lg flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-pink-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-              </svg>
+                  href="/settings"
+                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                >
+                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                    <FiSettings className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">Settings</h3>
+                    <p className="text-sm text-gray-600">Account preferences</p>
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">Favorites</h3>
-            <p className="text-sm text-gray-600">Saved items</p>
           </Link>
 
           <Link
-            href="/orders"
-            className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-all border border-gray-100"
-          >
-            <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
-              </svg>
+                  href="#about"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    const aboutSection = document.getElementById('about-section');
+                    aboutSection?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                >
+                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                    <FiBriefcase className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">About</h3>
+                    <p className="text-sm text-gray-600">Your profile information</p>
+                  </div>
+                </Link>
+              </div>
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">Orders</h3>
-            <p className="text-sm text-gray-600">Purchase history</p>
-          </Link>
 
+            {/* About Section */}
+            <div id="about-section" className="bg-white rounded-2xl shadow-sm p-8">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">About</h2>
           <Link
             href="/settings"
-            className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-all border border-gray-100"
-          >
-            <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors text-sm"
+                >
+                  <FiEdit3 className="w-4 h-4" />
+                  <span className="font-medium">Edit</span>
+                </Link>
+              </div>
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Bio</h3>
+                  <p className="text-gray-700 leading-relaxed">
+                    {user.bio || `Welcome to my SellIt profile! I'm an active member of the marketplace community, passionate about finding great deals and connecting with buyers and sellers. I believe in honest transactions, clear communication, and building trust within our community.`}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-gray-200">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Contact Information</h3>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-gray-700">
+                        <FiGlobe className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm">{user.email}</span>
+                      </div>
+                      {user.phone && user.showPhone && (
+                        <div className="flex items-center gap-2 text-gray-700">
+                          <FiMapPin className="w-4 h-4 text-gray-400" />
+                          <span className="text-sm">{user.phone}</span>
+                        </div>
+                      )}
+                      {user.location && (
+                        <div className="flex items-center gap-2 text-gray-700">
+                          <FiMapPin className="w-4 h-4 text-gray-400" />
+                          <span className="text-sm">{user.location.name}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Account Details</h3>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 text-gray-700">
+                        <FiCalendar className="w-4 h-4 text-gray-400" />
+                        <span className="text-sm">
+                          Joined {user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 'Recently'}
+                        </span>
+                      </div>
+                      {user.isVerified && (
+                        <div className="flex items-center gap-2 text-blue-600">
+                          <FiCheckCircle className="w-4 h-4" />
+                          <span className="text-sm font-medium">Verified Seller</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-            <h3 className="font-semibold text-gray-900 mb-1">Settings</h3>
-            <p className="text-sm text-gray-600">Account settings</p>
+
+            {/* Ready to sell something? */}
+            <div className="bg-white rounded-2xl shadow-sm p-8 border-2 border-dashed border-blue-200">
+              <div className="flex flex-col items-center text-center">
+                <div className="relative w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-4">
+                  <FiCamera className="w-8 h-8 text-white" />
+                  <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-white rounded-full flex items-center justify-center">
+                    <FiPlus className="w-4 h-4 text-blue-600" />
+                  </div>
+                </div>
+                <h2 className="text-xl font-bold text-gray-900 mb-3">Ready to sell something?</h2>
+                <p className="text-gray-600 mb-6 max-w-md">
+                  List your first item today and reach thousands of potential buyers in your area.
+                </p>
+                <Link
+                  href="/post-ad"
+                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                >
+                  Create Listing
           </Link>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

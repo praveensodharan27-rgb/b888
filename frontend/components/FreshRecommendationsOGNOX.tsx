@@ -1,9 +1,8 @@
 'use client';
 
-import { useInfiniteAds } from '@/hooks/useInfiniteAds';
+import { useHomeFeed } from '@/hooks/useHomeFeed';
 import AdCardOGNOX from './AdCardOGNOX';
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { dummyAds } from '@/lib/dummyData';
+import { useEffect, useMemo } from 'react';
 import { useIntersectionObserver } from '@/hooks/useIntersectionObserver';
 import { useGoogleLocation } from '@/hooks/useGoogleLocation';
 import { useLocationPersistence } from '@/hooks/useLocationPersistence';
@@ -13,89 +12,88 @@ interface FreshRecommendationsOGNOXProps {
     latitude?: number;
     longitude?: number;
     locationSlug?: string;
+    city?: string;
+    state?: string;
+    area?: string;
   };
   categorySlug?: string;
 }
 
 export default function FreshRecommendationsOGNOX({ location, categorySlug }: FreshRecommendationsOGNOXProps = {}) {
-  const limit = 8; // Show 8 ads per page
-  const [radiusMessage, setRadiusMessage] = useState<string | null>(null);
+  const limit = 12; // Show 12 ads per batch (smaller initial batch for lazy loading)
   
   // Get Google location (city, state, lat, lng) and persisted location
   const { location: googleLocation } = useGoogleLocation();
   const { location: persistedLocation } = useLocationPersistence();
   
-  // Build filter object based on location and category props
-  // CRITICAL: Always include location (OGNOX style)
-  const filters: any = {
-    limit, // Single number, not array
-    sort: 'newest' as const,
-  };
-
-  // Add category filter if provided
-  if (categorySlug) {
-    filters.category = categorySlug;
-  }
-
+  // Build home feed filters based on navbar location
   // Priority: passed location > Google location > persisted location
-  if (location?.locationSlug) {
-    filters.location = location.locationSlug;
-    if (location.latitude && location.longitude) {
-      filters.latitude = location.latitude.toString();
-      filters.longitude = location.longitude.toString();
-      filters.radius = '50';
+  // If no location, fetch "All India" ads (no filters = all India)
+  const homeFeedFilters = useMemo(() => {
+    const filters: any = { limit };
+
+    // Priority: explicit city/state/area from props
+    if (location?.city) filters.city = location.city;
+    if (location?.state) filters.state = location.state;
+    if (location?.area) filters.area = location.area;
+
+    // Next: slug if provided
+    if (location?.locationSlug) {
+      filters.location = location.locationSlug;
     }
-  } else if (googleLocation) {
-    // Use Google Places location (city, state, lat, lng)
-    filters.latitude = googleLocation.lat.toString();
-    filters.longitude = googleLocation.lng.toString();
-    filters.radius = '50'; // Default 50km radius
-  } else if (location?.latitude && location?.longitude) {
-    // Fallback to passed location coordinates
-    filters.latitude = location.latitude.toString();
-    filters.longitude = location.longitude.toString();
-    filters.radius = '50'; // Default 50km radius
-  } else if (persistedLocation?.slug) {
-    // Use persisted location as last resort
-    filters.location = persistedLocation.slug;
-    if (persistedLocation.latitude && persistedLocation.longitude) {
-      filters.latitude = persistedLocation.latitude.toString();
-      filters.longitude = persistedLocation.longitude.toString();
-      filters.radius = '50';
+
+    // Next: coordinates if provided
+    if (location?.latitude && location?.longitude) {
+      filters.latitude = location.latitude;
+      filters.longitude = location.longitude;
     }
-  }
+
+    // Fallback: Google location
+    if (!filters.city && googleLocation?.city) {
+      filters.city = googleLocation.city;
+      if (googleLocation.state) {
+        filters.state = googleLocation.state;
+      }
+    }
+
+    // Fallback: persisted location slug/city
+    if (!filters.location && persistedLocation?.slug) {
+      filters.location = persistedLocation.slug;
+    }
+    if (!filters.city && persistedLocation?.city) {
+      filters.city = persistedLocation.city;
+      if (persistedLocation.state) {
+        filters.state = persistedLocation.state;
+      }
+    }
+    // If no filters, backend will return "All India" ads
+
+    return filters;
+  }, [location, googleLocation, persistedLocation, limit]);
   
-  // Location is always included if available (OGNOX behavior)
+  // Determine if showing "All India" ads (no location selected)
+  const isAllIndia = useMemo(() => {
+    return !location?.locationSlug && 
+           !location?.latitude && 
+           !googleLocation?.city && 
+           !persistedLocation?.slug && 
+           !persistedLocation?.city;
+  }, [location, googleLocation, persistedLocation]);
   
-  // Use infinite scroll for lazy loading
-  const { data, isLoading, isError, hasNextPage, fetchNextPage, isFetchingNextPage } = useInfiniteAds(filters);
+  // Use home feed hook (uses navbar location with smart ranking)
+  const { data, isLoading, isError, hasNextPage, fetchNextPage, isFetchingNextPage } = useHomeFeed(homeFeedFilters);
 
   // Debug: Log data changes
   useEffect(() => {
     if (data?.pages) {
-      console.log('📍 FreshRecommendationsOGNOX - Data received:', {
+      console.log('📍 FreshRecommendationsOGNOX - Home Feed Data received:', {
         pages: data.pages.length,
         totalAds: data.pages.reduce((sum, page) => sum + (page.ads?.length || 0), 0),
         firstPageAds: data.pages[0]?.ads?.length || 0,
-        radiusInfo: data.pages[0]?.radiusInfo
+        filters: homeFeedFilters
       });
     }
-  }, [data]);
-
-  // Check for radius expansion info and set message
-  useEffect(() => {
-    if (data?.pages && data.pages.length > 0) {
-      const firstPage = data.pages[0];
-      if (firstPage.radiusInfo && firstPage.radiusInfo.expanded && firstPage.radiusInfo.radiusRange) {
-        const message = `Showing results for ${firstPage.radiusInfo.radiusRange} as no ads were found in your exact location.`;
-        setRadiusMessage(message);
-      } else {
-        setRadiusMessage(null);
-      }
-    } else {
-      setRadiusMessage(null);
-    }
-  }, [data]);
+  }, [data, homeFeedFilters]);
 
   // Flatten all pages into a single array (memoized for performance)
   const ads = useMemo(() => {
@@ -120,24 +118,43 @@ export default function FreshRecommendationsOGNOX({ location, categorySlug }: Fr
     }
   }, [isIntersecting, hasNextPage, isLoading, isFetchingNextPage, fetchNextPage]);
 
+  // Get location label from first page data
+  const locationLabel = useMemo(() => {
+    const firstPage = data?.pages?.[0];
+    if (firstPage?.locationLabel) {
+      return firstPage.locationLabel;
+    }
+    if (isAllIndia) {
+      return 'All India';
+    }
+    if (googleLocation?.city) {
+      return googleLocation.city;
+    }
+    if (persistedLocation?.city) {
+      return persistedLocation.city;
+    }
+    return null;
+  }, [data?.pages, isAllIndia, googleLocation, persistedLocation]);
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl md:text-3xl font-bold text-gray-900">
-          {categorySlug ? 'Category Products' : 'Fresh Recommendations'}
-        </h2>
-      </div>
-
-      {/* Radius expansion message */}
-      {radiusMessage && (
-        <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <p className="text-sm text-blue-800">{radiusMessage}</p>
+        <div>
+          <h2 className="text-2xl md:text-3xl font-bold text-gray-900">
+            {categorySlug ? 'Category Products' : 'Fresh Recommendations'}
+          </h2>
+          {/* Show location label - "All India Ads" when no location selected */}
+          {locationLabel && (
+            <p className="text-sm md:text-base text-gray-600 mt-1">
+              {locationLabel === 'All India' ? 'All India Ads' : `${locationLabel} Ads`}
+            </p>
+          )}
         </div>
-      )}
+      </div>
 
       {isLoading && ads.length === 0 ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-          {[...Array(8)].map((_, i) => (
+          {[...Array(12)].map((_, i) => (
             <div key={i} className="bg-white rounded-lg shadow-md animate-pulse overflow-hidden">
               <div className="h-48 md:h-56 bg-gray-200"></div>
               <div className="p-4 space-y-2">
@@ -156,12 +173,13 @@ export default function FreshRecommendationsOGNOX({ location, categorySlug }: Fr
       ) : ads.length > 0 ? (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-            {ads.map((ad: any) => {
+            {ads.map((ad: any, index: number) => {
               if (!ad || !ad.id || !ad.title) {
                 return null;
               }
+              // Use combination of ID and index to ensure uniqueness across infinite scroll pages
               return (
-                <AdCardOGNOX key={ad.id} ad={ad} />
+                <AdCardOGNOX key={`${ad.id}-${index}`} ad={ad} />
               );
             })}
           </div>

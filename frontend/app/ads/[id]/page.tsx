@@ -88,14 +88,14 @@ export default function AdDetailPage() {
     };
     
     // Wrap router methods to detect automatic calls
-    const originalBack = router.back.bind(router);
-    const originalPush = router.push.bind(router);
-    const originalReplace = router.replace.bind(router);
+    const originalBack = router.back.bind(router) as () => void;
+    const originalPush = router.push.bind(router) as (...args: any[]) => any;
+    const originalReplace = router.replace.bind(router) as (...args: any[]) => any;
     
     // Override to log but still allow (we'll block in useLocationPersistence instead)
-    (router as any).back = (...args: any[]) => {
-      logRouterCall('router.back', args);
-      return originalBack(...args);
+    (router as any).back = () => {
+      logRouterCall('router.back', []);
+      return originalBack();
     };
     
     (router as any).push = (...args: any[]) => {
@@ -134,9 +134,9 @@ export default function AdDetailPage() {
     const title = (ad?.title || '').toLowerCase();
     const tokens = title
       .split(/[^a-z0-9]+/i)
-      .map(t => t.trim())
+      .map((t: string) => t.trim())
       .filter(Boolean)
-      .filter(t => t.length >= 3);
+      .filter((t: string) => t.length >= 3);
     // Keep it short to avoid overly-broad search
     return tokens.slice(0, 5).join(' ');
   }, [ad?.title]);
@@ -202,24 +202,49 @@ export default function AdDetailPage() {
       return 1; // Free/Normal
     };
 
-    const tokenize = (text: string) => {
+    const tokenize = (text: string): string[] => {
       const raw = text
         .toLowerCase()
         .split(/[^a-z0-9]+/i)
-        .map(t => t.trim())
+        .map((t: string) => t.trim())
         .filter(Boolean)
-        .filter(t => t.length >= 3)
-        .filter(t => !stopwords.has(t));
-      return new Set(raw.slice(0, 60));
+        .filter((t: string) => t.length >= 3)
+        .filter((t: string) => !stopwords.has(t));
+
+      // Keep up to 60 unique tokens without using Set iteration (older TS targets).
+      const seen: Record<string, 1> = {};
+      const out: string[] = [];
+      for (let i = 0; i < raw.length && out.length < 60; i++) {
+        const t = raw[i];
+        if (!seen[t]) {
+          seen[t] = 1;
+          out.push(t);
+        }
+      }
+      return out;
     };
 
     const similarity = (aText: string, bText: string) => {
-      const aSet = tokenize(aText);
-      const bSet = tokenize(bText);
-      const unionSize = new Set([...aSet, ...bSet]).size;
-      if (unionSize === 0) return 0;
+      const aTokens = tokenize(aText);
+      const bTokens = tokenize(bText);
+
+      if (aTokens.length === 0 && bTokens.length === 0) return 0;
+
+      const bLookup: Record<string, 1> = {};
+      for (let i = 0; i < bTokens.length; i++) bLookup[bTokens[i]] = 1;
+
       let intersection = 0;
-      for (const t of aSet) if (bSet.has(t)) intersection++;
+      const union: Record<string, 1> = {};
+
+      for (let i = 0; i < aTokens.length; i++) {
+        const t = aTokens[i];
+        union[t] = 1;
+        if (bLookup[t]) intersection++;
+      }
+      for (let i = 0; i < bTokens.length; i++) union[bTokens[i]] = 1;
+
+      const unionSize = Object.keys(union).length;
+      if (unionSize === 0) return 0;
       return intersection / unionSize; // 0..1
     };
 
@@ -900,11 +925,11 @@ export default function AdDetailPage() {
         </nav>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Side - Product Images */}
-          <div className="lg:col-span-2">
+          {/* Left Side - Product Images, Specifications, Description */}
+          <div className="lg:col-span-2 space-y-6">
             {/* Main Product Image */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-              <div className="relative w-full h-[600px] bg-gray-100 rounded-lg overflow-hidden mb-4">
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
+              <div className="relative w-full h-[500px] md:h-[600px] bg-gray-50 rounded-lg overflow-hidden mb-4">
                 <ImageWithFallback
                   src={displayImages[mainImageIndex]}
                   alt={ad.title}
@@ -912,36 +937,36 @@ export default function AdDetailPage() {
                   className="object-contain"
                   sizes="(max-width: 768px) 100vw, 66vw"
                 />
-                {/* Image count badge */}
-                {displayImages.length > 0 && (
-                  <div className="absolute top-3 left-3 bg-gray-800 bg-opacity-75 text-white px-3 py-1.5 rounded-full text-sm font-medium">
-                    {displayImages.length} image{displayImages.length !== 1 ? 's' : ''}
+                {/* Featured Badge */}
+                {(ad.isPremium || ad.packageType !== 'NORMAL') && (
+                  <div className="absolute top-4 left-4 bg-gray-900 text-white px-3 py-1.5 rounded text-sm font-semibold">
+                    Featured
                   </div>
                 )}
                 {/* Like button */}
                 <button
                   onClick={handleWishlist}
-                  className={`absolute bottom-3 right-3 p-3 rounded-full shadow-lg transition-all ${
+                  className={`absolute top-4 right-4 p-3 rounded-full shadow-lg transition-all z-10 ${
                     isFavorite
                       ? 'bg-red-500 text-white hover:bg-red-600'
                       : 'bg-white text-gray-700 hover:bg-gray-50'
                   }`}
                   title={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
                 >
-                  <FiHeart className={`w-6 h-6 ${isFavorite ? 'fill-current' : ''}`} />
+                  <FiHeart className={`w-5 h-5 ${isFavorite ? 'fill-current' : ''}`} />
                 </button>
               </div>
               
               {/* Thumbnail Images */}
               {displayImages.length > 1 && (
                 <div className="flex gap-3 overflow-x-auto pb-2">
-                  {displayImages.map((img: string, index: number) => (
+                  {displayImages.slice(0, 4).map((img: string, index: number) => (
                     <button
                       key={index}
                       onClick={() => setMainImageIndex(index)}
-                      className={`flex-shrink-0 w-24 h-24 rounded-lg overflow-hidden border-2 transition-all ${
+                      className={`flex-shrink-0 w-20 h-20 md:w-24 md:h-24 rounded-lg overflow-hidden border-2 transition-all ${
                         mainImageIndex === index 
-                          ? 'border-orange-500 ring-2 ring-orange-200' 
+                          ? 'border-green-500 ring-2 ring-green-200' 
                           : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
@@ -954,16 +979,55 @@ export default function AdDetailPage() {
                       />
                     </button>
                   ))}
+                  {displayImages.length > 4 && (
+                    <div className="flex-shrink-0 w-20 h-20 md:w-24 md:h-24 rounded-lg border-2 border-gray-200 bg-gray-100 flex items-center justify-center text-gray-600 font-semibold text-sm">
+                      +{displayImages.length - 4}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
+            {/* Specifications Section */}
+            {ad.attributes && typeof ad.attributes === 'object' && Object.keys(ad.attributes).length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200 p-6">
+                <h2 className="text-xl font-semibold text-gray-900 mb-4">Specifications</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {Object.entries(ad.attributes as Record<string, any>).map(([key, value]) => {
+                    if (value === null || value === undefined || value === '') return null;
+                    
+                    const formattedKey = key
+                      .replace(/_/g, ' ')
+                      .replace(/\b\w/g, l => l.toUpperCase());
+                    
+                    const displayValue = Array.isArray(value) 
+                      ? value.join(', ') 
+                      : String(value);
+                    
+                    return (
+                      <div key={key} className="flex flex-col">
+                        <span className="text-sm text-gray-600 mb-1">{formattedKey}</span>
+                        <span className="text-base font-medium text-gray-900">{displayValue}</span>
+                      </div>
+                    );
+                  })}
+                  {/* Additional specs from ad data */}
+                  {ad.condition && (
+                    <div className="flex flex-col">
+                      <span className="text-sm text-gray-600 mb-1">Condition</span>
+                      <span className="text-base font-medium text-gray-900">{ad.condition}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Description Section */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Description</h2>
               <p className="text-gray-700 whitespace-pre-wrap leading-relaxed mb-4">{ad.description}</p>
               
-              {/* Attributes/Specs */}
+              {/* Additional details as bullet points if available */}
               {ad.attributes && typeof ad.attributes === 'object' && Object.keys(ad.attributes).length > 0 && (
                 <div className="mt-4 pt-4 border-t border-gray-200">
                   <ul className="space-y-2">
@@ -992,189 +1056,60 @@ export default function AdDetailPage() {
               )}
             </div>
 
-            {/* Buyer Protection Banner */}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-              <div className="flex items-start gap-3">
-                <FiCheck className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-                <div>
-                  <h3 className="font-semibold text-gray-900 mb-1">Buyer Protection</h3>
-                  <p className="text-sm text-gray-700">
-                    Your purchase is protected. If the item is not as described, we'll help you get a refund.
-                  </p>
-                </div>
-              </div>
-            </div>
           </div>
 
-          {/* Right Side - Product Details, Seller Info, Actions */}
-          <div className="lg:col-span-1">
-            {/* Product Details Card */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-              {/* Condition Badge */}
-              {conditionBadge && (
-                <div className="mb-4">
-                  <span className="inline-block bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium">
-                    {conditionBadge}
-                  </span>
-                </div>
-              )}
-              
-              {/* Product Name */}
-              <h1 className="text-2xl font-bold text-gray-900 mb-4">{ad.title}</h1>
-              
-              {/* Price */}
-              <div className="mb-6">
-                <div className="flex items-baseline gap-3 mb-2">
-                  <p className="text-4xl font-bold text-orange-500">
-                    ₹{ad.price.toLocaleString('en-IN')}
-                  </p>
-                  {ad.originalPrice && ad.originalPrice > ad.price && (
-                    <p className="text-lg text-gray-400 line-through">
-                      ₹{ad.originalPrice.toLocaleString('en-IN')}
-                    </p>
-                  )}
+          {/* Right Side - Price, Seller Info, Actions, Map */}
+          <div className="lg:col-span-1 space-y-6">
+            {/* Price and Product Name Card */}
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
+              {/* Price with Share and Favorite */}
+              <div className="flex items-center justify-between mb-4">
+                <p className="text-3xl md:text-4xl font-bold text-gray-900">
+                  ₹{ad.price.toLocaleString('en-IN')}
+                </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleShare}
+                    className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-colors"
+                    title="Share"
+                  >
+                    <FiShare2 className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={handleWishlist}
+                    className={`p-2 rounded-full transition-colors ${
+                      isFavorite
+                        ? 'text-red-500 hover:text-red-600 hover:bg-red-50'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                    }`}
+                    title={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+                  >
+                    <FiHeart className={`w-5 h-5 ${isFavorite ? 'fill-current' : ''}`} />
+                  </button>
                 </div>
               </div>
-
-              {/* Listing Details */}
+              
+              {/* Product Name */}
+              <h1 className="text-xl md:text-2xl font-semibold text-gray-900 mb-3">{ad.title}</h1>
+              
+              {/* Location & Date */}
               <div className="space-y-2 mb-6 text-sm text-gray-600">
-                <div className="flex items-center gap-2">
-                  <FiCalendar className="w-4 h-4" />
-                  <span>{postedTime}</span>
-                </div>
                 <div className="flex items-center gap-2">
                   <FiMapPin className="w-4 h-4" />
                   <span>{locationDisplay}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <FiEye className="w-4 h-4" />
-                  <span>{ad.views || 0} views</span>
+                  <FiCalendar className="w-4 h-4" />
+                  <span>{postedTime}</span>
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="space-y-3 mb-6">
-                {!isOwner && (
-                  <>
-                    <Link
-                      href={`/chat?adId=${adId}&userId=${ad.user.id}`}
-                      className="w-full bg-white border-2 border-gray-300 hover:border-gray-400 text-gray-700 font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                      onClick={(e) => {
-                        if (!isAuthenticated) {
-                          e.preventDefault();
-                          if (typeof window !== 'undefined') {
-                            window.dispatchEvent(new CustomEvent('openLoginModal'));
-                          }
-                        }
-                      }}
-                    >
-                      <FiMessageCircle className="w-5 h-5" />
-                      Chat with Seller
-                    </Link>
-
-                    {/* Phone number: only shown when seller enabled AND viewer is logged in */}
-                    {isAuthenticated ? (
-                      ad.user?.phone ? (
-                        <a
-                          href={`tel:${ad.user.phone}`}
-                          className="w-full bg-white border-2 border-gray-300 hover:border-gray-400 text-gray-700 font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                        >
-                          <FiPhone className="w-5 h-5" />
-                          {ad.user.phone}
-                        </a>
-                      ) : null
-                    ) : (
-                      <button
-                        type="button"
-                        className="w-full bg-white border-2 border-gray-300 hover:border-gray-400 text-gray-700 font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                        onClick={() => {
-                          if (typeof window !== 'undefined') {
-                            window.dispatchEvent(new CustomEvent('openLoginModal'));
-                          }
-                        }}
-                      >
-                        <FiPhone className="w-5 h-5" />
-                        Login to view phone number
-                      </button>
-                    )}
-                  </>
-                )}
-                {isOwner && (
-                  <Link
-                    href={`/edit-ad/${adId}`}
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                  >
-                    Edit Ad
-                  </Link>
-                )}
-              </div>
             </div>
 
-            {/* Local Pickup Location Card */}
-            <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-              <h3 className="font-semibold text-gray-900 mb-4">Local Pickup Location</h3>
-              {/* Map View */}
-              <div className="rounded-lg overflow-hidden border border-gray-200 mb-3" style={{ height: '200px', position: 'relative' }}>
-                {isLoadingMap ? (
-                  <div className="w-full h-full bg-gray-100 flex items-center justify-center">
-                    <div className="text-center text-gray-500">
-                      <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500 mb-2"></div>
-                      <p className="text-sm">Loading map...</p>
-                    </div>
-                  </div>
-                ) : mapCoordinates ? (
-                  <>
-                    <div 
-                      ref={mapRef}
-                      style={{ width: '100%', height: '100%' }}
-                    />
-                    <div className="absolute top-2 left-2 z-10 bg-white rounded-full p-2 shadow-lg">
-                      <FiMapPin className="w-5 h-5 text-orange-500" />
-                    </div>
-                  </>
-                ) : (
-                  <div className="w-full h-full bg-gray-100 flex items-center justify-center">
-                    <div className="text-center text-gray-500">
-                      <FiMapPin className="w-8 h-8 mx-auto mb-2 text-gray-400" />
-                      <p className="text-sm">Map not available</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-              <p className="text-sm text-gray-600 mb-4">Exact location shown after purchase</p>
-              
-              {/* Search Radius */}
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Search Radius:</label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    defaultValue="10 miles"
-                    readOnly
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-700 bg-white cursor-pointer pr-10"
-                  />
-                  <FiChevronRight className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                </div>
-              </div>
-              
-              {/* View Directions Button */}
-              {mapCoordinates && (
-                <a
-                  href={`https://www.google.com/maps/search/?api=1&query=${mapCoordinates.lat},${mapCoordinates.lng}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                >
-                  <FiNavigation2 className="w-5 h-5" />
-                  View Directions
-                </a>
-              )}
-            </div>
-
-            {/* Seller Information Card */}
+            {/* Seller Details Card */}
             {ad.user && (
               <div className="bg-white rounded-lg border border-gray-200 p-6">
-                <h3 className="font-semibold text-gray-900 mb-4">SELLER INFORMATION</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Seller Details</h3>
                 <div className="flex items-start gap-3 mb-4">
                   {ad.user.avatar ? (
                     <ImageWithFallback
@@ -1195,36 +1130,126 @@ export default function AdDetailPage() {
                     <div className="flex items-center gap-2 mb-1">
                       <h4 className="font-semibold text-gray-900 truncate">{ad.user.name || 'Unknown Seller'}</h4>
                       {ad.user.isVerified && (
-                        <FiCheck className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                        <span className="inline-flex items-center gap-1 bg-green-100 text-green-800 px-2 py-0.5 rounded text-xs font-semibold">
+                          <FiCheck className="w-3 h-3" />
+                          VERIFIED SELLER
+                        </span>
                       )}
                     </div>
-                    {/* Star Rating - using placeholder */}
-                    <div className="flex items-center gap-1 mb-2">
-                      <div className="flex items-center">
-                        {[...Array(5)].map((_, i) => (
-                          <FiStar
-                            key={i}
-                            className={`w-4 h-4 ${
-                              i < 4 ? 'text-yellow-400 fill-current' : 'text-gray-300'
-                            }`}
-                          />
-                        ))}
-                      </div>
-                      <span className="text-sm text-gray-600 ml-1">4.8 (124 reviews)</span>
-                    </div>
                     {memberSince && (
-                      <p className="text-sm text-gray-600 mb-3">{memberSince}</p>
+                      <p className="text-sm text-gray-600 mb-2">{memberSince}</p>
                     )}
                     <Link 
                       href={`/user/${ad.user.id}`}
-                      className="text-sm text-orange-500 hover:text-orange-600 font-medium"
+                      className="text-sm text-green-600 hover:text-green-700 font-medium inline-flex items-center gap-1"
                     >
-                      View all listings from {ad.user.name?.split(' ')[0] || 'seller'}
+                      View Profile <FiChevronRight className="w-3 h-3" />
                     </Link>
                   </div>
                 </div>
+                
+                {/* Action Buttons */}
+                {!isOwner && (
+                  <div className="space-y-3 mt-4 pt-4 border-t border-gray-200">
+                    <Link
+                      href={`/chat?adId=${adId}&userId=${ad.user.id}`}
+                      className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                      onClick={(e) => {
+                        if (!isAuthenticated) {
+                          e.preventDefault();
+                          if (typeof window !== 'undefined') {
+                            window.dispatchEvent(new CustomEvent('openLoginModal'));
+                          }
+                        }
+                      }}
+                    >
+                      <FiMessageCircle className="w-5 h-5" />
+                      Chat with Seller
+                    </Link>
+
+                    {/* Phone number: only shown when seller enabled AND viewer is logged in */}
+                    {isAuthenticated ? (
+                      ad.user?.phone ? (
+                        <a
+                          href={`tel:${ad.user.phone}`}
+                          className="w-full bg-white border-2 border-green-600 hover:border-green-700 text-green-600 hover:text-green-700 font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                        >
+                          <FiPhone className="w-5 h-5" />
+                          Show Number
+                        </a>
+                      ) : null
+                    ) : (
+                      <button
+                        type="button"
+                        className="w-full bg-white border-2 border-green-600 hover:border-green-700 text-green-600 hover:text-green-700 font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                        onClick={() => {
+                          if (typeof window !== 'undefined') {
+                            window.dispatchEvent(new CustomEvent('openLoginModal'));
+                          }
+                        }}
+                      >
+                        <FiPhone className="w-5 h-5" />
+                        Show Number
+                      </button>
+                    )}
+                  </div>
+                )}
+                {isOwner && (
+                  <Link
+                    href={`/edit-ad/${adId}`}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors mt-4"
+                  >
+                    Edit Ad
+                  </Link>
+                )}
               </div>
             )}
+
+            {/* Posted In Card with Map */}
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Posted In</h3>
+              <p className="text-sm text-gray-700 mb-4">{locationDisplay}</p>
+              
+              {/* Map View */}
+              <div className="rounded-lg overflow-hidden border border-gray-200 mb-4" style={{ height: '200px', position: 'relative' }}>
+                {isLoadingMap ? (
+                  <div className="w-full h-full bg-gray-100 flex items-center justify-center">
+                    <div className="text-center text-gray-500">
+                      <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-green-500 mb-2"></div>
+                      <p className="text-sm">Loading map...</p>
+                    </div>
+                  </div>
+                ) : mapCoordinates ? (
+                  <>
+                    <div 
+                      ref={mapRef}
+                      style={{ width: '100%', height: '100%' }}
+                    />
+                    <div className="absolute top-2 left-2 z-10 bg-white rounded-full p-2 shadow-lg">
+                      <FiMapPin className="w-5 h-5 text-green-600" />
+                    </div>
+                  </>
+                ) : (
+                  <div className="w-full h-full bg-gray-100 flex items-center justify-center">
+                    <div className="text-center text-gray-500">
+                      <FiMapPin className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+                      <p className="text-sm">Map not available</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              {/* Report Ad Link */}
+              <button
+                onClick={() => {
+                  // TODO: Implement report functionality
+                  toast.error('Report functionality coming soon');
+                }}
+                className="text-sm text-red-600 hover:text-red-700 font-medium"
+              >
+                REPORT THIS AD
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1235,14 +1260,16 @@ export default function AdDetailPage() {
               <h2 className="text-2xl font-bold text-gray-900">Related Ads</h2>
               <Link 
                 href={ad?.category?.slug ? `/${ad.category.slug}` : '/ads'}
-                className="text-orange-500 hover:text-orange-600 font-medium flex items-center gap-1"
+                className="text-green-600 hover:text-green-700 font-medium flex items-center gap-1"
               >
-                See more <FiChevronRight className="w-4 h-4" />
+                View all <FiChevronRight className="w-4 h-4" />
               </Link>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
               {relatedAds.map((relatedAd: any) => (
-                <AdCardOGNOX key={relatedAd.id} ad={relatedAd} />
+                <div key={relatedAd.id} className="flex-shrink-0 w-[200px]">
+                  <AdCardOGNOX ad={relatedAd} />
+                </div>
               ))}
             </div>
           </div>

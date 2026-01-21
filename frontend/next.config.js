@@ -87,7 +87,10 @@ const nextConfig = {
   },
   // Performance optimizations
   experimental: {
-    optimizeCss: true,
+    // NOTE: `optimizeCss` has caused missing /_next/static assets in dev on Windows
+    // (e.g. main-app.js / app-pages-internals.js / layout.css returning 404).
+    // Keep it disabled for stable local development.
+    optimizeCss: false,
     // NOTE: Disabling optimizePackageImports entirely because Next 15 dev can emit
     // missing server vendor chunks (e.g. "./vendor-chunks/react-icons.js") on Windows.
   },
@@ -96,7 +99,7 @@ const nextConfig = {
   // Production source maps (disable for better performance)
   productionBrowserSourceMaps: false,
   // Webpack configuration to handle chunk loading errors
-  webpack: (config, { isServer }) => {
+  webpack: (config, { isServer, dev }) => {
     if (!isServer) {
       // Avoid overriding Next's dev chunking behavior (can cause stale/mismatched chunks in dev).
       config.resolve.fallback = {
@@ -105,6 +108,29 @@ const nextConfig = {
         net: false,
         tls: false,
       };
+      
+      // Add chunk loading error handling for client-side
+      if (dev) {
+        // In dev mode, add retry logic for failed chunks
+        config.optimization = {
+          ...config.optimization,
+          splitChunks: {
+            ...config.optimization.splitChunks,
+            cacheGroups: {
+              default: false,
+              vendors: false,
+              // Prevent chunk splitting issues in dev
+              framework: {
+                chunks: 'all',
+                name: 'framework',
+                test: /(?<!node_modules.*)[\\/]node_modules[\\/](react|react-dom|scheduler|prop-types|use-subscription)[\\/]/,
+                priority: 40,
+                enforce: true,
+              },
+            },
+          },
+        };
+      }
     } else {
       // Handle Firebase modules during SSR
       config.externals = config.externals || [];

@@ -108,12 +108,9 @@ function AdCardOGNOX({ ad }: AdCardOGNOXProps) {
     return '1 MONTH AGO';
   }, [ad.postedAt]);
 
-  // Get ad URL - prefer category/subcategory slug structure
-  const categorySlug = ad.categorySlug || ad.category?.slug;
-  const subcategorySlug = ad.subcategorySlug || ad.subcategory?.slug;
-  const adUrl = categorySlug && subcategorySlug && ad.slug
-    ? `/${categorySlug}/${subcategorySlug}/${ad.slug}`
-    : `/ads/${ad.id}`;
+  // Get ad URL - always use ID-based route for consistency and reliability
+  // This ensures the correct ad is always displayed, regardless of slug issues
+  const adUrl = `/ads/${ad.id}`;
 
   const isFeatured = ad.isPremium && (ad.premiumType === 'FEATURED' || ad.premiumType === 'TOP');
   const isUrgent = ad.isUrgent;

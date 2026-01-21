@@ -3,9 +3,10 @@ import { Metadata } from 'next';
 export async function generateMetadata({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
-  const categoryName = params.slug
+  const { slug } = await params;
+  const categoryName = slug
     .split('-')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');

@@ -150,7 +150,7 @@ export default function MyAdsPage() {
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
               {data.ads.map((ad: any, index: number) => (
                 <div key={ad.id} className="relative">
-                  <AdCardOGNOX ad={ad} />
+                  <AdCardOLX ad={ad} />
                   <div className="absolute top-2 left-2 flex gap-2 z-10">
                     <span
                       className={`px-2 py-1 rounded text-xs font-semibold ${
@@ -242,7 +242,7 @@ export default function MyAdsPage() {
           ) : relatedAds.length > 0 ? (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
               {relatedAds.map((ad: any) => (
-                <AdCardOGNOX key={ad.id} ad={ad} />
+                <AdCardOLX key={ad.id} ad={ad} />
               ))}
             </div>
           ) : (

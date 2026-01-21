@@ -5,14 +5,20 @@ const { searchAds, autocomplete } = require('../services/meilisearch');
 const { saveSearchQuery } = require('../services/searchAlerts');
 const { authenticate } = require('../middleware/auth');
 const { rankAds } = require('../services/adRankingService');
+const { rankAdsWithSmartScoring, getCurrentLocationFromRequest } = require('../services/smartAdScoringService');
+const { advancedSearch } = require('../services/advancedSearchService');
+const { rankAdsWithPriority } = require('../services/priorityAdRankingService');
+const { getUserLastCategory, storeSearchQuery: storePersonalizedSearchQuery } = require('../services/searchPersonalizationService');
+const { generateCacheKey, getCachedResults, setCache } = require('../services/searchCacheService');
 
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// Search ads using Meilisearch
+// Advanced search ads with multi-parameter support and priority ranking
 router.get('/',
   [
     query('q').optional().isString(),
+    query('keyword').optional().isString(), // Alias for q
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('category').optional().isString(),
@@ -20,7 +26,14 @@ router.get('/',
     query('minPrice').optional().isFloat({ min: 0 }),
     query('maxPrice').optional().isFloat({ min: 0 }),
     query('condition').optional().isIn(['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED']),
-    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped'])
+    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped']),
+    query('city').optional().isString(),
+    query('state').optional().isString(),
+    query('district').optional().isString(),
+    query('neighbourhood').optional().isString(),
+    query('pincode').optional().isString(),
+    query('place').optional().isString(), // Generic place name
+    query('location').optional().isString() // Location slug
   ],
   async (req, res) => {
     try {
@@ -29,8 +42,11 @@ router.get('/',
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
+      const startTime = Date.now();
+      
       const {
         q = '',
+        keyword = '',
         page = 1,
         limit = 20,
         category,
@@ -39,149 +55,155 @@ router.get('/',
         maxPrice,
         condition,
         sort = 'newest',
+        city,
+        state,
+        district,
+        neighbourhood,
+        pincode,
+        place,
+        location: locationSlug
       } = req.query;
-
-      // IMPORTANT: If search keyword exists, ignore category/subcategory filters (search overrides category)
-      const shouldIgnoreCategory = q && q.trim();
       
-      // Resolve category and subcategory IDs - REMOVED: location lookup
-      const [categoryObj, subcategoryObj] = await Promise.all([
-        (!shouldIgnoreCategory && category) ? prisma.category.findUnique({ where: { slug: category }, select: { id: true } }) : null,
-        (!shouldIgnoreCategory && subcategory) ? prisma.subcategory.findFirst({ where: { slug: subcategory }, select: { id: true } }) : null,
-      ]);
-
-      // Search using Meilisearch - REMOVED: locationId filter
-      // Only pass category/subcategory if search doesn't exist
-      const searchResults = await searchAds(q, {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        categoryId: (!shouldIgnoreCategory && categoryObj) ? categoryObj.id : undefined,
-        subcategoryId: (!shouldIgnoreCategory && subcategoryObj) ? subcategoryObj.id : undefined,
-        minPrice: minPrice ? parseFloat(minPrice) : undefined,
-        maxPrice: maxPrice ? parseFloat(maxPrice) : undefined,
+      // Use keyword or q (keyword takes priority)
+      const searchKeyword = keyword || q;
+      
+      // Check cache first
+      const cacheKey = generateCacheKey({
+        keyword: searchKeyword,
+        category,
+        subcategory,
+        city,
+        state,
+        district,
+        neighbourhood,
+        pincode,
+        place,
+        minPrice,
+        maxPrice,
         condition,
         sort,
-        status: 'APPROVED',
+        page,
+        limit
       });
-
-      // Get full ad details from database using IDs from search results
-      const adIds = searchResults.hits.map(hit => hit.id);
       
-      if (adIds.length === 0) {
-        return res.json({
-          success: true,
-          ads: [],
-          pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
-            total: 0,
-            pages: 0,
-          },
-        });
+      const cachedResult = getCachedResults(cacheKey);
+      if (cachedResult) {
+        console.log(`⚡ Cache hit for search: ${searchKeyword}`);
+        return res.json(cachedResult);
       }
 
-      // Fetch more ads for ranking (to allow proper rotation)
-      const fetchLimit = Math.min(parseInt(limit) * 3, 100);
-      const extendedAdIds = searchResults.hits.slice(0, fetchLimit).map(hit => hit.id);
-      
-      const ads = await prisma.ad.findMany({
-        where: {
-          id: { in: extendedAdIds },
-          status: 'APPROVED',
-        },
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          price: true,
-          originalPrice: true,
-          discount: true,
-          condition: true,
-          images: true,
-          status: true,
-          isPremium: true,
-          premiumType: true,
-          isUrgent: true,
-          views: true,
-          expiresAt: true,
-          createdAt: true,
-          packageType: true,
-          lastShownAt: true,
-          userId: true,
-          category: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-            },
-          },
-          subcategory: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-            },
-          },
-          location: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-              latitude: true,
-              longitude: true,
-            },
-          },
-          user: {
-            select: {
-              id: true,
-              name: true,
-              avatar: true,
-            },
-          },
-        },
-      });
-
-      // Apply simple ranking - REMOVED: package-based ranking and prioritization
-      const rankedAds = await rankAds(ads, { updateLastShown: true });
-      
-      const adsMap = new Map(rankedAds.map(ad => [ad.id, ad]));
-      const orderedAds = rankedAds.slice(0, parseInt(limit));
-
-        // REMOVED: Location-based distance calculation and filtering
-
-      // REMOVED: Distance-based sorting and package grouping
-      const finalAds = orderedAds;
-
-      // Save search query for alerts (async, don't wait)
-      if (q && q.trim().length > 0) {
-        const userId = req.user?.id;
-        const userEmail = req.user?.email;
-        
-        // Only save if user has email
-        if (userEmail) {
-          const filters = {};
-          if (category) filters.category = category;
-          if (minPrice) filters.minPrice = minPrice;
-          if (maxPrice) filters.maxPrice = maxPrice;
-          if (condition) filters.condition = condition;
-          
-          // Save asynchronously, don't wait for completion
-          saveSearchQuery(q, userId, userEmail, category, null, filters).catch(err => {
-            console.error('Error saving search query:', err);
+      // Get current location from navbar (LOCATION-FIRST CONTEXT)
+      let currentLocation = null;
+      if (city || state || district || neighbourhood) {
+        currentLocation = { city, state, district, neighbourhood };
+      } else if (locationSlug) {
+        try {
+          const location = await prisma.location.findFirst({
+            where: { slug: locationSlug },
+            select: { city: true, state: true, neighbourhood: true }
           });
+          if (location) {
+            currentLocation = {
+              city: location.city,
+              state: location.state,
+              neighbourhood: location.neighbourhood
+            };
+          }
+        } catch (error) {
+          console.error('Error fetching location:', error);
         }
       }
+      
+      // Get user's last searched category for personalization
+      const userId = req.user?.id;
+      const userEmail = req.user?.email;
+      const userLastCategory = await getUserLastCategory(userId, userEmail);
 
-      res.json({
+      // Use advanced search service for multi-parameter search
+      const searchParams = {
+        keyword: searchKeyword,
+        category,
+        subcategory,
+        place,
+        district,
+        city,
+        neighbourhood,
+        pincode,
+        state,
+        minPrice,
+        maxPrice,
+        condition,
+        sort,
+        page: parseInt(page),
+        limit: parseInt(limit)
+      };
+      
+      // Perform advanced search
+      const searchResult = await advancedSearch(searchParams);
+      let ads = searchResult.ads;
+      
+      // STEP 2: Apply priority-based ranking with 5-hour rotation
+      const locationKey = currentLocation?.city || currentLocation?.state || 'all';
+      const rankedAds = await rankAdsWithPriority(ads, {
+        locationKey,
+        updateLastShown: true,
+        userLastCategory: userLastCategory || category // Use last category or current category
+      });
+      
+      // Apply pagination
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const orderedAds = rankedAds.slice(skip, skip + parseInt(limit));
+      
+      const finalAds = orderedAds;
+
+      // Prepare response
+      const response = {
         success: true,
         ads: finalAds,
         pagination: {
-          page: searchResults.page,
-          limit: searchResults.limit,
-          total: searchResults.total,
-          pages: searchResults.pages,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: rankedAds.length,
+          pages: Math.ceil(rankedAds.length / parseInt(limit)),
         },
-      });
+      };
+      
+      // Cache the result
+      setCache(cacheKey, response);
+      
+      // Save search query for alerts and personalization (async, don't wait)
+      if (searchKeyword && searchKeyword.trim().length > 0) {
+        const filters = {};
+        if (category) filters.category = category;
+        if (minPrice) filters.minPrice = minPrice;
+        if (maxPrice) filters.maxPrice = maxPrice;
+        if (condition) filters.condition = condition;
+        
+        const locationString = currentLocation?.city || currentLocation?.state || null;
+        
+        // Save for alerts (existing system)
+        if (userEmail) {
+          saveSearchQuery(searchKeyword, userId, userEmail, category, null, filters).catch(err => {
+            console.error('Error saving search query for alerts:', err);
+          });
+        }
+        
+        // Save for personalization (new system)
+        storePersonalizedSearchQuery(searchKeyword, userId, userEmail, category, locationString).catch(err => {
+          console.error('Error storing search query for personalization:', err);
+        });
+      }
+      
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+      console.log(`⚡ Advanced search completed in ${duration}ms: ${searchKeyword}`);
+      
+      // Ensure search completes within 300ms (log warning if slower)
+      if (duration > 300) {
+        console.warn(`⚠️ Search took ${duration}ms (target: <300ms)`);
+      }
+      
+      res.json(response);
     } catch (error) {
       console.error('Search error:', error);
       res.status(500).json({

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 require('dotenv').config();
 
 // Google Maps API key
@@ -14,7 +14,8 @@ if (GOOGLE_MAPS_API_KEY) {
 }
 
 // Get current location and find nearest location from database
-router.post('/detect-location', authenticate, async (req, res) => {
+// Using optionalAuthenticate to allow non-authenticated users (for auto-detection on site load)
+router.post('/detect-location', optionalAuthenticate, async (req, res) => {
   try {
     console.log('=== Detect Location Request Received ===');
     console.log('Request body:', JSON.stringify(req.body, null, 2));

@@ -33,43 +33,49 @@ function HomeContent() {
   // Get category from URL params (optional filter - only if user clicked)
   const categorySlug = searchParams.get('category') || undefined;
 
-  // Priority: Use Google location if available, else use localStorage
+  // Priority: Use localStorage (user-selected location) - NEVER auto-switch
+  // If user has explicitly selected a location, it's locked and won't change automatically
   useEffect(() => {
-    if (googleLocation) {
-      // Use Google location (city, state, lat, lng)
-      console.log('📍 Using Google location on home page:', googleLocation);
+    const userSelectedLocation = localStorage.getItem('user_selected_location');
+    
+    // Always prioritize user-selected location from localStorage
+    try {
+      const storedLocation = localStorage.getItem('selected_location');
+      const storedCoords = localStorage.getItem('selected_location_coords');
+      
+      if (storedCoords) {
+        const coords = JSON.parse(storedCoords);
+        if (coords.latitude && coords.longitude) {
+          console.log('📍 Loading locked location from localStorage:', coords);
+          setLocationFilter({
+            latitude: coords.latitude,
+            longitude: coords.longitude
+          });
+          return; // Exit early - user-selected location takes priority
+        }
+      } else if (storedLocation) {
+        // If we have location slug but no coordinates, try to get coordinates
+        const locationData = JSON.parse(storedLocation);
+        if (locationData.slug) {
+          // Location slug available but no coords - will be handled by FreshRecommendationsOLX
+          setLocationFilter({
+            locationSlug: locationData.slug
+          });
+          return; // Exit early - user-selected location takes priority
+        }
+      }
+    } catch (error) {
+      console.error('Error loading location from localStorage:', error);
+    }
+    
+    // Only use Google location if user hasn't explicitly selected a location
+    // This prevents automatic switching when user has locked their location
+    if (!userSelectedLocation && googleLocation) {
+      console.log('📍 Using Google location (no user selection yet):', googleLocation);
       setLocationFilter({
         latitude: googleLocation.lat,
         longitude: googleLocation.lng
       });
-    } else {
-      // Fallback to localStorage
-      try {
-        const storedLocation = localStorage.getItem('selected_location');
-        const storedCoords = localStorage.getItem('selected_location_coords');
-        
-        if (storedCoords) {
-          const coords = JSON.parse(storedCoords);
-          if (coords.latitude && coords.longitude) {
-            console.log('📍 Loading location from localStorage:', coords);
-            setLocationFilter({
-              latitude: coords.latitude,
-              longitude: coords.longitude
-            });
-          }
-        } else if (storedLocation) {
-          // If we have location slug but no coordinates, try to get coordinates
-          const locationData = JSON.parse(storedLocation);
-          if (locationData.slug) {
-            // Location slug available but no coords - will be handled by FreshRecommendationsOLX
-            setLocationFilter({
-              locationSlug: locationData.slug
-            });
-          }
-        }
-      } catch (error) {
-        console.error('Error loading location from localStorage:', error);
-      }
     }
   }, [googleLocation]);
 
@@ -78,6 +84,9 @@ function HomeContent() {
     latitude?: number;
     longitude?: number;
     locationSlug?: string;
+    city?: string;
+    state?: string;
+    area?: string;
   }) => {
     // Update location filter to reload products on home page (no route change)
     setLocationFilter(location);
@@ -90,12 +99,17 @@ function HomeContent() {
       
       console.log('📍 Home page received locationChanged event:', locationData);
       
-      if (locationData && locationData.latitude && locationData.longitude) {
+      if (locationData && (locationData.latitude && locationData.longitude || locationData.locationSlug || locationData.city || locationData.state)) {
         // Update location filter to reload products on home page (no redirect)
-        setLocationFilter({ 
+        const next = { 
           latitude: locationData.latitude, 
-          longitude: locationData.longitude 
-        });
+          longitude: locationData.longitude,
+          locationSlug: locationData.locationSlug,
+          city: locationData.city,
+          state: locationData.state,
+          area: locationData.area,
+        };
+        setLocationFilter(next);
         console.log('✅ Home page location filter updated');
       } else if (locationData === null) {
         // Clear location filter
@@ -124,7 +138,7 @@ function HomeContent() {
       </Suspense>
 
       {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
         {/* Fresh Recommendations Section */}
         <section className="mb-12 md:mb-16">
           <ProgressiveLoader

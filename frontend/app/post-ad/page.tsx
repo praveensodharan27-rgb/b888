@@ -18,6 +18,12 @@ import CategoryAttributes from '@/components/CategoryAttributes';
 import AdLimitAlert from '@/components/AdLimitAlert';
 import toast from 'react-hot-toast';
 
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
+
 // Lazy load PaymentModal (heavy component with Razorpay SDK)
 // Using same pattern as other components (AdLimitAlert, PremiumFeatureButton)
 const PaymentModal = dynamic(
@@ -145,7 +151,7 @@ export default function PostAdPage() {
       // API returns: { prices: {...}, offerPrices: {...}, durations: {...} }
       // We need: [{ type: 'TOP', name: '...', price: ..., duration: ... }, ...]
       if (offersData && typeof offersData === 'object' && !Array.isArray(offersData)) {
-        const offersArray = [];
+        const offersArray: Array<{ id: string; type: string; name: string; description: string; price: number; duration: number }> = [];
         const premiumTypes = ['TOP', 'FEATURED', 'BUMP_UP', 'URGENT'];
         
         premiumTypes.forEach((type) => {
@@ -1201,8 +1207,8 @@ export default function PostAdPage() {
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    if (images.length + files.length > 12) {
-      alert('Maximum 12 images allowed');
+    if (images.length + files.length > 4) {
+      alert('Maximum 4 images allowed');
       return;
     }
 
@@ -1371,6 +1377,9 @@ export default function PostAdPage() {
         console.error('API Error Details:', {
           status: statusCode,
           data: errorData,
+          message: errorData?.message || errorData?.error_message,
+          error_message: errorData?.error_message,
+          status_field: errorData?.status,
           url: error.config?.url
         });
         
@@ -1378,7 +1387,13 @@ export default function PostAdPage() {
         if (statusCode === 401) {
           toast.error('Please log in to use location detection. You can still enter location manually.', { duration: 5000 });
         } else if (statusCode === 403) {
-          toast.error('Access denied. Please check your permissions.', { duration: 5000 });
+          // Use backend error message if available, otherwise show generic message
+          const backendMessage = errorData?.message || errorData?.error_message;
+          if (backendMessage && backendMessage.includes('Geocoding API')) {
+            toast.error(backendMessage, { duration: 6000 });
+          } else {
+            toast.error('Access denied. Please check your permissions.', { duration: 5000 });
+          }
         } else if (statusCode === 404) {
           toast.error('No location found for your coordinates. Please enter location manually.', { duration: 5000 });
         } else if (statusCode === 429) {
@@ -1517,6 +1532,7 @@ export default function PostAdPage() {
         state: data.state,
         city: data.city,
         neighbourhood: data.neighbourhood,
+        attributes: data.attributes || {}, // Include attributes
         premiumType: selectedPremium || null,
         isUrgent: isUrgent || false,
       };
@@ -1585,7 +1601,9 @@ export default function PostAdPage() {
             return;
           }
           setPaymentOrder(response);
-          setShowPaymentModal(true);
+          // Directly open Razorpay checkout instead of showing payment modal popup
+          // Pass form data to capture in closure
+          openRazorpayCheckout(response, { ...data, attributes: data.attributes || {} });
         },
         onError: (error: any) => {
           console.error('❌ Payment order creation failed:', error);
@@ -1675,7 +1693,9 @@ export default function PostAdPage() {
               console.log('✅ Premium payment order created:', paymentResponse);
               if (paymentResponse.requiresPayment && paymentResponse.razorpayOrder) {
                 setPaymentOrder(paymentResponse);
-                setShowPaymentModal(true);
+                // Directly open Razorpay checkout instead of showing payment modal popup
+                // Note: Ad is already created, so we don't need form data for this flow
+                openRazorpayCheckout(paymentResponse);
               } else {
                 toast.success('Premium features applied successfully!');
                 setTimeout(() => {
@@ -1732,23 +1752,28 @@ export default function PostAdPage() {
     });
   };
 
-  const handlePaymentSuccess = async (paymentId: string, signature: string, orderIdFromResponse?: string) => {
-    console.log('💳 Payment success received:', { paymentId, signature, orderIdFromResponse, paymentOrder });
+  const handlePaymentSuccess = async (paymentId: string, signature: string, orderIdFromResponse?: string, orderOverride?: any, formDataOverride?: any) => {
+    // Use orderOverride if provided, otherwise use paymentOrder from state
+    const currentOrder = orderOverride || paymentOrder;
+    // Use formDataOverride if provided, otherwise use adFormData from state
+    const currentFormData = formDataOverride || adFormData;
     
-    if (!paymentOrder) {
+    console.log('💳 Payment success received:', { paymentId, signature, orderIdFromResponse, hasOrder: !!currentOrder, hasFormData: !!currentFormData });
+    
+    if (!currentOrder) {
       console.error('❌ Payment order missing');
       toast.error('Payment order not found. Please try again.');
       return;
     }
 
-    if (!adFormData) {
+    if (!currentFormData) {
       console.error('❌ Ad form data missing');
       toast.error('Ad form data not found. Please try again.');
       return;
     }
 
-    // Use orderId from response if available, otherwise use from paymentOrder
-    const orderIdToVerify = orderIdFromResponse || paymentOrder.razorpayOrder.id;
+    // Use orderId from response if available, otherwise use from currentOrder
+    const orderIdToVerify = orderIdFromResponse || currentOrder.razorpayOrder.id;
     console.log('🔄 Verifying payment with orderId:', orderIdToVerify);
     
     verifyPayment.mutate(
@@ -1770,25 +1795,25 @@ export default function PostAdPage() {
           
           // Now create the ad with payment order ID
           console.log('📝 Creating ad with data:', { 
-            title: adFormData.title, 
-            imagesCount: adFormData.images?.length || 0,
-            paymentOrderId: paymentOrder.razorpayOrder.id 
+            title: currentFormData.title, 
+            imagesCount: currentFormData.images?.length || 0,
+            paymentOrderId: currentOrder.razorpayOrder.id 
           });
 
           const formData = new FormData();
-          formData.append('title', adFormData.title);
-          formData.append('description', adFormData.description);
-          formData.append('price', String(adFormData.price || ''));
-          if (adFormData.originalPrice) formData.append('originalPrice', adFormData.originalPrice);
-          if (adFormData.discount) formData.append('discount', adFormData.discount);
-          if (adFormData.condition) formData.append('condition', adFormData.condition);
-          formData.append('categoryId', adFormData.categoryId);
-          if (adFormData.subcategoryId) formData.append('subcategoryId', adFormData.subcategoryId);
-          if (adFormData.state) formData.append('state', adFormData.state);
-          if (adFormData.city) formData.append('city', adFormData.city);
-          if (adFormData.neighbourhood) formData.append('neighbourhood', adFormData.neighbourhood);
+          formData.append('title', currentFormData.title);
+          formData.append('description', currentFormData.description);
+          formData.append('price', String(currentFormData.price || ''));
+          if (currentFormData.originalPrice) formData.append('originalPrice', currentFormData.originalPrice);
+          if (currentFormData.discount) formData.append('discount', currentFormData.discount);
+          if (currentFormData.condition) formData.append('condition', currentFormData.condition);
+          formData.append('categoryId', currentFormData.categoryId);
+          if (currentFormData.subcategoryId) formData.append('subcategoryId', currentFormData.subcategoryId);
+          if (currentFormData.state) formData.append('state', currentFormData.state);
+          if (currentFormData.city) formData.append('city', currentFormData.city);
+          if (currentFormData.neighbourhood) formData.append('neighbourhood', currentFormData.neighbourhood);
           formData.append('showPhone', String(showPhoneInAds));
-          formData.append('paymentOrderId', paymentOrder.razorpayOrder.id);
+          formData.append('paymentOrderId', currentOrder.razorpayOrder.id);
           
           // IMPORTANT: Add premium features to formData so backend detects it as premium ad
           // This prevents quota check when payment order exists
@@ -1798,8 +1823,8 @@ export default function PostAdPage() {
           }
           
           // Add attributes if they exist
-          if (adFormData.attributes && Object.keys(adFormData.attributes).length > 0) {
-            formData.append('attributes', JSON.stringify(adFormData.attributes));
+          if (currentFormData.attributes && Object.keys(currentFormData.attributes).length > 0) {
+            formData.append('attributes', JSON.stringify(currentFormData.attributes));
           }
 
           // Use images from state (File objects persist in state)
@@ -1816,7 +1841,7 @@ export default function PostAdPage() {
 
           console.log('📤 Submitting ad creation with:', {
             hasPaymentOrder: true,
-            paymentOrderId: paymentOrder.razorpayOrder.id,
+            paymentOrderId: currentOrder.razorpayOrder.id,
             premiumType: selectedPremium || null,
             isUrgent: isUrgent || false,
             isPremiumAd: !!(selectedPremium || isUrgent)
@@ -1864,6 +1889,131 @@ export default function PostAdPage() {
     setShowPaymentModal(false);
   };
 
+  // Function to directly open Razorpay checkout without showing payment modal popup
+  const openRazorpayCheckout = useCallback((order: any, formDataToCapture?: any) => {
+    if (!order?.razorpayOrder) {
+      console.error('❌ Payment order missing required fields');
+      toast.error('Invalid payment order. Please try again.');
+      return;
+    }
+
+    const { razorpayOrder } = order;
+    // Capture form data in closure to avoid state timing issues
+    const capturedFormData = formDataToCapture || adFormData;
+
+    // Load Razorpay script if not already loaded
+    const loadRazorpayScript = (): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        if (window.Razorpay) {
+          resolve();
+          return;
+        }
+
+        // Check if script is already being loaded
+        const existingScript = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');
+        if (existingScript) {
+          existingScript.addEventListener('load', () => resolve());
+          existingScript.addEventListener('error', () => reject(new Error('Failed to load Razorpay script')));
+          return;
+        }
+
+        // Load Razorpay script
+        const script = document.createElement('script');
+        script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        script.async = true;
+        script.defer = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Failed to load Razorpay script'));
+        document.head.appendChild(script);
+      });
+    };
+
+    // Load script and open Razorpay
+    loadRazorpayScript()
+      .then(() => {
+        if (!window.Razorpay) {
+          toast.error('Payment gateway not loaded. Please refresh and try again.');
+          return;
+        }
+
+        const amountInPaise = razorpayOrder.amount || Math.round((order.amount || 0) * 100);
+
+        if (isNaN(amountInPaise) || amountInPaise < 100 || amountInPaise > 10000000) {
+          console.error('❌ Invalid payment amount:', { amountInPaise, razorpayOrderAmount: razorpayOrder.amount, amount: order.amount });
+          toast.error('Invalid payment amount. Please contact support.');
+          return;
+        }
+
+        const premiumOffer = premiumSettings?.find((offer: any) => offer.type === selectedPremium);
+        const descriptionText = selectedPremium 
+          ? `Complete payment to post your ${selectedPremium === 'TOP' ? 'Top' : selectedPremium === 'FEATURED' ? 'Featured' : 'Bump Up'} ad`
+          : 'Complete payment to post your ad';
+
+        const options = {
+          key: razorpayOrder.key,
+          amount: amountInPaise,
+          currency: 'INR',
+          name: 'SellIt',
+          description: descriptionText,
+          order_id: razorpayOrder.id,
+          handler: function (response: any) {
+            console.log('✅ Payment successful:', response);
+            // Pass order and form data from closure to handlePaymentSuccess to avoid state timing issues
+            handlePaymentSuccess(
+              response.razorpay_payment_id,
+              response.razorpay_signature,
+              response.razorpay_order_id,
+              order, // Pass order from closure
+              capturedFormData // Pass form data from closure
+            );
+          },
+          prefill: {
+            name: user?.name || '',
+            email: user?.email || '',
+            contact: user?.phone || ''
+          },
+          theme: {
+            color: '#4F46E5'
+          },
+          modal: {
+            ondismiss: function() {
+              console.log('⚠️ Payment modal dismissed by user');
+            }
+          },
+          'payment.error': function(error: any) {
+            console.error('❌ Razorpay payment error:', error);
+            let errorMessage = error.error?.description || error.error?.reason || error.error?.code || 'Payment failed. Please try again.';
+            if (errorMessage.toLowerCase().includes('international') || errorMessage.toLowerCase().includes('not supported')) {
+              errorMessage = 'International cards are not supported. Please use an Indian card.';
+            }
+            toast.error(errorMessage);
+            handlePaymentError(error);
+          },
+          'payment.cancel': function() {
+            console.log('⚠️ Payment cancelled by user');
+          },
+          'payment.failed': function(error: any) {
+            console.error('❌ Payment failed:', error);
+            toast.error('Payment could not be completed. Please try again.');
+            handlePaymentError(error);
+          }
+        };
+
+        try {
+          const razorpay = new window.Razorpay(options);
+          razorpay.open();
+        } catch (error: any) {
+          console.error('❌ Failed to initialize Razorpay:', error);
+          toast.error('Failed to initialize payment');
+          handlePaymentError(error);
+        }
+      })
+      .catch((error) => {
+        console.error('❌ Failed to load Razorpay script:', error);
+        toast.error('Failed to load payment gateway. Please refresh and try again.');
+      });
+  }, [handlePaymentSuccess, handlePaymentError, selectedPremium, premiumSettings, user]);
+
   // Remove body padding for post-ad page - must be before any early returns
   useEffect(() => {
     document.body.classList.add('no-navbar-padding');
@@ -1889,7 +2039,7 @@ export default function PostAdPage() {
 
   return (
     <div className="min-h-screen bg-[#faf9f7]" style={{ margin: 0, padding: 0 }}>
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
         <div className="mb-8 text-center">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">Post Your Ad</h1>
@@ -2179,7 +2329,9 @@ export default function PostAdPage() {
                         <label className="block text-sm font-medium text-gray-700 mb-2">Main Category</label>
                         <select
                           {...register('categoryId', { required: 'Category is required' })}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white"
+                          className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white ${
+                            errors.categoryId ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                          }`}
                           onChange={(e) => {
                             setValue('categoryId', e.target.value);
                             setValue('subcategoryId', ''); // Reset subcategory when category changes
@@ -2193,7 +2345,10 @@ export default function PostAdPage() {
                           ))}
                         </select>
                         {errors.categoryId && (
-                          <div className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</div>
+                          <div className="text-red-500 text-sm mt-1 flex items-center gap-1">
+                            <FiAlertCircle className="w-4 h-4" />
+                            {errors.categoryId.message as string}
+                          </div>
                         )}
                       </div>
                       <div>
@@ -2216,7 +2371,10 @@ export default function PostAdPage() {
                           ))}
                         </select>
                         {errors.subcategoryId && (
-                          <p className="mt-1 text-sm text-red-600">{errors.subcategoryId.message as string}</p>
+                          <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                            <FiAlertCircle className="w-4 h-4" />
+                            {errors.subcategoryId.message as string}
+                          </p>
                         )}
                       </div>
                     </div>
@@ -2243,25 +2401,43 @@ export default function PostAdPage() {
                           <span className="text-xs text-gray-500">{title?.length || 0}/70 characters</span>
                         </div>
                         <input
-                          {...register('title', { required: 'Title is required', maxLength: 70 })}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                          {...register('title', { 
+                            required: 'Title is required', 
+                            maxLength: { value: 70, message: 'Title must not exceed 70 characters' },
+                            minLength: { value: 5, message: 'Title must be at least 5 characters' }
+                          })}
+                          className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
+                            errors.title ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                          }`}
                           placeholder="e.g. Brand new iPhone 14 Pro Max - 128GB"
                         />
                         {errors.title && (
-                          <div className="text-red-500 text-sm mt-1">{errors.title.message as string}</div>
+                          <div className="text-red-500 text-sm mt-1 flex items-center gap-1">
+                            <FiAlertCircle className="w-4 h-4" />
+                            {errors.title.message as string}
+                          </div>
                         )}
                       </div>
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
                         <textarea
-                          {...register('description', { required: 'Description is required' })}
+                          {...register('description', { 
+                            required: 'Description is required',
+                            minLength: { value: 10, message: 'Description must be at least 10 characters' },
+                            maxLength: { value: 2000, message: 'Description must not exceed 2000 characters' }
+                          })}
                           rows={6}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 resize-none"
+                          className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 resize-none ${
+                            errors.description ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                          }`}
                           placeholder="Describe what you are selling. Include details like brand, condition, features, and reason for selling."
                         />
                         {errors.description && (
-                          <div className="text-red-500 text-sm mt-1">{errors.description.message as string}</div>
+                          <div className="text-red-500 text-sm mt-1 flex items-center gap-1">
+                            <FiAlertCircle className="w-4 h-4" />
+                            {errors.description.message as string}
+                          </div>
                         )}
                       </div>
 
@@ -2272,21 +2448,39 @@ export default function PostAdPage() {
                           <input
                             type="number"
                             step="0.01"
-                            {...register('price', { required: 'Price is required', min: 0 })}
-                            className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                            {...register('price', { 
+                              required: 'Price is required', 
+                              min: { value: 0, message: 'Price must be greater than or equal to 0' },
+                              validate: (value) => {
+                                const numValue = parseFloat(value);
+                                if (isNaN(numValue) || numValue < 0) {
+                                  return 'Price must be a valid number greater than or equal to 0';
+                                }
+                                return true;
+                              }
+                            })}
+                            className={`w-full pl-8 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 ${
+                              errors.price ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                            }`}
                             placeholder="0"
                           />
                         </div>
                         {errors.price && (
-                          <div className="text-red-500 text-sm mt-1">{errors.price.message as string}</div>
+                          <div className="text-red-500 text-sm mt-1 flex items-center gap-1">
+                            <FiAlertCircle className="w-4 h-4" />
+                            {errors.price.message as string}
+                          </div>
                         )}
                       </div>
 
                       {/* Specifications - Show when category and subcategory are selected */}
                       {selectedCategory && selectedSubcategory && (
-                        <div className="mt-6 pt-6 border-t border-gray-200">
+                        <div className="mt-6 pt-6 border-t border-gray-200" style={{ pointerEvents: 'auto', position: 'relative', zIndex: 1 }}>
                           <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
                           <CategoryAttributes
+                            key={`${selectedCategory.id}-${selectedSubcategory.id}`}
+                            categoryId={selectedCategory.id}
+                            subcategoryId={selectedSubcategory.id}
                             categorySlug={selectedCategory.slug}
                             subcategorySlug={selectedSubcategory.slug}
                             register={register}
@@ -2304,6 +2498,7 @@ export default function PostAdPage() {
               {/* Section 3: Upload photos */}
               <div 
                 ref={(el) => { stepRefs.current[4] = el; }}
+                data-section="images"
                 className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
               >
                 <div className="flex items-start gap-4 mb-6">
@@ -2313,7 +2508,7 @@ export default function PostAdPage() {
                   <div className="flex-1">
                     <h2 className="text-xl font-semibold text-gray-900 mb-1">Upload photos</h2>
                     <p className="text-sm text-gray-600 mb-4">The first photo will be your main cover image</p>
-                    <p className="text-sm text-gray-600 mb-4">Add up to 12 photos. First photo will be your cover.</p>
+                    <p className="text-sm text-gray-600 mb-4">Add up to 4 photos. First photo will be your cover.</p>
                     <div className="grid grid-cols-4 gap-4">
                       <label className="block">
                         <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-orange-500 transition-colors cursor-pointer bg-gray-50">
@@ -2362,7 +2557,10 @@ export default function PostAdPage() {
                       ))}
                     </div>
                     {images.length === 0 && (
-                      <p className="text-red-500 text-sm mt-2">At least one image is required</p>
+                      <p className="text-red-500 text-sm mt-2 flex items-center gap-1">
+                        <FiAlertCircle className="w-4 h-4" />
+                        At least one image is required
+                      </p>
                     )}
                   </div>
                 </div>
@@ -2383,31 +2581,13 @@ export default function PostAdPage() {
                     <p className="text-sm text-gray-600 mb-4">Help buyers find your item locally</p>
                     
                     <div className="space-y-6">
-                      {/* Search Address Section with Auto Detect */}
+                      {/* Search Address Section */}
                       <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                        <div className="flex items-center justify-between mb-3">
+                        <div className="mb-3">
                           <label className="block text-sm font-semibold text-gray-800 flex items-center gap-2">
                             <FiSearch className="w-4 h-4 text-gray-600" />
                             Search Address
                           </label>
-                          <button
-                            type="button"
-                            onClick={detectLocation}
-                            disabled={isDetectingLocation}
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
-                          >
-                            {isDetectingLocation ? (
-                              <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                <span>Detecting...</span>
-                              </>
-                            ) : (
-                              <>
-                                <FiNavigation className="w-4 h-4" />
-                                <span>Auto Detect</span>
-                              </>
-                            )}
-                          </button>
                         </div>
                         <div className="relative" style={{ zIndex: 1000 }}>
                           {/* CRITICAL: Input MUST always be rendered - NEVER conditionally hidden */}
@@ -2688,7 +2868,7 @@ export default function PostAdPage() {
                                     <div className="text-sm text-gray-600">{offer.description || 'Enhance your ad visibility'}</div>
                                     {offer.hasOffer && offer.originalPrice && (
                                       <div className="mt-1 flex items-center gap-2">
-                                        <span className="text-xs text-gray-400 line-through">${offer.originalPrice.toFixed(2)}</span>
+                                        <span className="text-xs text-gray-400 line-through">₹{offer.originalPrice.toFixed(0)}</span>
                                         <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded">Special Offer</span>
                                       </div>
                                     )}
@@ -2696,11 +2876,11 @@ export default function PostAdPage() {
                                   <div className="text-right">
                                     {offer.hasOffer && offer.originalPrice ? (
                                       <div>
-                                        <div className="text-lg font-bold text-gray-900">${(offer.price || 0).toFixed(2)}</div>
-                                        <div className="text-xs text-gray-400 line-through">${offer.originalPrice.toFixed(2)}</div>
+                                        <div className="text-lg font-bold text-gray-900">₹{(offer.price || 0).toFixed(0)}</div>
+                                        <div className="text-xs text-gray-400 line-through">₹{offer.originalPrice.toFixed(0)}</div>
                                       </div>
                                     ) : (
-                                      <div className="text-lg font-bold text-gray-900">${(offer.price || 0).toFixed(2)}</div>
+                                      <div className="text-lg font-bold text-gray-900">₹{(offer.price || 0).toFixed(0)}</div>
                                     )}
                                   </div>
                                 </label>
@@ -2749,7 +2929,7 @@ export default function PostAdPage() {
                             <div className="font-semibold text-gray-900">Mark as Urgent</div>
                             <div className="text-sm text-gray-600">Stand out with a bright badge and priority search ranking</div>
                           </div>
-                          <div className="text-lg font-bold text-gray-900">$12.99</div>
+                          <div className="text-lg font-bold text-gray-900">₹49</div>
                         </label>
                       </div>
                     ) : null}
@@ -3019,8 +3199,10 @@ export default function PostAdPage() {
                           }
                           
                           setPaymentOrder(response);
-                          setShowPaymentModal(true);
-                          console.log('✅ Payment modal state set to true, should be visible now');
+                          // Directly open Razorpay checkout instead of showing payment modal popup
+                          // Pass form data to capture in closure
+                          openRazorpayCheckout(response, adFormData);
+                          console.log('✅ Opening Razorpay checkout directly');
                         },
                         onError: (error: any) => {
                           console.error('❌ Payment order creation failed:', error);

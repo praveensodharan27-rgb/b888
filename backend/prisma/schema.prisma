@@ -112,15 +112,34 @@ model Category {
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
   adPostingPrice  Float?
+  specOptions     Json? // Dropdown options for spec fields: { "brand": ["Apple","Samsung"], "model": { "Apple": ["iPhone 13","iPhone 14"], "Samsung": ["S22","S23"] }, "storage": ["64GB","128GB"] }
   ads             Ad[]
   banners         Banner[]
   subcategories   Subcategory[]
+  brands          Brand[]
   offers          Offer[]
   clusters        AdCluster[]
   searchPatterns  SearchQueryPattern[]
 
   @@unique([slug])
   @@map("categories")
+}
+
+model Brand {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  slug        String
+  icon        String?
+  isPopular   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  categoryId  String?  @db.ObjectId
+  category    Category? @relation(fields: [categoryId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([slug])
+  @@index([categoryId])
+  @@map("brands")
 }
 
 model Subcategory {
@@ -134,6 +153,7 @@ model Subcategory {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   categoryId      String   @db.ObjectId
+  specOptions     Json? // Dropdown options for spec fields specific to this subcategory
   ads             Ad[]
   category        Category @relation(fields: [categoryId], references: [id])
 
@@ -367,7 +387,9 @@ model ChatRoom {
   user1     User          @relation("User1Rooms", fields: [user1Id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   user2     User          @relation("User2Rooms", fields: [user2Id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@unique([user1Id, user2Id, adId])
+  // Note: Unique constraint temporarily disabled due to duplicate data in database
+  // To re-enable: Clean up duplicate chat_rooms first, then uncomment the line below
+  // @@unique([user1Id, user2Id, adId])
   @@index([user1Id])
   @@index([user2Id])
   @@index([adId])

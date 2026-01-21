@@ -11,14 +11,13 @@ async function checkExistingAds() {
     console.log('🔍 Checking all existing APPROVED ads for inappropriate content...\n');
     console.log('═'.repeat(70));
 
-    // Get all APPROVED ads (these bypassed moderation)
+    // Get ALL APPROVED ads (to check for nudity posted before Google Vision integration)
+    // Remove OR condition to check ALL approved ads, regardless of moderation status
     const ads = await prisma.ad.findMany({
       where: {
-        status: 'APPROVED',
-        OR: [
-          { moderationStatus: null },
-          { moderationStatus: 'pending_review' }
-        ]
+        status: 'APPROVED'
+        // Check ALL approved ads, not just those without moderation status
+        // This catches any nude ads posted before Google Vision was integrated
       },
       include: {
         user: {

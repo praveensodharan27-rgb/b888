@@ -19,6 +19,14 @@
     padding: 0;
   }
 
+  /* Freeze background CSS animations/transitions when auth modal is open */
+  .ui-frozen *,
+  .ui-frozen *::before,
+  .ui-frozen *::after {
+    animation-play-state: paused !important;
+    transition-duration: 0s !important;
+  }
+
   /* Ensure all text is visible by default */
   body {
     color: #111827; /* Dark gray for readability */

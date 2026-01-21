@@ -42,8 +42,8 @@ export default function FavoritesPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="w-full px-4 py-8">
+    <div className="min-h-screen bg-gray-50 py-8">
+      <div className="container mx-auto px-4 max-w-7xl">
         <h1 className="text-3xl font-bold text-gray-900 mb-8">My Favorites</h1>
 
         {isLoading ? (
@@ -56,7 +56,7 @@ export default function FavoritesPage() {
             {data?.favorites && data.favorites.length > 0 ? (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
                 {data.favorites.map((favorite: any) => (
-                  <AdCardOGNOX key={favorite.id} ad={favorite.ad} />
+                  <AdCardOLX key={favorite.id} ad={favorite.ad} />
                 ))}
               </div>
             ) : (

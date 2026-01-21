@@ -4,6 +4,11 @@ import SubcategoryPageClient from './SubcategoryPageClient';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
 
+type SubcategoryRouteParams = {
+  categorySlug: string;
+  subcategorySlug: string;
+};
+
 async function getSubcategoryData(categorySlug: string, subcategorySlug: string) {
   try {
     const res = await fetch(`${API_URL}/categories/${categorySlug}/${subcategorySlug}`, {
@@ -25,9 +30,10 @@ async function getSubcategoryData(categorySlug: string, subcategorySlug: string)
 export async function generateMetadata({ 
   params 
 }: { 
-  params: { categorySlug: string; subcategorySlug: string } 
+  params: Promise<SubcategoryRouteParams>
 }): Promise<Metadata> {
-  const data = await getSubcategoryData(params.categorySlug, params.subcategorySlug);
+  const { categorySlug, subcategorySlug } = await params;
+  const data = await getSubcategoryData(categorySlug, subcategorySlug);
 
   if (!data || !data.subcategory) {
     return {
@@ -59,9 +65,10 @@ export async function generateMetadata({
 export default async function SubcategoryPage({ 
   params 
 }: { 
-  params: { categorySlug: string; subcategorySlug: string } 
+  params: Promise<SubcategoryRouteParams>
 }) {
-  const data = await getSubcategoryData(params.categorySlug, params.subcategorySlug);
+  const { categorySlug, subcategorySlug } = await params;
+  const data = await getSubcategoryData(categorySlug, subcategorySlug);
 
   if (!data || !data.subcategory) {
     notFound();
@@ -70,8 +77,8 @@ export default async function SubcategoryPage({
   return (
     <SubcategoryPageClient 
       data={data} 
-      categorySlug={params.categorySlug}
-      subcategorySlug={params.subcategorySlug}
+      categorySlug={categorySlug}
+      subcategorySlug={subcategorySlug}
     />
   );
 }

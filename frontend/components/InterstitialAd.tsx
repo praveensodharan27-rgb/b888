@@ -24,25 +24,35 @@ export default function InterstitialAd({ position, onClose, trigger }: Interstit
       try {
         console.log(`[InterstitialAd] Fetching ads for position "${position}"...`);
         const response = await api.get(`/interstitial-ads?position=${position}`);
-        const fetchedAds = response.data.ads || [];
+        const fetchedAds = response.data?.ads || response.data || [];
         console.log(`[InterstitialAd] ✅ Fetched ${fetchedAds.length} ads for position "${position}":`, fetchedAds);
         return fetchedAds;
       } catch (error: any) {
-        console.error(`[InterstitialAd] ❌ Error fetching interstitial ads for position "${position}":`, error);
-        console.error(`[InterstitialAd] Error details:`, {
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          message: error.response?.data?.message || error.message,
-          url: `/interstitial-ads?position=${position}`,
-          fullError: error
-        });
+        // Handle network errors gracefully - return empty array instead of throwing
+        const isNetworkError = !error.response && error.message;
+        const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
+        
+        if (isNetworkError) {
+          console.warn(`[InterstitialAd] ⚠️ Network error fetching ads for position "${position}":`, errorMessage);
+          console.warn(`[InterstitialAd] This is usually harmless - ads will not be shown until backend is available`);
+        } else {
+          console.error(`[InterstitialAd] ❌ Error fetching interstitial ads for position "${position}":`, error);
+          console.error(`[InterstitialAd] Error details:`, {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            message: errorMessage,
+            url: `/interstitial-ads?position=${position}`,
+          });
+        }
+        
+        // Return empty array - don't break the UI
         return [];
       }
     },
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
     enabled: true, // Always fetch
-    retry: 1, // Retry once on failure
-    retryDelay: 1000, // Wait 1 second before retry
+    retry: false, // Don't retry network errors (prevents console spam)
+    retryDelay: 1000,
   });
 
   // Get the first active ad for this position
