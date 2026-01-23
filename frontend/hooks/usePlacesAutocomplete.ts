@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, RefObject } from 'react';
 import { useGooglePlaces } from './useGooglePlaces';
 
 interface AutocompleteOptions {
@@ -20,7 +20,7 @@ interface AutocompleteOptions {
  * Mandatory input DOM ready check
  */
 export function usePlacesAutocomplete(
-  inputRef: React.RefObject<HTMLInputElement>,
+  inputRef: RefObject<HTMLInputElement | null>,
   options: AutocompleteOptions = {}
 ) {
   const { googlePlacesLoaded } = useGooglePlaces();

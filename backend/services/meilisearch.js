@@ -9,6 +9,28 @@ const client = new MeiliSearch({
 const INDEX_NAME = 'ads';
 let isMeilisearchAvailable = false;
 
+// Business package types for ranking
+const BUSINESS_PACKAGE_TYPES = ['SELLER_PRIME', 'SELLER_PLUS', 'MAX_VISIBILITY'];
+
+/**
+ * Calculate ranking priority for an ad
+ * Priority: Premium (3) > Business (2) > Free (1)
+ */
+function calculateRankingPriority(ad) {
+  // Premium: isPremium = true
+  if (ad.isPremium === true) {
+    return 3;
+  }
+  
+  // Business: packageType in BUSINESS_PACKAGE_TYPES AND isPremium = false
+  if (ad.packageType && BUSINESS_PACKAGE_TYPES.includes(ad.packageType)) {
+    return 2;
+  }
+  
+  // Free: packageType = NORMAL AND isPremium = false
+  return 1;
+}
+
 // Check if Meilisearch is available
 async function checkMeilisearchConnection() {
   try {
@@ -35,20 +57,18 @@ async function initializeIndex() {
 
     const index = client.index(INDEX_NAME);
     
-    // Configure searchable attributes - includes title, description, category, ALL location fields, tags
+    // Configure searchable attributes - MUST include title, description, category, ALL location fields, tags
     // Keywords will match against all these fields with OR logic
+    // Each keyword in query matches any of these fields (OR behavior)
     await index.updateSearchableAttributes([
       'title',
       'description',
       'category',
-      'subcategory',
-      'location',      // Location name
-      'city',          // City field
-      'state',         // State field
-      'neighbourhood', // Neighbourhood field
-      'exactLocation', // Exact location field
-      'tags',          // Tags
-      'condition',
+      'city',
+      'state',
+      'neighbourhood',
+      'location',
+      'tags',
     ]);
     
     // Configure typo tolerance for fuzzy matching
@@ -79,12 +99,14 @@ async function initializeIndex() {
       'price',
       'featuredAt',
       'bumpedAt',
+      'rankingPriority', // For Premium > Business > Free ranking
     ]);
 
-    // Configure ranking rules (premium ads first, then by relevance)
+    // Configure ranking rules - MUST BE IN THIS EXACT ORDER for optimal search
+    // Priority: typo > words > proximity > attribute > sort > exactness
     await index.updateRankingRules([
-      'words',
       'typo',
+      'words',
       'proximity',
       'attribute',
       'sort',
@@ -105,6 +127,12 @@ async function indexAd(ad) {
   try {
     if (!isMeilisearchAvailable) {
       return; // Silently skip if Meilisearch is not available
+    }
+    
+    // Only index APPROVED ads - DISABLED, REJECTED, PENDING ads should not appear in search
+    if (ad.status !== 'APPROVED') {
+      console.log(`⏭️ Skipping indexing for ad ${ad.id} - status: ${ad.status} (only APPROVED ads are indexed)`);
+      return;
     }
 
     const index = client.index(INDEX_NAME);
@@ -130,6 +158,7 @@ async function indexAd(ad) {
       isPremium: ad.isPremium || false,
       premiumType: ad.premiumType || null,
       packageType: ad.packageType || 'NORMAL', // For Premium → Business → Free ranking
+      rankingPriority: calculateRankingPriority(ad), // Premium (3) > Business (2) > Free (1)
       userId: ad.userId,
       images: ad.images || [],
       createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
@@ -155,9 +184,20 @@ async function indexAds(ads) {
       return; // Silently skip if Meilisearch is not available
     }
     
+    // Filter out non-APPROVED ads - only index APPROVED ads
+    const approvedAds = ads.filter(ad => ad.status === 'APPROVED');
+    if (approvedAds.length === 0) {
+      console.log('⏭️ No APPROVED ads to index (all ads are PENDING, DISABLED, or other status)');
+      return;
+    }
+    
+    if (approvedAds.length < ads.length) {
+      console.log(`⏭️ Filtered out ${ads.length - approvedAds.length} non-APPROVED ads (only indexing APPROVED ads)`);
+    }
+    
     const index = client.index(INDEX_NAME);
     
-    const documents = ads.map(ad => ({
+    const documents = approvedAds.map(ad => ({
       id: ad.id,
       title: ad.title,
       description: ad.description || '',
@@ -178,6 +218,7 @@ async function indexAds(ads) {
       isPremium: ad.isPremium || false,
       premiumType: ad.premiumType || null,
       packageType: ad.packageType || 'NORMAL', // For Premium → Business → Free ranking
+      rankingPriority: calculateRankingPriority(ad), // Premium (3) > Business (2) > Free (1)
       userId: ad.userId,
       images: ad.images || [],
       createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
@@ -219,6 +260,8 @@ async function searchAds(query, options = {}) {
       categoryId,
       subcategoryId,
       locationId,
+      city,
+      state,
       minPrice,
       maxPrice,
       condition,
@@ -275,26 +318,34 @@ async function searchAds(query, options = {}) {
     }
     
     // Build sort array
+    // For search queries: relevance first, then rankingPriority (Premium > Business > Free) as tiebreaker
+    // For non-search queries: use explicit sort with rankingPriority
     let sortArray = [];
     switch (sort) {
       case 'oldest':
-        sortArray = ['createdAt:asc'];
+        sortArray = ['rankingPriority:desc', 'createdAt:asc']; // Premium/Business/Free first, then oldest
         break;
       case 'price_low':
-        sortArray = ['price:asc', 'createdAt:desc'];
+        sortArray = ['rankingPriority:desc', 'price:asc', 'createdAt:desc']; // Premium/Business/Free first, then price low
         break;
       case 'price_high':
-        sortArray = ['price:desc', 'createdAt:desc'];
+        sortArray = ['rankingPriority:desc', 'price:desc', 'createdAt:desc']; // Premium/Business/Free first, then price high
         break;
       case 'featured':
-        sortArray = ['featuredAt:desc', 'createdAt:desc'];
+        sortArray = ['rankingPriority:desc', 'featuredAt:desc', 'createdAt:desc']; // Premium/Business/Free first, then featured
         break;
       case 'bumped':
-        sortArray = ['bumpedAt:desc', 'createdAt:desc'];
+        sortArray = ['rankingPriority:desc', 'bumpedAt:desc', 'createdAt:desc']; // Premium/Business/Free first, then bumped
         break;
       default:
-        sortArray = ['createdAt:desc'];
+        // Default 'newest': Premium/Business/Free first, then newest
+        sortArray = ['rankingPriority:desc', 'createdAt:desc'];
     }
+    
+    // For search queries, prepend rankingPriority to existing sort as tiebreaker after relevance
+    // Note: Meilisearch will apply relevance first (via ranking rules), then sort for tiebreaking
+    // However, when sort is provided, it can override relevance. For search queries, we want relevance + priority tiebreaker.
+    // Meilisearch 'sort' ranking rule handles this - it applies sort after relevance.
     
     // KEYWORD-BASED OR SEARCH: Split query into keywords
     // Meilisearch by default uses OR logic for multiple words

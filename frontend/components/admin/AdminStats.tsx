@@ -1,12 +1,18 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import { FiUsers, FiPackage, FiClock, FiCheckCircle, FiDollarSign, FiActivity } from 'react-icons/fi';
+import { FiUsers, FiPackage, FiClock, FiCheckCircle, FiDollarSign, FiActivity, FiRefreshCw } from 'react-icons/fi';
 import Link from 'next/link';
 import ImageWithFallback from '../ImageWithFallback';
+import { clearAllCache } from '@/utils/clearCache';
+import toast from 'react-hot-toast';
 
 export default function AdminStats() {
+  const queryClient = useQueryClient();
+  const [isClearingCache, setIsClearingCache] = useState(false);
+
   const { data, isLoading } = useQuery({
     queryKey: ['admin', 'dashboard'],
     queryFn: async () => {
@@ -39,6 +45,24 @@ export default function AdminStats() {
   const activeUsersData = activeUsersResponse?.users || [];
   const onlineCount = activeUsersResponse?.onlineCount || 0;
   const isRealTime = activeUsersResponse?.isRealTime || false;
+
+  const handleClearCache = async () => {
+    if (!window.confirm('Are you sure you want to clear all cache? This will clear React Query cache, localStorage, and backend cache.')) {
+      return;
+    }
+
+    setIsClearingCache(true);
+    try {
+      await clearAllCache(true); // Clear all including backend
+      queryClient.invalidateQueries(); // Force refetch all queries
+      toast.success('✅ All cache cleared successfully!');
+    } catch (error) {
+      console.error('Error clearing cache:', error);
+      toast.error('Failed to clear cache');
+    } finally {
+      setIsClearingCache(false);
+    }
+  };
 
   if (isLoading) {
     return <div>Loading stats...</div>;
@@ -80,6 +104,18 @@ export default function AdminStats() {
 
   return (
     <div>
+      {/* Cache Clear Button */}
+      <div className="mb-6 flex justify-end">
+        <button
+          onClick={handleClearCache}
+          disabled={isClearingCache}
+          className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
+        >
+          <FiRefreshCw className={`w-4 h-4 ${isClearingCache ? 'animate-spin' : ''}`} />
+          <span>{isClearingCache ? 'Clearing Cache...' : 'Clear All Cache'}</span>
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 mb-8">
         {stats.map((stat, index) => {
           const gradients = [
@@ -110,7 +146,7 @@ export default function AdminStats() {
                   <p className="text-3xl font-bold text-gray-900 mt-2">{stat.value}</p>
                   {stat.subtext ? (
                     <p className="text-xs text-green-600 mt-2 font-medium flex items-center gap-1">
-                      <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
+                      <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse inline-block"></span>
                       {stat.subtext}
                     </p>
                   ) : (

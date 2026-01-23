@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import { getSocket } from '@/lib/socket';
+import { useAuth } from '@/hooks/useAuth';
 
 export interface Ad {
   id: string;
@@ -141,12 +142,29 @@ export const useAds = (filters: AdsFilters = {}, options?: { enabled?: boolean }
 };
 
 export const useAd = (id: string) => {
+  // Validate and sanitize ID to prevent routing issues
+  const sanitizedId = id?.trim() || '';
+  
   return useQuery({
-    queryKey: ['ad', id],
+    queryKey: ['ad', sanitizedId],
     queryFn: async () => {
+      // Double-check ID is valid before making request
+      if (!sanitizedId || sanitizedId.length < 1) {
+        console.error('Invalid ad ID provided:', id);
+        return null;
+      }
+      
       try {
-        const response = await api.get(`/ads/${id}`);
+        const response = await api.get(`/ads/${sanitizedId}`);
         const adData = response.data?.ad;
+        
+        // Verify the returned ad ID matches the requested ID
+        if (adData && adData.id !== sanitizedId) {
+          console.error('Ad ID mismatch! Requested:', sanitizedId, 'Received:', adData.id);
+          // Don't return mismatched data - return null to force refetch
+          return null;
+        }
+        
         // Return null explicitly if ad is undefined/null to distinguish from loading state
         return adData || null;
       } catch (error: any) {
@@ -155,7 +173,8 @@ export const useAd = (id: string) => {
         console.error('Error fetching ad (returning null, NOT redirecting):', {
           status: error.response?.status,
           message: error.message,
-          adId: id
+          adId: sanitizedId,
+          requestedId: id
         });
         
         // For all errors (404, 401, 500, network, etc.), return null
@@ -163,10 +182,11 @@ export const useAd = (id: string) => {
         return null;
       }
     },
-    enabled: !!id,
-    staleTime: 60 * 1000, // Consider data fresh for 1 minute
-    gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
+    enabled: !!sanitizedId && sanitizedId.length > 0,
+    staleTime: 30 * 1000, // Reduced to 30 seconds to prevent stale data issues
+    gcTime: 5 * 60 * 1000, // Reduced to 5 minutes
     refetchOnWindowFocus: false,
+    refetchOnMount: true, // Always refetch on mount to ensure correct ad
     retry: false, // Don't retry on errors
     // CRITICAL: Don't throw errors - they cause React Query to fail and potentially trigger redirects
     throwOnError: false,
@@ -181,12 +201,32 @@ export const useCreateAd = () => {
       const response = await api.post('/ads', data, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
+      console.log('📦 Ad creation API response:', {
+        status: response.status,
+        hasData: !!response.data,
+        dataKeys: response.data ? Object.keys(response.data) : [],
+        hasAd: !!response.data?.ad,
+        adId: response.data?.ad?.id
+      });
       return response.data;
     },
     onSuccess: (data) => {
+      console.log('✅ useCreateAd onSuccess - Full response:', data);
+      
+      // Backend returns: { success: true, ad: {...} }
+      const createdAd = data?.ad;
+      const adId = createdAd?.id;
+      
+      if (adId && createdAd) {
+        // Cache the ad for immediate access
+        queryClient.setQueryData(['ad', adId], createdAd);
+        console.log('✅ Ad cached in React Query:', adId);
+      }
+      
+      // Invalidate queries to refresh lists
       queryClient.invalidateQueries({ queryKey: ['ads'] });
       queryClient.invalidateQueries({ queryKey: ['my-ads'] });
-      queryClient.setQueryData(['ad', data.ad.id], data.ad); // Optimistically set new ad
+      queryClient.invalidateQueries({ queryKey: ['user', 'ads'] });
       // Invalidate ad limit status to refresh premium slots count
       // This is critical for profile page updates
       console.log('🔄 useCreateAd: Invalidating business package status after ad creation');
@@ -202,36 +242,74 @@ export const useCreateAd = () => {
       // Don't show toast here - let the calling component handle it
     },
     onError: (error: any) => {
-      const errorData = error.response?.data;
-      const adLimitReached = errorData?.adLimitReached;
+      // Simplified error handling - avoid complex serialization
+      let errorMessage = 'Failed to create ad';
+      let errorData: any = null;
+      let adLimitReached = false;
+      
+      // Extract error message safely
+      if (error) {
+        // Try response.data first (Axios error)
+        if (error.response?.data) {
+          errorData = error.response.data;
+          errorMessage = errorData.message || errorMessage;
+          adLimitReached = errorData.adLimitReached || false;
+        }
+        // Try direct message
+        else if (error.message) {
+          errorMessage = error.message;
+        }
+        // Try data property
+        else if (error.data?.message) {
+          errorMessage = error.data.message;
+          errorData = error.data;
+        }
+      }
       
       // Handle validation errors
       if (errorData?.errors && Array.isArray(errorData.errors) && errorData.errors.length > 0) {
-        const validationErrors = errorData.errors.map((err: any) => err.msg || err.message).join(', ');
-        toast.error(`Validation failed: ${validationErrors}`, {
-          duration: 5000,
-        });
-        console.error('Validation errors:', errorData.errors);
+        const validationErrors = errorData.errors
+          .map((err: any) => err.msg || err.message || String(err))
+          .filter(Boolean)
+          .join(', ');
+        toast.error(`Validation failed: ${validationErrors}`, { duration: 5000 });
         return;
       }
       
-      const errorMessage = errorData?.message || 'Failed to create ad';
-      
+      // Show error toast
       if (adLimitReached) {
-        toast.error(errorMessage, {
-          duration: 5000, // Show longer for important messages
-        });
+        toast.error(errorMessage, { duration: 5000 });
       } else {
         toast.error(errorMessage);
       }
       
-      // Log full error for debugging
-      console.error('Ad creation error:', {
-        message: errorMessage,
-        status: error.response?.status,
-        data: errorData,
-        fullError: error
-      });
+      // Simple, direct error logging without complex serialization
+      console.group('❌ Ad Creation Error');
+      
+      console.log('Message:', errorMessage);
+      
+      if (error?.response) {
+        console.log('Status:', error.response.status);
+        console.log('Status Text:', error.response.statusText);
+        if (errorData) {
+          console.log('Response Data:', errorData);
+        }
+      }
+      
+      if (error?.config) {
+        console.log('Request URL:', error.config.url);
+        console.log('Request Method:', error.config.method);
+      }
+      
+      if (error?.stack) {
+        console.log('Stack:', error.stack);
+      }
+      
+      // Log error object structure without trying to serialize
+      console.log('Error object type:', typeof error);
+      console.log('Error object keys:', error ? Object.keys(error) : 'N/A');
+      
+      console.groupEnd();
     },
   });
 };
@@ -309,6 +387,8 @@ export const useToggleFavorite = () => {
 };
 
 export const useIsFavorite = (adId: string, enabled: boolean = true) => {
+  const { isAuthenticated } = useAuth();
+  
   return useQuery({
     queryKey: ['favorite', adId],
     queryFn: async () => {
@@ -326,10 +406,12 @@ export const useIsFavorite = (adId: string, enabled: boolean = true) => {
         return false;
       }
     },
-    enabled: !!adId && enabled, // Only fetch if adId exists and enabled
+    enabled: !!adId && enabled && isAuthenticated, // Only fetch if adId exists, enabled, and user is authenticated
     staleTime: 30 * 1000, // Consider fresh for 30 seconds
     refetchOnWindowFocus: false,
     retry: false, // Don't retry on errors
+    // Return false as initial data if not authenticated (so UI shows "not favorite")
+    initialData: () => false,
   });
 };
 

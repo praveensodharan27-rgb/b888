@@ -5,7 +5,7 @@
 class AdConfig {
   static FREE_ADS_LIMIT = parseInt(process.env.FREE_ADS_LIMIT || '2');
   static AD_POSTING_PRICE = parseFloat(process.env.AD_POSTING_PRICE || '49');
-  static MAX_IMAGES = 12;
+  static MAX_IMAGES = 4;
   static MIN_IMAGES = 1;
   static AD_EXPIRY_DAYS = 7;
   static MAX_TITLE_LENGTH = 200;

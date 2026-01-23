@@ -227,6 +227,13 @@ router.get('/states/:state/cities',
     const { state } = req.params;
     const { q } = req.query; // Optional search query
     
+    console.log('📍 GET /locations/states/:state/cities', {
+      state: state,
+      decodedState: decodeURIComponent(state),
+      query: q,
+      hasQuery: !!q
+    });
+    
     // When searching, return both cities AND local areas
     // When not searching, return only cities for navigation
     if (q && q.trim().length >= 2) {
@@ -366,8 +373,18 @@ router.get('/states/:state/cities',
 
     res.json({ success: true, cities, indexed });
   } catch (error) {
-    console.error('Get cities error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch cities' });
+    console.error('❌ Get cities error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      state: req.params?.state,
+      query: req.query?.q
+    });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch cities',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -409,36 +426,7 @@ router.get('/cities/:city/areas',
   }
 });
 
-// Get single location - MUST come after all specific routes
-router.get('/:slug', async (req, res) => {
-  try {
-    const location = await prisma.location.findUnique({
-      where: { slug: req.params.slug },
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        state: true,
-        city: true,
-        neighbourhood: true,
-        pincode: true,
-        isActive: true
-        // Removed _count - it's slow and not always needed
-      }
-    });
-
-    if (!location) {
-      return res.status(404).json({ success: false, message: 'Location not found' });
-    }
-
-    res.json({ success: true, location });
-  } catch (error) {
-    console.error('Get location error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch location' });
-  }
-});
-
-// Mobile: Get nearby locations by coordinates
+// Mobile: Get nearby locations by coordinates - MUST come before /:slug route
 router.get('/mobile/nearby', async (req, res) => {
   try {
     const { latitude, longitude, radius = 10 } = req.query; // radius in km
@@ -571,15 +559,23 @@ router.get('/neighborhoods',
   }
 });
 
-// Mobile: Search locations by query
+// Mobile: Search locations by query - MUST come before /:slug route
 router.get('/mobile/search', async (req, res) => {
   try {
     const { q, limit = 20 } = req.query;
 
-    if (!q || q.trim().length < 2) {
-      return res.status(400).json({
-        success: false,
-        message: 'Search query must be at least 2 characters'
+    // Allow empty query but return empty results
+    if (!q || q.trim().length === 0) {
+      return res.json({
+        success: true,
+        locations: []
+      });
+    }
+
+    if (q.trim().length < 2) {
+      return res.json({
+        success: true,
+        locations: [] // Return empty array instead of error for short queries
       });
     }
 
@@ -678,8 +674,47 @@ router.get('/mobile/search', async (req, res) => {
       query: searchQuery
     });
   } catch (error) {
-    console.error('Search locations error:', error);
-    res.status(500).json({ success: false, message: 'Failed to search locations' });
+    console.error('❌ Search locations error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      query: req.query
+    });
+    // Return empty results instead of error to prevent frontend crashes
+    res.json({ 
+      success: true, 
+      locations: [],
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Get single location by slug - MUST be last to avoid conflicts with other routes
+router.get('/:slug', async (req, res) => {
+  try {
+    const location = await prisma.location.findUnique({
+      where: { slug: req.params.slug },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        state: true,
+        city: true,
+        neighbourhood: true,
+        pincode: true,
+        isActive: true
+        // Removed _count - it's slow and not always needed
+      }
+    });
+
+    if (!location) {
+      return res.status(404).json({ success: false, message: 'Location not found' });
+    }
+
+    res.json({ success: true, location });
+  } catch (error) {
+    console.error('Get location error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch location' });
   }
 });
 

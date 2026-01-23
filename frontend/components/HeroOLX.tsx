@@ -21,6 +21,8 @@ const BASE_EXAMPLE_SEARCHES = [
   'Scooter for sale, Kozhikode'
 ];
 
+const ANIMATED_WORDS = ['your city', 'your love', 'your place'];
+
 export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
   const router = useRouter();
   const [search, setSearch] = useState('');
@@ -32,6 +34,12 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const typewriterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const cursorIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Animated words for heading
+  const [currentWordIndex, setCurrentWordIndex] = useState(0);
+  const [currentWord, setCurrentWord] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const wordTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Check user location and update examples (check localStorage first, then try geolocation)
   useEffect(() => {
@@ -166,6 +174,49 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
     };
   }, [search]);
 
+  // Animated words effect for heading
+  useEffect(() => {
+    const currentWord = ANIMATED_WORDS[currentWordIndex];
+    let charIndex = isDeleting ? currentWord.length : 0;
+    let isActive = true;
+
+    const animateWord = () => {
+      if (!isActive) return;
+
+      if (!isDeleting && charIndex < currentWord.length) {
+        // Typing
+        setCurrentWord(currentWord.substring(0, charIndex + 1));
+        charIndex++;
+        wordTimeoutRef.current = setTimeout(animateWord, 100);
+      } else if (isDeleting && charIndex > 0) {
+        // Deleting
+        setCurrentWord(currentWord.substring(0, charIndex - 1));
+        charIndex--;
+        wordTimeoutRef.current = setTimeout(animateWord, 50);
+      } else if (!isDeleting && charIndex === currentWord.length) {
+        // Finished typing, wait then delete
+        wordTimeoutRef.current = setTimeout(() => {
+          setIsDeleting(true);
+          animateWord();
+        }, 2000);
+      } else if (isDeleting && charIndex === 0) {
+        // Finished deleting, move to next word
+        setIsDeleting(false);
+        setCurrentWordIndex((prev) => (prev + 1) % ANIMATED_WORDS.length);
+        wordTimeoutRef.current = setTimeout(animateWord, 500);
+      }
+    };
+
+    animateWord();
+
+    return () => {
+      isActive = false;
+      if (wordTimeoutRef.current) {
+        clearTimeout(wordTimeoutRef.current);
+      }
+    };
+  }, [currentWordIndex, isDeleting]);
+
   // Typewriter effect for placeholder
   useEffect(() => {
     // Don't animate if user has typed something
@@ -235,59 +286,19 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
       {/* Content */}
       <div className="relative z-10 h-full flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
         {/* Heading */}
-        <div className="text-center mb-8 md:mb-12">
+        <div className="text-center">
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-white mb-3 md:mb-4">
-            Find anything in your city
+            Find anything in{' '}
+            <span className="inline-block min-w-[200px] text-left">
+              <span className="text-yellow-400">{currentWord}</span>
+              <span className={`inline-block w-0.5 h-8 md:h-10 bg-yellow-400 ml-1 align-middle ${showCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
+                {' '}
+              </span>
+            </span>
           </h1>
           <p className="text-lg md:text-xl text-gray-200">
             Buy and sell cars, properties, and more near you
           </p>
-        </div>
-
-        {/* Large Search Bar */}
-        <div className="w-full max-w-4xl">
-          <div className={`bg-white rounded-lg shadow-2xl flex flex-col md:flex-row items-stretch md:items-center overflow-hidden transition-all duration-300 ease-out ${
-            isFocused ? 'md:scale-[1.01] md:shadow-[0_20px_40px_-12px_rgba(0,0,0,0.25)] ring-2 ring-yellow-400/40' : ''
-          }`}>
-            {/* Search Input */}
-            <div className="flex-1 flex items-center px-4 md:px-6 py-4 md:py-5">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="text-sm md:text-base text-gray-500 hidden sm:inline">Looking for?</span>
-                <div className="flex-1 relative">
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    onFocus={() => setIsFocused(true)}
-                    onBlur={() => setIsFocused(false)}
-                    placeholder=""
-                    className="w-full text-sm md:text-base text-gray-700 border-none outline-none bg-transparent transition-all duration-300"
-                  />
-                  {!search && (
-                    <div className="absolute inset-0 flex items-center pointer-events-none">
-                      <span className="text-sm md:text-base text-gray-400">
-                        {placeholder}
-                        <span className={`inline-block w-0.5 h-4 md:h-5 bg-yellow-400 ml-0.5 align-middle ${showCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
-                          {' '}
-                        </span>
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Search Button */}
-            <button
-              onClick={handleSearch}
-              className="bg-yellow-400 hover:bg-yellow-500 text-gray-900 font-semibold px-6 md:px-8 py-4 md:py-5 flex items-center justify-center gap-2 transition-all duration-300"
-            >
-              <FiSearch className={`w-5 h-5 transition-transform duration-300 ease-out ${isFocused ? 'scale-105' : 'scale-100'}`} />
-              <span className="hidden sm:inline">Search</span>
-            </button>
-          </div>
         </div>
       </div>
     </div>

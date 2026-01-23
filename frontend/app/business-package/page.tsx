@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
@@ -11,6 +11,7 @@ import { format } from 'date-fns';
 
 export default function BusinessPackagePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const [redirectingPackageType, setRedirectingPackageType] = useState<string | null>(null);
   const [billingPeriod, setBillingPeriod] = useState<'monthly' | 'yearly'>('monthly');
@@ -54,6 +55,17 @@ export default function BusinessPackagePage() {
     },
     enabled: isAuthenticated,
   });
+
+  // If redirected back from payment flow, show confirmation and refetch status.
+  useEffect(() => {
+    const activated = searchParams.get('activated');
+    if (activated === '1') {
+      toast.success('Business package activated successfully.');
+      refetchStatus();
+      // Clean URL (optional)
+      router.replace('/business-package');
+    }
+  }, [searchParams, refetchStatus, router]);
 
   const handlePurchase = (packageType: string) => {
     if (!user?.id) {
@@ -206,6 +218,38 @@ export default function BusinessPackagePage() {
   return (
     <div className="min-h-screen bg-white">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-7xl py-12">
+        {/* Active package banner */}
+        {hasActivePackage && activePackage ? (
+          <div className="mb-8 rounded-xl border border-green-200 bg-green-50 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-extrabold text-green-800">Active Business Package</div>
+                <div className="mt-1 text-sm text-green-900">
+                  <span className="font-semibold">{activePackage.packageType}</span>
+                  {activePackage.expiresAt ? (
+                    <span className="text-green-800">
+                      {' '}
+                      • Expires on {format(new Date(activePackage.expiresAt), 'dd MMM yyyy')}
+                    </span>
+                  ) : null}
+                </div>
+                {typeof activePackage.adsUsed === 'number' && typeof activePackage.totalAdsAllowed === 'number' ? (
+                  <div className="mt-1 text-xs text-green-800">
+                    Ads used: {activePackage.adsUsed} / {activePackage.totalAdsAllowed}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => refetchStatus()}
+                className="rounded-lg bg-green-600 px-4 py-2 text-xs font-semibold text-white hover:bg-green-700"
+              >
+                Refresh Status
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">

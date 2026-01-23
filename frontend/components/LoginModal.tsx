@@ -71,7 +71,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
     setQuoteText(q ? `"${q}"` : '');
   }, [isOpen]);
 
-  // Typing effect for quote
+  // Show full quote immediately when modal opens (no typing animation to prevent flickering)
   useEffect(() => {
     if (!isOpen || !quoteText) {
       setDisplayQuote('');
@@ -80,36 +80,11 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
       return;
     }
 
-    const isAtEnd = quoteIndex >= quoteText.length;
-    const isAtStart = quoteIndex <= 0;
-
-    // Single timer (no nested setTimeout) to avoid overlaps
-    let delay = isDeleting ? 30 : 50;
-    if (!isDeleting && isAtEnd) delay = 2000;
-    if (isDeleting && isAtStart) delay = 500;
-
-    const timeout = setTimeout(() => {
-      if (!isDeleting) {
-        if (!isAtEnd) {
-          const next = quoteIndex + 1;
-          setDisplayQuote(quoteText.slice(0, next));
-          setQuoteIndex(next);
-        } else {
-          setIsDeleting(true);
-        }
-      } else {
-        if (!isAtStart) {
-          const next = quoteIndex - 1;
-          setDisplayQuote(quoteText.slice(0, next));
-          setQuoteIndex(next);
-        } else {
-          setIsDeleting(false);
-        }
-      }
-    }, delay);
-
-    return () => clearTimeout(timeout);
-  }, [quoteIndex, isDeleting, quoteText, isOpen]);
+    // Immediately show full quote without animation
+    setDisplayQuote(quoteText);
+    setQuoteIndex(quoteText.length);
+    setIsDeleting(false);
+  }, [quoteText, isOpen]);
 
   // Close modal on ESC key
   useEffect(() => {
@@ -314,10 +289,9 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
                   </p>
                 </div>
 
-                {/* Bottom: Quote with Typing Effect */}
+                {/* Bottom: Quote (Static - No Animation) */}
                 <p className="text-white text-base italic min-h-[1.5rem] drop-shadow-[0_2px_10px_rgba(0,0,0,0.65)]">
                   {displayQuote}
-                  <span className="animate-pulse">|</span>
                 </p>
               </div>
             </div>

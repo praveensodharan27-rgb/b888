@@ -31,7 +31,7 @@ import { dummyAds } from '@/lib/dummyData';
 function AdsPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { location: persistedLocation } = useLocationPersistence();
+  const { location: persistedLocation, clearLocation } = useLocationPersistence();
   const { location: googleLocation } = useGoogleLocation();
   
   // Load persisted location on mount (legacy - keeping for backward compatibility)
@@ -63,7 +63,12 @@ function AdsPageContent() {
           coords = JSON.parse(storedCoords);
         }
         
-        const persisted = {
+        const persisted: {
+          location: string;
+          latitude?: string;
+          longitude?: string;
+          radius?: string;
+        } = {
           location: locationData.slug,
         };
         
@@ -134,8 +139,26 @@ function AdsPageContent() {
     const lngFromGoogle = googleLocation?.lng;
     
     // Always include persisted location coordinates if available and location is set
-    const latitudeFromUrl = latitudeParam || latFromGoogle || (locationFromUrl && (persistedLocation?.latitude || persistedLocationState?.latitude)) || undefined;
-    const longitudeFromUrl = longitudeParam || lngFromGoogle || (locationFromUrl && (persistedLocation?.longitude || persistedLocationState?.longitude)) || undefined;
+    const latitudeFromUrlRaw =
+      latitudeParam ||
+      latFromGoogle ||
+      (locationFromUrl && (persistedLocation?.latitude || persistedLocationState?.latitude)) ||
+      undefined;
+    const longitudeFromUrlRaw =
+      longitudeParam ||
+      lngFromGoogle ||
+      (locationFromUrl && (persistedLocation?.longitude || persistedLocationState?.longitude)) ||
+      undefined;
+
+    // Filters contract expects strings; normalize numbers from geolocation/persistence.
+    const latitudeFromUrl =
+      latitudeFromUrlRaw !== undefined && latitudeFromUrlRaw !== null && String(latitudeFromUrlRaw).trim() !== ''
+        ? String(latitudeFromUrlRaw)
+        : undefined;
+    const longitudeFromUrl =
+      longitudeFromUrlRaw !== undefined && longitudeFromUrlRaw !== null && String(longitudeFromUrlRaw).trim() !== ''
+        ? String(longitudeFromUrlRaw)
+        : undefined;
     const radiusFromUrl = radiusParam || (locationFromUrl && (persistedLocationState?.radius)) || '50';
     
     const result = {
@@ -265,12 +288,12 @@ function AdsPageContent() {
       
       // IMPORTANT: Preserve persisted location unless explicitly cleared
       // Location should persist across filter changes, searches, etc.
-      if (persistedLocation?.location && !newFiltersToApply.hasOwnProperty('location')) {
-        updatedFilters.location = persistedLocation.location;
+      if (persistedLocation?.slug && !newFiltersToApply.hasOwnProperty('location')) {
+        updatedFilters.location = persistedLocation.slug;
         if (persistedLocation.latitude && persistedLocation.longitude) {
-          updatedFilters.latitude = persistedLocation.latitude;
-          updatedFilters.longitude = persistedLocation.longitude;
-          updatedFilters.radius = persistedLocation.radius || '50';
+          updatedFilters.latitude = String(persistedLocation.latitude);
+          updatedFilters.longitude = String(persistedLocation.longitude);
+          updatedFilters.radius = '50';
         }
       }
       
@@ -283,12 +306,12 @@ function AdsPageContent() {
       });
       
       // Ensure persisted location is always in URL if available (unless explicitly cleared)
-      if (persistedLocation?.location && !newFiltersToApply.hasOwnProperty('location') && !params.has('location')) {
-        params.set('location', persistedLocation.location);
+      if (persistedLocation?.slug && !newFiltersToApply.hasOwnProperty('location') && !params.has('location')) {
+        params.set('location', persistedLocation.slug);
         if (persistedLocation.latitude && persistedLocation.longitude) {
-          params.set('latitude', persistedLocation.latitude);
-          params.set('longitude', persistedLocation.longitude);
-          params.set('radius', persistedLocation.radius || '50');
+          params.set('latitude', String(persistedLocation.latitude));
+          params.set('longitude', String(persistedLocation.longitude));
+          params.set('radius', '50');
         }
       }
       
@@ -311,7 +334,7 @@ function AdsPageContent() {
       try {
         localStorage.removeItem('selected_location');
         localStorage.removeItem('selected_location_coords');
-        setPersistedLocation(null);
+        clearLocation();
       } catch (error) {
         console.error('Error clearing location from localStorage:', error);
       }
@@ -354,19 +377,10 @@ function AdsPageContent() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="container mx-auto px-4 py-8">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Banners at the top */}
         <div className="mb-6">
           <Banners position="search" />
-        </div>
-        
-        {/* Advanced Search Bar */}
-        <div className="mb-6">
-          <AdvancedSearchBar 
-            initialSearch={filters.search} 
-            onSearch={handleSearch}
-            showQuickFilters={true}
-          />
         </div>
 
         <div className="flex flex-col lg:flex-row gap-8">

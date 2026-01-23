@@ -191,9 +191,9 @@ function CategoryChipsContent() {
           display: none;
         }
       `}</style>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8">
         <div className="overflow-x-auto scrollbar-hide" style={{ overflowY: 'visible' }}>
-          <div className="flex items-center gap-2 py-3 min-w-max" style={{ position: 'relative' }}>
+          <div className="flex items-center gap-4 py-3 min-w-max" style={{ position: 'relative' }}>
             {isLoading ? (
               // Loading skeleton
               <>
@@ -230,17 +230,21 @@ function CategoryChipsContent() {
                           handleCategoryClick('', true);
                         }}
                         className={`
-                          px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap
-                          transition-all duration-200 flex items-center gap-2
+                          py-2 px-2 rounded text-sm font-medium whitespace-nowrap
+                          transition-all duration-200 flex items-center gap-1.5 cursor-pointer
+                          w-auto inline-flex
                           ${
                             isActive || showMegaMenu
                               ? 'bg-blue-600 text-white'
-                              : 'bg-transparent text-gray-600 hover:text-gray-900'
+                              : 'bg-transparent text-gray-700 hover:text-gray-900 hover:bg-gray-50'
                           }
                         `}
                       >
-                        {category.name}
-                        <span className={`material-symbols-outlined text-sm transition-transform ${showMegaMenu ? 'rotate-180' : ''}`}>
+                        <span className="material-symbols-outlined text-base flex-shrink-0" style={{ fontSize: '17px', width: '17px', height: '17px' }}>
+                          category
+                        </span>
+                        <span className="text-sm flex-shrink-0" style={{ fontSize: '13px' }}>{category.name}</span>
+                        <span className={`material-symbols-outlined text-base transition-transform flex-shrink-0 ${showMegaMenu ? 'rotate-180' : ''}`} style={{ fontSize: '16px', width: '16px', height: '16px' }}>
                           expand_more
                         </span>
                       </button>
@@ -290,7 +294,7 @@ function CategoryChipsContent() {
                               </button>
                             </div>
 
-                            <div className="p-4 md:p-6 max-w-7xl mx-auto">
+                            <div className="p-4 md:p-6 max-w-[1400px] mx-auto">
                               {/* Desktop Header - Flipkart Style */}
                               <div className="hidden md:flex items-center justify-between mb-5 pb-4 border-b border-gray-200">
                                 <h3 className="text-xl font-semibold text-gray-900">All Categories</h3>
@@ -386,22 +390,29 @@ function CategoryChipsContent() {
                   );
                 }
 
-                // Regular category buttons with icons - Match the design style
+                // Regular category buttons with icons - Content-based width
                 return (
                   <button
                     key={category.slug}
                     onClick={() => handleCategoryClick(category.slug)}
                     className={`
-                      px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap
-                      transition-all duration-200 flex items-center gap-2
+                      py-2 px-2 rounded text-sm font-medium whitespace-nowrap
+                      transition-all duration-200 flex items-center gap-1.5 cursor-pointer
+                      w-auto inline-flex
                       ${
                         isActive
                           ? 'bg-blue-600 text-white'
-                          : 'bg-transparent text-gray-600 hover:text-gray-900'
+                          : 'bg-transparent text-gray-700 hover:text-gray-900 hover:bg-gray-50'
                       }
                     `}
                   >
-                    {category.name}
+                    <span 
+                      className="material-symbols-outlined flex-shrink-0" 
+                      style={{ fontSize: '17px', width: '17px', height: '17px' }}
+                    >
+                      {icon}
+                    </span>
+                    <span className="text-sm flex-shrink-0" style={{ fontSize: '13px' }}>{category.name}</span>
                   </button>
                 );
               })

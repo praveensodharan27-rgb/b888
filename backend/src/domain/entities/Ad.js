@@ -54,8 +54,8 @@ class Ad {
     if (!data.images || data.images.length === 0) {
       throw new Error('At least one image is required');
     }
-    if (data.images.length > 12) {
-      throw new Error('Maximum 12 images allowed');
+    if (data.images.length > 4) {
+      throw new Error('Maximum 4 images allowed');
     }
     const validConditions = ['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED'];
     if (data.condition && !validConditions.includes(data.condition)) {

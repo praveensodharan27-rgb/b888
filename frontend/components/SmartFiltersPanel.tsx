@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { FiChevronDown, FiChevronUp, FiFilter, FiX, FiDollarSign, FiMapPin, FiTag, FiLayers, FiCheck, FiPlus, FiStar, FiSearch } from 'react-icons/fi';
+import { useState } from 'react';
+import { FiChevronDown, FiChevronUp, FiFilter, FiX, FiDollarSign, FiTag, FiLayers, FiCheck, FiPlus, FiStar } from 'react-icons/fi';
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { useFreeAdsStatus } from '@/hooks/useAds';
 import api from '@/lib/api';
-import { dummyCategories, dummyLocations } from '@/lib/dummyData';
+import { dummyCategories } from '@/lib/dummyData';
 import LoginModal from './LoginModal';
 import SignupModal from './SignupModal';
 
@@ -28,12 +28,9 @@ export default function SmartFiltersPanel({
   const { isAuthenticated } = useAuth();
   const { data: freeAdsStatus, isLoading: isLoadingFreeAds } = useFreeAdsStatus(isAuthenticated);
   const [internalExpanded, setInternalExpanded] = useState(false);
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['category', 'location', 'price']));
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['category', 'price']));
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [signupModalOpen, setSignupModalOpen] = useState(false);
-  const [locationSearchQuery, setLocationSearchQuery] = useState('');
-  const [showLocationDropdown, setShowLocationDropdown] = useState(false);
-  const locationSearchRef = useRef<HTMLDivElement>(null);
 
   const isExpanded = controlledExpanded !== undefined ? controlledExpanded : internalExpanded;
   const toggleExpand = onToggleExpand || (() => setInternalExpanded(!internalExpanded));
@@ -50,59 +47,7 @@ export default function SmartFiltersPanel({
     },
   });
 
-  const { data: locationsData } = useQuery({
-    queryKey: ['locations'],
-    queryFn: async () => {
-      try {
-        const response = await api.get('/locations');
-        return response.data.locations || [];
-      } catch {
-        return [];
-      }
-    },
-  });
-
   const categories = categoriesData || dummyCategories;
-  const locations = locationsData || dummyLocations;
-
-  // Filter locations based on search query
-  const filteredLocations = locationSearchQuery.trim()
-    ? locations.filter((loc: any) => {
-        const query = locationSearchQuery.toLowerCase();
-        return (
-          loc.name?.toLowerCase().includes(query) ||
-          loc.city?.toLowerCase().includes(query) ||
-          loc.state?.toLowerCase().includes(query) ||
-          loc.neighbourhood?.toLowerCase().includes(query)
-        );
-      })
-    : locations;
-
-  // Get selected location name for display
-  const selectedLocation = locations.find((loc: any) => loc.slug === filters.location);
-
-  // Sync location search query with selected location
-  useEffect(() => {
-    if (filters.location && selectedLocation) {
-      setLocationSearchQuery(selectedLocation.name);
-    } else if (!filters.location) {
-      setLocationSearchQuery('');
-    }
-  }, [filters.location, selectedLocation]);
-
-  // Close location dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (locationSearchRef.current && !locationSearchRef.current.contains(event.target as Node)) {
-        setShowLocationDropdown(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, []);
 
   const toggleSection = (section: string) => {
     const newExpanded = new Set(expandedSections);
@@ -124,10 +69,8 @@ export default function SmartFiltersPanel({
 
   const clearAllFilters = () => {
     onFilterChange({
-      search: '',
       category: '',
       subcategory: '',
-      location: '',
       minPrice: '',
       maxPrice: '',
       condition: '',
@@ -135,9 +78,7 @@ export default function SmartFiltersPanel({
   };
 
   const activeFiltersCount = [
-    filters.search,
     filters.category,
-    filters.location,
     filters.minPrice,
     filters.maxPrice,
     filters.condition,
@@ -173,50 +114,6 @@ export default function SmartFiltersPanel({
       {/* Filters Content */}
       {isExpanded && (
         <div className="p-4 space-y-4">
-          {/* Search Section */}
-          <div className="border-b pb-4">
-            <label className="block text-sm font-medium text-gray-900 mb-2">
-              Search
-            </label>
-            <div className="relative">
-              <FiSearch className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5 z-10" />
-              <input
-                type="text"
-                placeholder="Search for products, brands, etc..."
-                value={filters.search || ''}
-                onChange={(e) => {
-                  const searchValue = e.target.value;
-                  // When search exists, clear category and subcategory (search overrides category)
-                  if (searchValue && searchValue.trim()) {
-                    handleChange('search', searchValue);
-                    handleChange('category', '');
-                    handleChange('subcategory', '');
-                  } else {
-                    handleChange('search', '');
-                  }
-                }}
-                className="w-full pl-12 pr-12 py-3 text-base border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:border-gray-300 transition-all bg-white"
-              />
-              {filters.search && (
-                <button
-                  onClick={() => clearFilter('search')}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 z-10"
-                >
-                  <FiX className="w-5 h-5" />
-                </button>
-              )}
-            </div>
-            {filters.search && (
-              <button
-                onClick={() => clearFilter('search')}
-                className="mt-2 text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1"
-              >
-                <FiX className="w-3 h-3" />
-                Clear search
-              </button>
-            )}
-          </div>
-
           {/* Category Section */}
           <div className="border-b pb-4">
             <button
@@ -271,133 +168,6 @@ export default function SmartFiltersPanel({
                         </option>
                       ))}
                     </select>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Location Section */}
-          <div className="border-b pb-4">
-            <button
-              onClick={() => toggleSection('location')}
-              className="flex items-center justify-between w-full mb-3 text-left"
-            >
-              <div className="flex items-center gap-2 font-medium text-gray-900">
-                <FiMapPin className="w-4 h-4" />
-                Location
-              </div>
-              {expandedSections.has('location') ? (
-                <FiChevronUp className="w-4 h-4 text-gray-500" />
-              ) : (
-                <FiChevronDown className="w-4 h-4 text-gray-500" />
-              )}
-            </button>
-            {expandedSections.has('location') && (
-              <div className="space-y-2" ref={locationSearchRef}>
-                <div className="relative">
-                  <div className="relative">
-                    <FiSearch className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5 z-10" />
-                    <input
-                      type="text"
-                      placeholder="Search location, city, or state..."
-                      value={locationSearchQuery}
-                      onChange={(e) => {
-                        setLocationSearchQuery(e.target.value);
-                        setShowLocationDropdown(true);
-                      }}
-                      onFocus={() => setShowLocationDropdown(true)}
-                      className="w-full pl-12 pr-12 py-3 text-base border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:border-gray-300 transition-all bg-white"
-                    />
-                    {filters.location && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          clearFilter('location');
-                          setLocationSearchQuery('');
-                        }}
-                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 z-10"
-                      >
-                        <FiX className="w-5 h-5" />
-                      </button>
-                    )}
-                  </div>
-                  
-                  {/* Location Dropdown */}
-                  {showLocationDropdown && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                      <button
-                        onClick={() => {
-                          handleChange('location', '');
-                          setLocationSearchQuery('');
-                          setShowLocationDropdown(false);
-                        }}
-                        className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 ${
-                          !filters.location ? 'bg-primary-50 text-primary-600' : 'text-gray-700'
-                        }`}
-                      >
-                        <FiMapPin className="w-4 h-4" />
-                        All Locations
-                      </button>
-                      {filteredLocations.length > 0 ? (
-                        filteredLocations.slice(0, 20).map((loc: any) => (
-                          <button
-                            key={loc.id}
-                            onClick={() => {
-                              handleChange('location', loc.slug);
-                              setLocationSearchQuery(loc.name);
-                              setShowLocationDropdown(false);
-                            }}
-                            className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-start gap-2 ${
-                              filters.location === loc.slug ? 'bg-primary-50 text-primary-600' : 'text-gray-700'
-                            }`}
-                          >
-                            <FiMapPin className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium truncate">{loc.name}</div>
-                              {(loc.city || loc.state) && (
-                                <div className="text-xs text-gray-500 truncate">
-                                  {[loc.city, loc.state].filter(Boolean).join(', ')}
-                                </div>
-                              )}
-                            </div>
-                            {filters.location === loc.slug && (
-                              <FiCheck className="w-4 h-4 text-primary-600 flex-shrink-0" />
-                            )}
-                          </button>
-                        ))
-                      ) : (
-                        <div className="px-3 py-2 text-sm text-gray-500 text-center">
-                          No locations found
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                
-                {/* Selected Location Display */}
-                {filters.location && selectedLocation && (
-                  <div className="flex items-center justify-between px-3 py-2 bg-primary-50 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      <FiMapPin className="w-4 h-4 text-primary-600" />
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">{selectedLocation.name}</div>
-                        {(selectedLocation.city || selectedLocation.state) && (
-                          <div className="text-xs text-gray-600">
-                            {[selectedLocation.city, selectedLocation.state].filter(Boolean).join(', ')}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        clearFilter('location');
-                        setLocationSearchQuery('');
-                      }}
-                      className="text-primary-600 hover:text-primary-700"
-                    >
-                      <FiX className="w-4 h-4" />
-                    </button>
                   </div>
                 )}
               </div>

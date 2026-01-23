@@ -476,6 +476,7 @@ export default function AdminCategories() {
           No categories yet. Create your first category!
         </div>
       )}
+
     </div>
   );
 }

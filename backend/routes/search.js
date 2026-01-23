@@ -5,6 +5,7 @@ const { searchAds, autocomplete } = require('../services/meilisearch');
 const { saveSearchQuery } = require('../services/searchAlerts');
 const { authenticate } = require('../middleware/auth');
 const { rankAds } = require('../services/adRankingService');
+const { rankAdsWithSmartScoring, getCurrentLocationFromRequest } = require('../services/smartAdScoringService');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -20,7 +21,10 @@ router.get('/',
     query('minPrice').optional().isFloat({ min: 0 }),
     query('maxPrice').optional().isFloat({ min: 0 }),
     query('condition').optional().isIn(['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED']),
-    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped'])
+    query('sort').optional().isIn(['newest', 'oldest', 'price_low', 'price_high', 'featured', 'bumped']),
+    query('city').optional().isString(),
+    query('state').optional().isString(),
+    query('location').optional().isString() // Location slug
   ],
   async (req, res) => {
     try {
@@ -39,22 +43,46 @@ router.get('/',
         maxPrice,
         condition,
         sort = 'newest',
+        city,
+        state,
+        location: locationSlug
       } = req.query;
+
+      // Get current location from navbar (LOCATION-FIRST CONTEXT)
+      let currentLocation = null;
+      if (city || state) {
+        currentLocation = { city, state };
+      } else if (locationSlug) {
+        try {
+          const location = await prisma.location.findFirst({
+            where: { slug: locationSlug },
+            select: { city: true, state: true, neighbourhood: true }
+          });
+          if (location) {
+            currentLocation = {
+              city: location.city,
+              state: location.state,
+              neighbourhood: location.neighbourhood
+            };
+          }
+        } catch (error) {
+          console.error('Error fetching location:', error);
+        }
+      }
 
       // IMPORTANT: If search keyword exists, ignore category/subcategory filters (search overrides category)
       const shouldIgnoreCategory = q && q.trim();
       
-      // Resolve category and subcategory IDs - REMOVED: location lookup
+      // Resolve category and subcategory IDs
       const [categoryObj, subcategoryObj] = await Promise.all([
         (!shouldIgnoreCategory && category) ? prisma.category.findUnique({ where: { slug: category }, select: { id: true } }) : null,
         (!shouldIgnoreCategory && subcategory) ? prisma.subcategory.findFirst({ where: { slug: subcategory }, select: { id: true } }) : null,
       ]);
 
-      // Search using Meilisearch - REMOVED: locationId filter
-      // Only pass category/subcategory if search doesn't exist
+      // STEP 1: Search using Meilisearch (get all matching ads)
       const searchResults = await searchAds(q, {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: 1,
+        limit: 200, // Fetch more to allow city/state filtering
         categoryId: (!shouldIgnoreCategory && categoryObj) ? categoryObj.id : undefined,
         subcategoryId: (!shouldIgnoreCategory && subcategoryObj) ? subcategoryObj.id : undefined,
         minPrice: minPrice ? parseFloat(minPrice) : undefined,
@@ -64,10 +92,10 @@ router.get('/',
         status: 'APPROVED',
       });
 
-      // Get full ad details from database using IDs from search results
-      const adIds = searchResults.hits.map(hit => hit.id);
+      // Get all ad IDs from search results
+      const allAdIds = searchResults.hits.map(hit => hit.id);
       
-      if (adIds.length === 0) {
+      if (allAdIds.length === 0) {
         return res.json({
           success: true,
           ads: [],
@@ -80,76 +108,117 @@ router.get('/',
         });
       }
 
-      // Fetch more ads for ranking (to allow proper rotation)
-      const fetchLimit = Math.min(parseInt(limit) * 3, 100);
-      const extendedAdIds = searchResults.hits.slice(0, fetchLimit).map(hit => hit.id);
-      
-      const ads = await prisma.ad.findMany({
-        where: {
-          id: { in: extendedAdIds },
-          status: 'APPROVED',
-        },
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          price: true,
-          originalPrice: true,
-          discount: true,
-          condition: true,
-          images: true,
-          status: true,
-          isPremium: true,
-          premiumType: true,
-          isUrgent: true,
-          views: true,
-          expiresAt: true,
-          createdAt: true,
-          packageType: true,
-          lastShownAt: true,
-          userId: true,
-          category: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-            },
+      // STEP 2: CITY-FIRST FILTERING - Get ads from selected city first
+      const adSelectFields = {
+        id: true,
+        title: true,
+        description: true,
+        price: true,
+        originalPrice: true,
+        discount: true,
+        condition: true,
+        images: true,
+        status: true,
+        isPremium: true,
+        premiumType: true,
+        isUrgent: true,
+        views: true,
+        expiresAt: true,
+        createdAt: true,
+        postedAt: true,
+        packageType: true,
+        lastShownAt: true,
+        userId: true,
+        city: true,
+        state: true,
+        slug: true,
+        category: { select: { id: true, name: true, slug: true } },
+        subcategory: { select: { id: true, name: true, slug: true } },
+        location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+        user: { select: { id: true, name: true, avatar: true } }
+      };
+
+      const now = new Date();
+      let cityAds = [];
+      let stateAds = [];
+      let ads = [];
+
+      // Priority 1: Fetch ads from same city (if location available)
+      if (currentLocation && currentLocation.city) {
+        cityAds = await prisma.ad.findMany({
+          where: {
+            id: { in: allAdIds },
+            status: 'APPROVED',
+            city: currentLocation.city,
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: now } }
+            ]
           },
-          subcategory: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-            },
+          select: adSelectFields,
+          take: 100 // Limit to prevent too many results
+        });
+
+        console.log(`📍 Search: Found ${cityAds.length} ads in city: ${currentLocation.city}`);
+      }
+
+      // Priority 2: If city results are low (< 10), fetch state-level ads as fallback
+      if (cityAds.length < 10 && currentLocation && currentLocation.state) {
+        // Get state-level ads (excluding city ads already fetched)
+        const cityAdIds = new Set(cityAds.map(ad => ad.id));
+        
+        stateAds = await prisma.ad.findMany({
+          where: {
+            id: { in: allAdIds.filter(id => !cityAdIds.has(id)) },
+            status: 'APPROVED',
+            state: currentLocation.state,
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: now } }
+            ]
           },
-          location: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-              latitude: true,
-              longitude: true,
-            },
+          select: adSelectFields,
+          take: 50 // Limit state ads
+        });
+
+        console.log(`📍 Search: Found ${stateAds.length} additional ads in state: ${currentLocation.state}`);
+      }
+
+      // Combine: City ads first, then state ads (if city results are low)
+      if (cityAds.length >= 10) {
+        // Enough city results - use only city ads
+        ads = cityAds;
+      } else {
+        // Low city results - combine city + state ads
+        ads = [...cityAds, ...stateAds];
+      }
+
+      // If no location or no location-based results, use all search results
+      if (ads.length === 0) {
+        ads = await prisma.ad.findMany({
+          where: {
+            id: { in: allAdIds.slice(0, 100) },
+            status: 'APPROVED',
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: now } }
+            ]
           },
-          user: {
-            select: {
-              id: true,
-              name: true,
-              avatar: true,
-            },
-          },
-        },
+          select: adSelectFields
+        });
+      }
+
+      // STEP 3: Apply smart ranking with location boost (isSearch = true for higher location boost)
+      const rankedAds = rankAdsWithSmartScoring(ads, {
+        query: q,
+        currentLocation,
+        isSearch: true // Enable search location boost
       });
 
-      // Apply simple ranking - REMOVED: package-based ranking and prioritization
-      const rankedAds = await rankAds(ads, { updateLastShown: true });
-      
-      const adsMap = new Map(rankedAds.map(ad => [ad.id, ad]));
-      const orderedAds = rankedAds.slice(0, parseInt(limit));
+      // Apply pagination
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const orderedAds = rankedAds.slice(skip, skip + parseInt(limit));
 
-        // REMOVED: Location-based distance calculation and filtering
-
-      // REMOVED: Distance-based sorting and package grouping
       const finalAds = orderedAds;
 
       // Save search query for alerts (async, don't wait)

@@ -124,7 +124,7 @@ function HomeContent() {
       </Suspense>
 
       {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
         {/* Fresh Recommendations Section */}
         <section className="mb-12 md:mb-16">
           <ProgressiveLoader

@@ -1,9 +1,8 @@
 'use client';
 
-import { useInfiniteAds } from '@/hooks/useInfiniteAds';
+import { useHomeFeed } from '@/hooks/useHomeFeed';
 import AdCardOGNOX from './AdCardOGNOX';
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { dummyAds } from '@/lib/dummyData';
+import { useEffect, useMemo } from 'react';
 import { useIntersectionObserver } from '@/hooks/useIntersectionObserver';
 import { useGoogleLocation } from '@/hooks/useGoogleLocation';
 import { useLocationPersistence } from '@/hooks/useLocationPersistence';
@@ -18,84 +17,56 @@ interface FreshRecommendationsOGNOXProps {
 }
 
 export default function FreshRecommendationsOGNOX({ location, categorySlug }: FreshRecommendationsOGNOXProps = {}) {
-  const limit = 8; // Show 8 ads per page
-  const [radiusMessage, setRadiusMessage] = useState<string | null>(null);
+  const limit = 12; // Show 12 ads per batch (smaller initial batch for lazy loading)
   
   // Get Google location (city, state, lat, lng) and persisted location
   const { location: googleLocation } = useGoogleLocation();
   const { location: persistedLocation } = useLocationPersistence();
   
-  // Build filter object based on location and category props
-  // CRITICAL: Always include location (OGNOX style)
-  const filters: any = {
-    limit, // Single number, not array
-    sort: 'newest' as const,
-  };
-
-  // Add category filter if provided
-  if (categorySlug) {
-    filters.category = categorySlug;
-  }
-
+  // Build home feed filters based on navbar location
   // Priority: passed location > Google location > persisted location
-  if (location?.locationSlug) {
-    filters.location = location.locationSlug;
-    if (location.latitude && location.longitude) {
-      filters.latitude = location.latitude.toString();
-      filters.longitude = location.longitude.toString();
-      filters.radius = '50';
+  const homeFeedFilters = useMemo(() => {
+    const filters: any = {
+      limit,
+    };
+
+    // Priority 1: Use passed location (from props)
+    if (location?.locationSlug) {
+      filters.location = location.locationSlug;
+    } else if (googleLocation?.city) {
+      // Priority 2: Use Google location (city, state)
+      filters.city = googleLocation.city;
+      if (googleLocation.state) {
+        filters.state = googleLocation.state;
+      }
+    } else if (persistedLocation?.slug) {
+      // Priority 3: Use persisted location
+      filters.location = persistedLocation.slug;
+    } else if (persistedLocation?.city) {
+      // Fallback: Use persisted location city/state if available
+      filters.city = persistedLocation.city;
+      if (persistedLocation.state) {
+        filters.state = persistedLocation.state;
+      }
     }
-  } else if (googleLocation) {
-    // Use Google Places location (city, state, lat, lng)
-    filters.latitude = googleLocation.lat.toString();
-    filters.longitude = googleLocation.lng.toString();
-    filters.radius = '50'; // Default 50km radius
-  } else if (location?.latitude && location?.longitude) {
-    // Fallback to passed location coordinates
-    filters.latitude = location.latitude.toString();
-    filters.longitude = location.longitude.toString();
-    filters.radius = '50'; // Default 50km radius
-  } else if (persistedLocation?.slug) {
-    // Use persisted location as last resort
-    filters.location = persistedLocation.slug;
-    if (persistedLocation.latitude && persistedLocation.longitude) {
-      filters.latitude = persistedLocation.latitude.toString();
-      filters.longitude = persistedLocation.longitude.toString();
-      filters.radius = '50';
-    }
-  }
+
+    return filters;
+  }, [location, googleLocation, persistedLocation, limit]);
   
-  // Location is always included if available (OGNOX behavior)
-  
-  // Use infinite scroll for lazy loading
-  const { data, isLoading, isError, hasNextPage, fetchNextPage, isFetchingNextPage } = useInfiniteAds(filters);
+  // Use home feed hook (uses navbar location with smart ranking)
+  const { data, isLoading, isError, hasNextPage, fetchNextPage, isFetchingNextPage } = useHomeFeed(homeFeedFilters);
 
   // Debug: Log data changes
   useEffect(() => {
     if (data?.pages) {
-      console.log('📍 FreshRecommendationsOGNOX - Data received:', {
+      console.log('📍 FreshRecommendationsOGNOX - Home Feed Data received:', {
         pages: data.pages.length,
         totalAds: data.pages.reduce((sum, page) => sum + (page.ads?.length || 0), 0),
         firstPageAds: data.pages[0]?.ads?.length || 0,
-        radiusInfo: data.pages[0]?.radiusInfo
+        filters: homeFeedFilters
       });
     }
-  }, [data]);
-
-  // Check for radius expansion info and set message
-  useEffect(() => {
-    if (data?.pages && data.pages.length > 0) {
-      const firstPage = data.pages[0];
-      if (firstPage.radiusInfo && firstPage.radiusInfo.expanded && firstPage.radiusInfo.radiusRange) {
-        const message = `Showing results for ${firstPage.radiusInfo.radiusRange} as no ads were found in your exact location.`;
-        setRadiusMessage(message);
-      } else {
-        setRadiusMessage(null);
-      }
-    } else {
-      setRadiusMessage(null);
-    }
-  }, [data]);
+  }, [data, homeFeedFilters]);
 
   // Flatten all pages into a single array (memoized for performance)
   const ads = useMemo(() => {
@@ -128,16 +99,9 @@ export default function FreshRecommendationsOGNOX({ location, categorySlug }: Fr
         </h2>
       </div>
 
-      {/* Radius expansion message */}
-      {radiusMessage && (
-        <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <p className="text-sm text-blue-800">{radiusMessage}</p>
-        </div>
-      )}
-
       {isLoading && ads.length === 0 ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-          {[...Array(8)].map((_, i) => (
+          {[...Array(12)].map((_, i) => (
             <div key={i} className="bg-white rounded-lg shadow-md animate-pulse overflow-hidden">
               <div className="h-48 md:h-56 bg-gray-200"></div>
               <div className="p-4 space-y-2">
@@ -156,12 +120,13 @@ export default function FreshRecommendationsOGNOX({ location, categorySlug }: Fr
       ) : ads.length > 0 ? (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-            {ads.map((ad: any) => {
+            {ads.map((ad: any, index: number) => {
               if (!ad || !ad.id || !ad.title) {
                 return null;
               }
+              // Use combination of ID and index to ensure uniqueness across infinite scroll pages
               return (
-                <AdCardOGNOX key={ad.id} ad={ad} />
+                <AdCardOGNOX key={`${ad.id}-${index}`} ad={ad} />
               );
             })}
           </div>

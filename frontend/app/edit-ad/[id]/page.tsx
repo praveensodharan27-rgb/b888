@@ -9,6 +9,7 @@ import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { FiX, FiUpload, FiNavigation } from 'react-icons/fi';
 import ImageWithFallback from '@/components/ImageWithFallback';
+import ProductSpecifications from '@/components/ProductSpecifications';
 import toast from 'react-hot-toast';
 
 export default function EditAdPage() {
@@ -38,6 +39,8 @@ export default function EditAdPage() {
 
   const selectedCategoryId = watch('categoryId');
   const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
+  const selectedSubcategoryId = watch('subcategoryId');
+  const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId);
 
 
   // Load ad data into form
@@ -168,8 +171,8 @@ export default function EditAdPage() {
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     const totalImages = existingImages.length + images.length + files.length;
-    if (totalImages > 12) {
-      alert('Maximum 12 images allowed');
+    if (totalImages > 4) {
+      alert('Maximum 4 images allowed');
       return;
     }
 
@@ -417,8 +420,23 @@ export default function EditAdPage() {
           </div>
         </div>
 
+        {/* Product Specifications - Show when category and subcategory are selected */}
+        {selectedCategory && selectedSubcategory && (
+          <div className="mt-6 pt-6 border-t border-gray-200">
+            <ProductSpecifications
+              adId={adId}
+              categorySlug={selectedCategory.slug}
+              subcategorySlug={selectedSubcategory.slug}
+              register={register}
+              watch={watch}
+              setValue={setValue}
+              errors={errors}
+            />
+          </div>
+        )}
+
         <div>
-          <label className="block text-sm font-medium mb-2">Images (Max 12) *</label>
+          <label className="block text-sm font-medium mb-2">Images (Max 4) *</label>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
             {/* Existing images */}
             {existingImages.map((img, index) => (
@@ -463,7 +481,7 @@ export default function EditAdPage() {
             ))}
             
             {/* Upload button */}
-            {existingImages.length + previews.length < 12 && (
+            {existingImages.length + previews.length < 4 && (
               <label className="border-2 border-dashed border-gray-300 rounded-lg h-32 flex items-center justify-center cursor-pointer hover:border-primary-500">
                 <FiUpload className="w-6 h-6 text-gray-400" />
                 <input

@@ -1,14 +1,28 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { UseFormRegister, UseFormWatch, UseFormSetValue, FieldErrors } from 'react-hook-form';
+import { useQuery } from '@tanstack/react-query';
+import Select, { ActionMeta, SingleValue } from 'react-select';
+import CreatableSelect from 'react-select/creatable';
+import api from '@/lib/api';
 
-interface AttributeField {
+interface Specification {
+  id: string;
   name: string;
   label: string;
-  type: 'text' | 'number' | 'select' | 'multiselect' | 'checkbox';
-  options?: string[];
-  required?: boolean;
+  type: 'text' | 'number' | 'select' | 'multiselect';
+  required: boolean;
   placeholder?: string;
+  order: number;
+  options?: SpecificationOption[];
+  customValues?: string[];
+}
+
+interface SpecificationOption {
+  id: string;
+  value: string;
+  label?: string;
 }
 
 interface CategoryAttributesProps {
@@ -694,16 +708,104 @@ export default function CategoryAttributes({
   setValue, 
   errors 
 }: CategoryAttributesProps) {
+  const [savedValues, setSavedValues] = useState<Record<string, string>>({});
+
+  // Fetch specifications from API
+  const { data: specificationsData, isLoading } = useQuery({
+    queryKey: ['specifications', categorySlug, subcategorySlug],
+    queryFn: async () => {
+      if (!categorySlug && !subcategorySlug) return [];
+      try {
+        const params = new URLSearchParams();
+        if (categorySlug) params.append('categorySlug', categorySlug);
+        if (subcategorySlug) params.append('subcategorySlug', subcategorySlug);
+        // Note: api baseURL already includes /api, so we use /categories/specifications
+        const url = `/categories/specifications?${params.toString()}`;
+        console.log('📋 Fetching specifications from:', url);
+        const response = await api.get(url);
+        console.log('📋 Specifications response:', response.data);
+        return (response.data?.specifications || []) as Specification[];
+      } catch (error: any) {
+        // Only log actual errors, not expected 404s when no specs exist
+        if (error.response?.status !== 404) {
+          console.error('Failed to fetch specifications:', error);
+        }
+        return [];
+      }
+    },
+    enabled: !!(categorySlug || subcategorySlug),
+    retry: false
+  });
+
+  // Save custom value when user creates a new option
+  const saveCustomValue = async (specificationId: string, value: string) => {
+    try {
+      // Note: api baseURL already includes /api, so we use /categories/specifications/values
+      await api.post('/categories/specifications/values', {
+        specificationId,
+        value: value.trim()
+      });
+    } catch (error) {
+      // Silently fail - this is not critical for user experience
+      if (process.env.NODE_ENV === 'development') {
+        console.log('Failed to save custom value (non-critical):', error);
+      }
+    }
+  };
 
   if (!categorySlug || !subcategorySlug) {
     return null;
   }
 
-  const attributes = categoryAttributes[categorySlug]?.[subcategorySlug] || [];
+  if (isLoading) {
+    return (
+      <div className="text-center py-4 text-gray-500">
+        Loading specifications...
+      </div>
+    );
+  }
 
-  if (attributes.length === 0) {
+  const specifications = specificationsData || [];
+
+  // Fallback to hardcoded attributes if no specifications found
+  const fallbackAttributes = categoryAttributes[categorySlug]?.[subcategorySlug] || [];
+  const useFallback = specifications.length === 0 && fallbackAttributes.length > 0;
+
+  if (specifications.length === 0 && !useFallback) {
     return null;
   }
+
+  const handleSelectChange = (
+    spec: Specification,
+    selectedOption: SingleValue<{ value: string; label: string }> | null,
+    actionMeta: ActionMeta<{ value: string; label: string }>
+  ) => {
+    const fieldName = `attributes.${spec.name}`;
+    const value = selectedOption?.value || '';
+    
+    setValue(fieldName, value);
+    
+    // If it's a new value (created by user), save it
+    if (actionMeta.action === 'create-option' && value) {
+      saveCustomValue(spec.id, value);
+    }
+  };
+
+  const handleMultiSelectChange = (
+    spec: Specification,
+    selectedOptions: readonly { value: string; label: string }[],
+    actionMeta: ActionMeta<{ value: string; label: string }>
+  ) => {
+    const fieldName = `attributes.${spec.name}`;
+    const values = selectedOptions.map(opt => opt.value);
+    
+    setValue(fieldName, values);
+    
+    // Save any new values
+    if (actionMeta.action === 'create-option' && actionMeta.option) {
+      saveCustomValue(spec.id, actionMeta.option.value);
+    }
+  };
 
   const handleMultiSelect = (fieldName: string, value: string, checked: boolean) => {
     const currentValue = watch(`attributes.${fieldName}`) || [];
@@ -714,30 +816,148 @@ export default function CategoryAttributes({
     }
   };
 
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {attributes.map((attr) => {
-          const fieldName = `attributes.${attr.name}`;
-          const error = (errors.attributes as any)?.[attr.name];
+  // If using fallback (hardcoded attributes)
+  if (useFallback) {
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {fallbackAttributes.map((attr) => {
+            const fieldName = `attributes.${attr.name}`;
+            const error = (errors.attributes as any)?.[attr.name];
 
-          if (attr.type === 'select') {
+            if (attr.type === 'select') {
+              return (
+                <div key={attr.name}>
+                  <label className="block text-sm font-medium mb-2">
+                    {attr.label} {attr.required && <span className="text-red-500">*</span>}
+                  </label>
+                  <select
+                    {...register(fieldName, { required: attr.required })}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white"
+                  >
+                    <option value="">Select {attr.label}</option>
+                    {attr.options?.map((option) => (
+                      <option key={option} value={option}>
+                        {option.charAt(0).toUpperCase() + option.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  {error && (
+                    <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
+                  )}
+                </div>
+              );
+            }
+
+            if (attr.type === 'multiselect') {
+              return (
+                <div key={attr.name} className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">
+                    {attr.label} {attr.required && <span className="text-red-500">*</span>}
+                  </label>
+                  <div className="flex flex-wrap gap-3">
+                    {attr.options?.map((option) => (
+                      <label key={option} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={(watch(fieldName) || []).includes(option)}
+                          onChange={(e) => handleMultiSelect(attr.name, option, e.target.checked)}
+                          className="w-4 h-4 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+                        />
+                        <span className="text-sm text-gray-700">{option}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {error && (
+                    <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
+                  )}
+                </div>
+              );
+            }
+
             return (
               <div key={attr.name}>
                 <label className="block text-sm font-medium mb-2">
                   {attr.label} {attr.required && <span className="text-red-500">*</span>}
                 </label>
-                <select
-                  {...register(fieldName, { required: attr.required })}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white"
-                >
-                  <option value="">Select {attr.label}</option>
-                  {attr.options?.map((option) => (
-                    <option key={option} value={option}>
-                      {option.charAt(0).toUpperCase() + option.slice(1)}
-                    </option>
-                  ))}
-                </select>
+                <input
+                  type={attr.type}
+                  {...register(fieldName, { 
+                    required: attr.required,
+                    valueAsNumber: attr.type === 'number'
+                  })}
+                  placeholder={attr.placeholder}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                />
+                {error && (
+                  <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // Render specifications from API
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {specifications.map((spec) => {
+          const fieldName = `attributes.${spec.name}`;
+          const error = (errors.attributes as any)?.[spec.name];
+          const currentValue = watch(fieldName);
+
+          if (spec.type === 'select') {
+            // Build options from predefined options and custom values
+            const options: { value: string; label: string }[] = [];
+            
+            // Add predefined options
+            if (spec.options) {
+              spec.options.forEach(opt => {
+                options.push({
+                  value: opt.value,
+                  label: opt.label || opt.value
+                });
+              });
+            }
+            
+            // Add custom values
+            if (spec.customValues) {
+              spec.customValues.forEach(val => {
+                if (!options.find(opt => opt.value === val)) {
+                  options.push({ value: val, label: val });
+                }
+              });
+            }
+
+            return (
+              <div key={spec.id}>
+                <label className="block text-sm font-medium mb-2">
+                  {spec.label} {spec.required && <span className="text-red-500">*</span>}
+                </label>
+                <CreatableSelect
+                  options={options}
+                  value={currentValue ? { value: currentValue, label: currentValue } : null}
+                  onChange={(newValue, actionMeta) => handleSelectChange(spec, newValue, actionMeta)}
+                  placeholder={spec.placeholder || `Select or type ${spec.label.toLowerCase()}`}
+                  isClearable
+                  isSearchable
+                  className="react-select-container"
+                  classNamePrefix="react-select"
+                  styles={{
+                    control: (base) => ({
+                      ...base,
+                      minHeight: '48px',
+                      borderColor: error ? '#ef4444' : base.borderColor,
+                    }),
+                  }}
+                />
+                <input
+                  type="hidden"
+                  {...register(fieldName, { required: spec.required })}
+                />
                 {error && (
                   <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
                 )}
@@ -745,25 +965,57 @@ export default function CategoryAttributes({
             );
           }
 
-          if (attr.type === 'multiselect') {
+          if (spec.type === 'multiselect') {
+            const options: { value: string; label: string }[] = [];
+            
+            if (spec.options) {
+              spec.options.forEach(opt => {
+                options.push({
+                  value: opt.value,
+                  label: opt.label || opt.value
+                });
+              });
+            }
+            
+            if (spec.customValues) {
+              spec.customValues.forEach(val => {
+                if (!options.find(opt => opt.value === val)) {
+                  options.push({ value: val, label: val });
+                }
+              });
+            }
+
+            const selectedValues = Array.isArray(currentValue) 
+              ? currentValue.map(val => ({ value: val, label: val }))
+              : [];
+
             return (
-              <div key={attr.name} className="md:col-span-2">
+              <div key={spec.id} className="md:col-span-2">
                 <label className="block text-sm font-medium mb-2">
-                  {attr.label} {attr.required && <span className="text-red-500">*</span>}
+                  {spec.label} {spec.required && <span className="text-red-500">*</span>}
                 </label>
-                <div className="flex flex-wrap gap-3">
-                  {attr.options?.map((option) => (
-                    <label key={option} className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={(watch(fieldName) || []).includes(option)}
-                        onChange={(e) => handleMultiSelect(attr.name, option, e.target.checked)}
-                        className="w-4 h-4 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
-                      />
-                      <span className="text-sm text-gray-700">{option}</span>
-                    </label>
-                  ))}
-                </div>
+                <CreatableSelect
+                  isMulti
+                  options={options}
+                  value={selectedValues}
+                  onChange={(newValues, actionMeta) => handleMultiSelectChange(spec, newValues, actionMeta)}
+                  placeholder={spec.placeholder || `Select or type ${spec.label.toLowerCase()}`}
+                  isClearable
+                  isSearchable
+                  className="react-select-container"
+                  classNamePrefix="react-select"
+                  styles={{
+                    control: (base) => ({
+                      ...base,
+                      minHeight: '48px',
+                      borderColor: error ? '#ef4444' : base.borderColor,
+                    }),
+                  }}
+                />
+                <input
+                  type="hidden"
+                  {...register(fieldName, { required: spec.required })}
+                />
                 {error && (
                   <div className="text-red-500 text-sm mt-1">{error.message as string}</div>
                 )}
@@ -772,17 +1024,17 @@ export default function CategoryAttributes({
           }
 
           return (
-            <div key={attr.name}>
+            <div key={spec.id}>
               <label className="block text-sm font-medium mb-2">
-                {attr.label} {attr.required && <span className="text-red-500">*</span>}
+                {spec.label} {spec.required && <span className="text-red-500">*</span>}
               </label>
               <input
-                type={attr.type}
+                type={spec.type}
                 {...register(fieldName, { 
-                  required: attr.required,
-                  valueAsNumber: attr.type === 'number'
+                  required: spec.required,
+                  valueAsNumber: spec.type === 'number'
                 })}
-                placeholder={attr.placeholder}
+                placeholder={spec.placeholder}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
               />
               {error && (

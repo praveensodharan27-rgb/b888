@@ -118,6 +118,7 @@ model Category {
   offers          Offer[]
   clusters        AdCluster[]
   searchPatterns  SearchQueryPattern[]
+  specifications  Specification[]
 
   @@unique([slug])
   @@map("categories")
@@ -136,6 +137,7 @@ model Subcategory {
   categoryId      String   @db.ObjectId
   ads             Ad[]
   category        Category @relation(fields: [categoryId], references: [id])
+  specifications  Specification[]
 
   @@unique([categoryId, slug])
   @@index([categoryId])
@@ -218,6 +220,8 @@ model Ad {
   favorites        Favorite[]
   premiumOrders    PremiumOrder[]
   contactRequests  ContactRequest[]
+  specificationValues AdSpecificationValue[]
+  specifications    Specification[]
 
   @@index([userId])
   @@index([categoryId])
@@ -623,6 +627,7 @@ enum AdStatus {
   SOLD
   EXPIRED
   INACTIVE
+  DISABLED
 }
 
 enum PremiumType {
@@ -967,4 +972,70 @@ model SearchQueryPattern {
   @@index([searchCount])
   @@index([lastSearched])
   @@map("search_query_patterns")
+}
+
+model Specification {
+  id            String                @id @default(auto()) @map("_id") @db.ObjectId
+  name          String
+  label         String
+  type          String                 // 'text', 'number', 'select', 'multiselect'
+  required      Boolean                @default(false)
+  placeholder   String?
+  order         Int                    @default(0)
+  isActive      Boolean                @default(true)
+  adId          String?                @db.ObjectId // Product-specific specification
+  categoryId    String?                @db.ObjectId // Optional: for default suggestions
+  subcategoryId String?                @db.ObjectId // Optional: for default suggestions
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  ad            Ad?                    @relation(fields: [adId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  category      Category?              @relation(fields: [categoryId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  subcategory    Subcategory?          @relation(fields: [subcategoryId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  options        SpecificationOption[]
+  values         AdSpecificationValue[]
+
+  @@index([adId])
+  @@index([categoryId])
+  @@index([subcategoryId])
+  @@index([isActive])
+  @@map("specifications")
+}
+
+model SpecificationOption {
+  id             String                @id @default(auto()) @map("_id") @db.ObjectId
+  value          String
+  label          String?
+  order          Int                    @default(0)
+  isActive       Boolean                @default(true)
+  specificationId String                @db.ObjectId
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  specification  Specification          @relation(fields: [specificationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  values         AdSpecificationValue[]
+
+  @@index([specificationId])
+  @@index([isActive])
+  @@map("specification_options")
+}
+
+model AdSpecificationValue {
+  id                String                @id @default(auto()) @map("_id") @db.ObjectId
+  value             String
+  specificationId   String                @db.ObjectId
+  optionId          String?               @db.ObjectId
+  adId              String?               @db.ObjectId
+  isCustom          Boolean               @default(false) // true if user typed a new value
+  usageCount        Int                   @default(1) // Track how many times this value is used
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  specification     Specification         @relation(fields: [specificationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  option            SpecificationOption?  @relation(fields: [optionId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  ad                Ad?                   @relation(fields: [adId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([specificationId])
+  @@index([optionId])
+  @@index([adId])
+  @@index([value])
+  @@index([isCustom])
+  @@map("ad_specification_values")
 }

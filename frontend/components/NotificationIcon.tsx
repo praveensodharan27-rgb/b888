@@ -104,12 +104,12 @@ export default function NotificationIcon() {
     <div className="relative" ref={dropdownRef}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`relative text-gray-700 hover:text-primary-600 transition-all ${
+        className={`relative text-gray-700 px-3 py-2 hover:bg-gray-50 transition-all navbar-icon-hover ${
           unreadCount > 0 ? 'animate-pulse' : ''
         }`}
         title={unreadCount > 0 ? `${unreadCount} new notification${unreadCount > 1 ? 's' : ''}` : 'Notifications'}
       >
-        <FiBell className="w-6 h-6 text-blue-600" />
+        <FiBell className="w-6 h-6" />
         {unreadCount > 0 && (
           <span className={`absolute -top-1 -right-1 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center ${
             offerNotifications.length > 0 

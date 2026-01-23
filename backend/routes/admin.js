@@ -371,10 +371,30 @@ router.put('/ads/:id/status',
         updateData.moderationStatus = 'manually_rejected';
       }
 
-      await prisma.ad.update({
+      const updatedAd = await prisma.ad.update({
         where: { id: req.params.id },
-        data: updateData
+        data: updateData,
+        include: {
+          category: { select: { id: true, name: true } },
+          subcategory: { select: { id: true, name: true } },
+          location: { select: { id: true, name: true } },
+        }
       });
+
+      // Sync with Meilisearch when ad status changes
+      try {
+        const { indexAd, deleteAd } = require('../services/meilisearch');
+        if (status === 'APPROVED') {
+          await indexAd(updatedAd);
+          console.log(`✅ Indexed approved ad in Meilisearch: ${updatedAd.id}`);
+        } else if (status === 'REJECTED') {
+          // Remove rejected ad from index
+          await deleteAd(updatedAd.id);
+          console.log(`✅ Removed rejected ad from Meilisearch: ${updatedAd.id}`);
+        }
+      } catch (indexError) {
+        console.error(`⚠️ Error syncing ad ${updatedAd.id} with Meilisearch:`, indexError);
+      }
 
       // Create notification
       await prisma.notification.create({
@@ -1355,6 +1375,285 @@ router.delete('/categories/:id', async (req, res) => {
   } catch (error) {
     console.error('Delete category error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete category' });
+  }
+});
+
+// ==================== Specification Management ====================
+
+// Get specifications for category/subcategory (defaults/suggestions) or ad (product-specific)
+router.get('/specifications', async (req, res) => {
+  try {
+    const { categoryId, subcategoryId, adId } = req.query;
+    
+    const where = {};
+    if (adId) {
+      where.adId = adId; // Product-specific specifications
+    } else if (categoryId || subcategoryId) {
+      // Category-level defaults (no adId)
+      where.adId = null;
+      if (categoryId) where.categoryId = categoryId;
+      if (subcategoryId) where.subcategoryId = subcategoryId;
+    }
+    
+    const specifications = await prisma.specification.findMany({
+      where,
+      include: {
+        options: {
+          where: { isActive: true },
+          orderBy: { order: 'asc' }
+        }
+      },
+      orderBy: { order: 'asc' }
+    });
+
+    res.json({ success: true, specifications });
+  } catch (error) {
+    console.error('Get specifications error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch specifications' });
+  }
+});
+
+// Create specification
+router.post('/specifications',
+  [
+    body('name').trim().notEmpty().withMessage('Name is required'),
+    body('label').trim().notEmpty().withMessage('Label is required'),
+    body('type').isIn(['text', 'number', 'select', 'multiselect']).withMessage('Type must be text, number, select, or multiselect'),
+    body('adId').optional().notEmpty(),
+    body('categoryId').optional().notEmpty(),
+    body('subcategoryId').optional().notEmpty(),
+    body('required').optional().isBoolean(),
+    body('order').optional().isInt({ min: 0 })
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { name, label, type, adId, categoryId, subcategoryId, required, placeholder, order } = req.body;
+
+      // Validate: either adId (product-specific) OR categoryId/subcategoryId (defaults) must be provided
+      if (!adId && !categoryId && !subcategoryId) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Either adId (for product-specific) or categoryId/subcategoryId (for defaults) must be provided' 
+        });
+      }
+
+      // If adId is provided, verify ad exists
+      if (adId) {
+        const ad = await prisma.ad.findUnique({
+          where: { id: adId }
+        });
+        if (!ad) {
+          return res.status(404).json({ success: false, message: 'Ad not found' });
+        }
+      }
+
+      const specification = await prisma.specification.create({
+        data: {
+          name: name.trim(),
+          label: label.trim(),
+          type,
+          adId: adId || null,
+          categoryId: categoryId || null,
+          subcategoryId: subcategoryId || null,
+          required: required || false,
+          placeholder: placeholder?.trim() || null,
+          order: order || 0
+        },
+        include: {
+          options: true
+        }
+      });
+
+      res.status(201).json({ success: true, specification });
+    } catch (error) {
+      console.error('Create specification error:', error);
+      res.status(500).json({ success: false, message: 'Failed to create specification' });
+    }
+  }
+);
+
+// Update specification
+router.put('/specifications/:id',
+  [
+    body('name').optional().trim().notEmpty(),
+    body('label').optional().trim().notEmpty(),
+    body('type').optional().isIn(['text', 'number', 'select', 'multiselect']),
+    body('required').optional().isBoolean(),
+    body('order').optional().isInt({ min: 0 })
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const specification = await prisma.specification.findUnique({
+        where: { id: req.params.id }
+      });
+
+      if (!specification) {
+        return res.status(404).json({ success: false, message: 'Specification not found' });
+      }
+
+      const updateData = {};
+      if (req.body.name) updateData.name = req.body.name.trim();
+      if (req.body.label) updateData.label = req.body.label.trim();
+      if (req.body.type) updateData.type = req.body.type;
+      if (req.body.required !== undefined) updateData.required = req.body.required;
+      if (req.body.placeholder !== undefined) updateData.placeholder = req.body.placeholder?.trim() || null;
+      if (req.body.order !== undefined) updateData.order = parseInt(req.body.order);
+      if (req.body.isActive !== undefined) updateData.isActive = req.body.isActive;
+
+      const updated = await prisma.specification.update({
+        where: { id: req.params.id },
+        data: updateData,
+        include: {
+          options: {
+            where: { isActive: true },
+            orderBy: { order: 'asc' }
+          }
+        }
+      });
+
+      res.json({ success: true, specification: updated });
+    } catch (error) {
+      console.error('Update specification error:', error);
+      res.status(500).json({ success: false, message: 'Failed to update specification' });
+    }
+  }
+);
+
+// Delete specification
+router.delete('/specifications/:id', async (req, res) => {
+  try {
+    const specification = await prisma.specification.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!specification) {
+      return res.status(404).json({ success: false, message: 'Specification not found' });
+    }
+
+    await prisma.specification.delete({
+      where: { id: req.params.id }
+    });
+
+    res.json({ success: true, message: 'Specification deleted successfully' });
+  } catch (error) {
+    console.error('Delete specification error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete specification' });
+  }
+});
+
+// ==================== Specification Option Management ====================
+
+// Create specification option
+router.post('/specifications/:specificationId/options',
+  [
+    body('value').trim().notEmpty().withMessage('Value is required'),
+    body('label').optional().trim(),
+    body('order').optional().isInt({ min: 0 })
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const specification = await prisma.specification.findUnique({
+        where: { id: req.params.specificationId }
+      });
+
+      if (!specification) {
+        return res.status(404).json({ success: false, message: 'Specification not found' });
+      }
+
+      const { value, label, order } = req.body;
+
+      const option = await prisma.specificationOption.create({
+        data: {
+          value: value.trim(),
+          label: label?.trim() || value.trim(),
+          specificationId: req.params.specificationId,
+          order: order || 0
+        }
+      });
+
+      res.status(201).json({ success: true, option });
+    } catch (error) {
+      console.error('Create specification option error:', error);
+      res.status(500).json({ success: false, message: 'Failed to create specification option' });
+    }
+  }
+);
+
+// Update specification option
+router.put('/specifications/options/:id',
+  [
+    body('value').optional().trim().notEmpty(),
+    body('label').optional().trim(),
+    body('order').optional().isInt({ min: 0 })
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const option = await prisma.specificationOption.findUnique({
+        where: { id: req.params.id }
+      });
+
+      if (!option) {
+        return res.status(404).json({ success: false, message: 'Specification option not found' });
+      }
+
+      const updateData = {};
+      if (req.body.value) updateData.value = req.body.value.trim();
+      if (req.body.label !== undefined) updateData.label = req.body.label?.trim() || req.body.value?.trim();
+      if (req.body.order !== undefined) updateData.order = parseInt(req.body.order);
+      if (req.body.isActive !== undefined) updateData.isActive = req.body.isActive;
+
+      const updated = await prisma.specificationOption.update({
+        where: { id: req.params.id },
+        data: updateData
+      });
+
+      res.json({ success: true, option: updated });
+    } catch (error) {
+      console.error('Update specification option error:', error);
+      res.status(500).json({ success: false, message: 'Failed to update specification option' });
+    }
+  }
+);
+
+// Delete specification option
+router.delete('/specifications/options/:id', async (req, res) => {
+  try {
+    const option = await prisma.specificationOption.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!option) {
+      return res.status(404).json({ success: false, message: 'Specification option not found' });
+    }
+
+    await prisma.specificationOption.delete({
+      where: { id: req.params.id }
+    });
+
+    res.json({ success: true, message: 'Specification option deleted successfully' });
+  } catch (error) {
+    console.error('Delete specification option error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete specification option' });
   }
 });
 

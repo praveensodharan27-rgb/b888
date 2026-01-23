@@ -86,14 +86,28 @@ async function processPendingModeration(minutesThreshold = 5) {
           // APPROVE ad - moderation passed
           // Set postedAt when ad is approved (goes live)
           const now = new Date();
-          await prisma.ad.update({
+          const updatedAd = await prisma.ad.update({
             where: { id: ad.id },
             data: {
               status: 'APPROVED',
               moderationStatus: 'approved_after_review',
               postedAt: now // Set postedAt when ad goes live
+            },
+            include: {
+              category: { select: { id: true, name: true } },
+              subcategory: { select: { id: true, name: true } },
+              location: { select: { id: true, name: true } },
             }
           });
+
+          // Index approved ad in Meilisearch (sync with database)
+          try {
+            const { indexAd } = require('./meilisearch');
+            await indexAd(updatedAd);
+            console.log(`✅ Indexed approved ad in Meilisearch: ${updatedAd.id}`);
+          } catch (indexError) {
+            console.error(`⚠️ Error indexing approved ad ${updatedAd.id} in Meilisearch:`, indexError);
+          }
 
         // Create notification for user
         await prisma.notification.create({

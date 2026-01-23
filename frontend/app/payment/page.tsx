@@ -30,6 +30,7 @@ export default function PaymentPage() {
   const [openingCheckout, setOpeningCheckout] = useState(false);
   const orderStartedRef = useRef(false);
   const razorpayCheckoutOpenedRef = useRef(false);
+  const createOrderAbortRef = useRef<AbortController | null>(null);
 
   // Load selection (query first, fallback to sessionStorage)
   const selection = useMemo(() => {
@@ -62,116 +63,138 @@ export default function PaymentPage() {
     }
   }, [authLoading, user, router]);
 
+  const createBusinessPackageOrder = useCallback(async () => {
+    if (!user) return;
+    if (selection.flow !== 'business-package') return;
+    if (!packageTypeParam) return;
+
+    // Prevent duplicate concurrent creations
+    if (creatingOrder) return;
+
+    // Abort any previous in-flight request (safety)
+    try {
+      createOrderAbortRef.current?.abort();
+    } catch {
+      // ignore
+    }
+
+    const abortController = new AbortController();
+    createOrderAbortRef.current = abortController;
+
+    // Hard timeout: avoid infinite loader when backend/Razorpay is slow or unreachable
+    const HARD_TIMEOUT_MS = 20000;
+    const timeoutId = setTimeout(() => {
+      try {
+        abortController.abort();
+      } catch {
+        // ignore
+      }
+    }, HARD_TIMEOUT_MS);
+
+    try {
+      orderStartedRef.current = true;
+      setCreatingOrder(true);
+      setOrderError(null);
+
+      // Create order FIRST so we can show payment UI ASAP.
+      // Package info is optional display metadata; don't block the payment UI on it.
+      console.log('🛒 Creating business package order for:', packageTypeParam);
+      const orderRes = await api.post(
+        '/business-package/order',
+        { packageType: packageTypeParam },
+        { signal: abortController.signal }
+      );
+
+      console.log('📦 Order response received:', {
+        hasData: !!orderRes?.data,
+        success: orderRes?.data?.success,
+        hasRazorpayOrder: !!orderRes?.data?.razorpayOrder,
+        orderData: orderRes?.data,
+      });
+
+      const orderData = orderRes?.data;
+
+      // Check multiple possible response structures
+      const razorpayOrder =
+        orderData?.razorpayOrder || orderData?.data?.razorpayOrder || orderData?.order?.razorpayOrder || null;
+
+      console.log('🔍 Extracted razorpayOrder:', {
+        hasRazorpayOrder: !!razorpayOrder,
+        hasId: !!razorpayOrder?.id,
+        hasKey: !!razorpayOrder?.key,
+        razorpayOrder,
+      });
+
+      if (!razorpayOrder) {
+        const msg = orderData?.message || 'Payment order not received. Please try again.';
+        console.error('❌ Missing razorpayOrder in response:', orderData);
+        setOrderError(msg);
+        toast.error(msg);
+        return;
+      }
+
+      if (!razorpayOrder.id) {
+        const msg = 'Payment order ID missing. Please try again.';
+        console.error('❌ Missing order ID:', razorpayOrder);
+        setOrderError(msg);
+        toast.error(msg);
+        return;
+      }
+
+      if (!razorpayOrder.key) {
+        const msg = 'Payment gateway key missing. Please contact support.';
+        console.error('❌ Missing Razorpay key:', razorpayOrder);
+        setOrderError(msg);
+        toast.error(msg);
+        return;
+      }
+
+      console.log('✅ Order ready, setting payment order');
+      setPaymentOrder({
+        ...orderData,
+        razorpayOrder,
+      });
+
+      // Fetch package info in the background (best-effort).
+      api
+        .get('/business-package/info')
+        .then((pkgInfoRes) => {
+          const packages = pkgInfoRes.data?.packages || pkgInfoRes.data?.data?.packages || pkgInfoRes.data || [];
+          const found = Array.isArray(packages) ? packages.find((p: any) => p.type === packageTypeParam) : null;
+          setSelectedPackage(found || null);
+        })
+        .catch(() => {
+          // ignore - packageDetails are optional
+        });
+    } catch (e: any) {
+      const isAbort =
+        e?.name === 'CanceledError' ||
+        e?.code === 'ERR_CANCELED' ||
+        e?.message?.toLowerCase?.().includes?.('canceled') ||
+        e?.message?.toLowerCase?.().includes?.('aborted');
+
+      const isTimeout = e?.code === 'ECONNABORTED' || isAbort;
+
+      const msg = isTimeout
+        ? 'Payment server is taking too long to respond. Please check your connection and try again.'
+        : e?.response?.data?.message || e?.message || 'Failed to start payment';
+
+      setOrderError(msg);
+      toast.error(msg);
+    } finally {
+      clearTimeout(timeoutId);
+      setCreatingOrder(false);
+    }
+  }, [user, selection.flow, packageTypeParam, creatingOrder]);
+
   // Auto-create order immediately (no intermediate steps)
   useEffect(() => {
-    if (!user || creatingOrder || paymentOrder) return;
+    if (!user || paymentOrder) return;
     if (selection.flow !== 'business-package') return;
     if (!packageTypeParam) return;
     if (orderStartedRef.current) return;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        orderStartedRef.current = true;
-        setCreatingOrder(true);
-        setOrderError(null);
-
-        // Create order FIRST so we can show payment UI ASAP.
-        // Package info is optional display metadata; don't block the payment UI on it.
-        console.log('🛒 Creating business package order for:', packageTypeParam);
-        const orderRes = await api.post('/business-package/order', { packageType: packageTypeParam });
-
-        if (cancelled) return;
-
-        console.log('📦 Order response received:', {
-          hasData: !!orderRes?.data,
-          success: orderRes?.data?.success,
-          hasRazorpayOrder: !!orderRes?.data?.razorpayOrder,
-          orderData: orderRes?.data,
-        });
-
-        const orderData = orderRes?.data;
-        
-        // Check multiple possible response structures
-        const razorpayOrder =
-          orderData?.razorpayOrder ||
-          orderData?.data?.razorpayOrder ||
-          orderData?.order?.razorpayOrder ||
-          null;
-
-        console.log('🔍 Extracted razorpayOrder:', {
-          hasRazorpayOrder: !!razorpayOrder,
-          hasId: !!razorpayOrder?.id,
-          hasKey: !!razorpayOrder?.key,
-          razorpayOrder,
-        });
-
-        if (!razorpayOrder) {
-          const msg =
-            orderData?.message ||
-            'Payment order not received. Please try again.';
-          console.error('❌ Missing razorpayOrder in response:', orderData);
-          setOrderError(msg);
-          toast.error(msg);
-          setCreatingOrder(false);
-          return;
-        }
-
-        if (!razorpayOrder.id) {
-          const msg = 'Payment order ID missing. Please try again.';
-          console.error('❌ Missing order ID:', razorpayOrder);
-          setOrderError(msg);
-          toast.error(msg);
-          setCreatingOrder(false);
-          return;
-        }
-
-        if (!razorpayOrder.key) {
-          const msg = 'Payment gateway key missing. Please contact support.';
-          console.error('❌ Missing Razorpay key:', razorpayOrder);
-          setOrderError(msg);
-          toast.error(msg);
-          setCreatingOrder(false);
-          return;
-        }
-
-        console.log('✅ Order ready, setting payment order');
-        setPaymentOrder({
-          ...orderData,
-          razorpayOrder,
-        });
-
-        // Fetch package info in the background (best-effort).
-        api
-          .get('/business-package/info')
-          .then((pkgInfoRes) => {
-            const packages =
-              pkgInfoRes.data?.packages ||
-              pkgInfoRes.data?.data?.packages ||
-              pkgInfoRes.data ||
-              [];
-            const found = Array.isArray(packages)
-              ? packages.find((p: any) => p.type === packageTypeParam)
-              : null;
-            if (!cancelled) setSelectedPackage(found || null);
-          })
-          .catch(() => {
-            // ignore - packageDetails are optional
-          });
-      } catch (e: any) {
-        if (cancelled) return;
-        const msg = e?.response?.data?.message || e?.message || 'Failed to start payment';
-        setOrderError(msg);
-        toast.error(msg);
-      } finally {
-        if (!cancelled) setCreatingOrder(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [user, creatingOrder, paymentOrder, selection.flow, packageTypeParam, router]);
+    createBusinessPackageOrder();
+  }, [user, paymentOrder, selection.flow, packageTypeParam, createBusinessPackageOrder]);
 
   // Load Razorpay SDK
   useEffect(() => {
@@ -246,9 +269,16 @@ export default function PaymentPage() {
         console.log('✅ Payment verified successfully');
         toast.success('Payment Successful. Your Business Package is now active.');
         
-        // Redirect to orders page after successful payment
+        // Clear stored selection so refresh doesn't re-trigger
+        try {
+          sessionStorage.removeItem('business_package_checkout');
+        } catch {
+          // ignore
+        }
+
+        // Redirect to business package page to show active status
         setTimeout(() => {
-          router.replace('/orders');
+          router.replace('/business-package?activated=1');
         }, 1500);
       } else {
         throw new Error(response.data?.message || 'Payment verification failed');
@@ -379,10 +409,17 @@ export default function PaymentPage() {
           {creatingOrder ? (
             <>
               <div className="flex justify-center mb-4">
-                <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent"></div>
+                <div className="relative">
+                  <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-200"></div>
+                  <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-600 border-t-transparent absolute top-0 left-0"></div>
+                </div>
               </div>
-              <div className="text-xl font-bold text-gray-900 mb-2">Preparing payment...</div>
-              <p className="text-sm text-gray-600">Creating your payment order. Please wait.</p>
+              <div className="text-xl font-bold text-gray-900 mb-2">Creating Razorpay Order...</div>
+              <p className="text-sm text-gray-600 mb-4">Please wait while we set up your payment.</p>
+              <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
+                <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
+                <span>Setting up secure payment</span>
+              </div>
             </>
           ) : orderError ? (
             <>
@@ -410,7 +447,9 @@ export default function PaymentPage() {
                     razorpayCheckoutOpenedRef.current = false;
                     setPaymentOrder(null);
                     setOrderError(null);
-                    setCreatingOrder(true);
+                    setOpeningCheckout(false);
+                    setCreatingOrder(false);
+                    createBusinessPackageOrder();
                   }}
                   className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
                 >
@@ -437,21 +476,28 @@ export default function PaymentPage() {
   }
 
   // Show loading state while opening Razorpay Checkout
-  if (openingCheckout || !razorpayLoaded) {
+  if (openingCheckout || (paymentOrder?.razorpayOrder && !razorpayLoaded)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
         <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-8 text-center shadow-lg">
           <div className="flex justify-center mb-4">
-            <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent"></div>
+            <div className="relative">
+              <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-200"></div>
+              <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-600 border-t-transparent absolute top-0 left-0"></div>
+            </div>
           </div>
           <div className="text-xl font-bold text-gray-900 mb-2">
-            {openingCheckout ? 'Opening payment gateway...' : 'Loading payment gateway...'}
+            {openingCheckout ? 'Opening Razorpay Checkout...' : 'Loading Payment Gateway...'}
           </div>
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-gray-600 mb-4">
             {openingCheckout
-              ? 'Razorpay checkout is opening. Please complete your payment.'
-              : 'Please wait while we load the payment gateway.'}
+              ? 'Razorpay checkout popup will open shortly. Please complete your payment.'
+              : 'Please wait while we load the secure payment gateway.'}
           </p>
+          <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
+            <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
+            <span>{openingCheckout ? 'Opening checkout...' : 'Loading SDK...'}</span>
+          </div>
         </div>
       </div>
     );

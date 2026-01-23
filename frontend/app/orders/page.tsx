@@ -171,11 +171,11 @@ export default function OrdersPage() {
 
                   {order.ad && (
                     <div className="flex items-center gap-4 mt-3">
-                      {order.ad.images && order.ad.images.length > 0 && (
+                      {order.ad?.images && order.ad.images.length > 0 && (
                         <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-gray-200">
                           <ImageWithFallback
                             src={Array.isArray(order.ad.images) ? order.ad.images[0] : order.ad.images}
-                            alt={order.ad.title}
+                            alt={order.ad?.title || 'Ad image'}
                             fill
                             sizes="64px"
                             className="object-cover"
@@ -183,8 +183,8 @@ export default function OrdersPage() {
                         </div>
                       )}
                       <div className="flex-1">
-                        <p className="font-medium text-gray-900">{order.ad.title}</p>
-                        {order.ad.id && (
+                        <p className="font-medium text-gray-900">{order.ad?.title || 'Ad title not available'}</p>
+                        {order.ad?.id && (
                           <Link
                             href={`/ads/${order.ad.id}`}
                             className="text-sm text-primary-600 hover:underline flex items-center gap-1 mt-1"

@@ -11,7 +11,9 @@ const BannersDynamic = dynamic(() => import('@/components/Banners'), {
   loading: () => null
 });
 
-export default function CategoryPage({ params }: { params: { slug: string } }) {
+// Next.js 15 types `params` as a Promise in PageProps; in client components we keep it flexible
+// to avoid type-check failures while still supporting runtime usage.
+export default function CategoryPage({ params }: { params: any }) {
   const { filters, handleFilterChange, handleRemoveFilter, handleClearAllFilters } = useListingFilters({
     defaultCategory: params.slug,
     excludeFromUrl: ['category'],

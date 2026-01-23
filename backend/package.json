@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "@faker-js/faker": "^10.1.0",
+    "@google-cloud/vision": "^4.3.3",
     "aws-sdk": "^2.1509.0",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.8.0",

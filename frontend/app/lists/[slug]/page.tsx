@@ -6,9 +6,9 @@ import Link from 'next/link';
 import { FiChevronRight, FiMapPin, FiTag } from 'react-icons/fi';
 
 interface ListPageProps {
-  params: {
+  params: Promise<{
     slug: string;
-  };
+  }>;
 }
 
 async function getListData(slug: string) {
@@ -25,7 +25,8 @@ async function getListData(slug: string) {
 }
 
 export async function generateMetadata({ params }: ListPageProps): Promise<Metadata> {
-  const list = await getListData(params.slug);
+  const { slug } = await params;
+  const list = await getListData(slug);
 
   if (!list) {
     return {
@@ -50,7 +51,8 @@ export async function generateMetadata({ params }: ListPageProps): Promise<Metad
 }
 
 export default async function ListPage({ params }: ListPageProps) {
-  const list = await getListData(params.slug);
+  const { slug } = await params;
+  const list = await getListData(slug);
 
   if (!list) {
     notFound();
@@ -105,7 +107,7 @@ export default async function ListPage({ params }: ListPageProps) {
           <>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 mb-6">
               {ads.map((ad: any) => (
-                <AdCardOGNOX key={ad.id} ad={ad} />
+                <AdCardOLX key={ad.id} ad={ad} />
               ))}
             </div>
 

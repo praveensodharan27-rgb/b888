@@ -90,6 +90,23 @@ export default function Navbar() {
   const handleFocusRef = useRef<(() => void) | null>(null);
   const [inputMounted, setInputMounted] = useState(false);
 
+  // Search bar text animation state
+  const [searchText, setSearchText] = useState('');
+  const [searchPlaceholder, setSearchPlaceholder] = useState('');
+  const [currentSearchExampleIndex, setCurrentSearchExampleIndex] = useState(0);
+  const [showSearchCursor, setShowSearchCursor] = useState(true);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchTypewriterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const searchCursorIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const SEARCH_EXAMPLES = [
+    'Find Cars, Mobile Phones and more...',
+    'Buy smartphones near you',
+    'Sell your bike quickly',
+    'Discover local deals',
+    'Post your ad in minutes'
+  ];
+
   // Fetch states (lightweight, cached)
   const { data: statesData, isLoading: statesLoading, error: statesError } = useQuery({
     queryKey: ['locations', 'states'],
@@ -100,13 +117,21 @@ export default function Navbar() {
         const states = response.data?.states || response.data || [];
         console.log('✅ States loaded:', states.length);
         return Array.isArray(states) ? states : [];
-      } catch (error) {
-        console.error('❌ Error fetching states:', error);
+      } catch (error: any) {
+        // Handle network errors gracefully - don't break the UI
+        const isNetworkError = !error.response && error.message;
+        if (isNetworkError) {
+          console.warn('⚠️ Network error fetching states (backend may not be running):', error.message);
+        } else {
+          console.error('❌ Error fetching states:', error.response?.status || error.message);
+        }
+        // Return empty array - Navbar will work without states
         return [];
       }
     },
     staleTime: 30 * 60 * 1000, // Cache for 30 minutes
-    retry: 2,
+    retry: false, // Don't retry network errors (prevents console spam)
+    refetchOnWindowFocus: false, // Don't refetch on window focus to avoid repeated errors
   });
 
   const states = Array.isArray(statesData) ? statesData : [];
@@ -149,8 +174,15 @@ export default function Navbar() {
           cities: Array.isArray(cities) ? cities : [],
           indexed: indexed && typeof indexed === 'object' && !Array.isArray(indexed) ? indexed : {}
         };
-      } catch (error) {
-        console.error('❌ Error fetching cities:', error);
+      } catch (error: any) {
+        // Handle network errors gracefully - don't break the UI
+        const isNetworkError = !error.response && error.message;
+        if (isNetworkError) {
+          console.warn('⚠️ Network error fetching cities (backend may not be running):', error.message);
+        } else {
+          console.error('❌ Error fetching cities:', error.response?.status || error.message);
+        }
+        // Return empty arrays - Navbar will work without cities
         return { cities: [], indexed: {} };
       }
     },
@@ -275,20 +307,65 @@ export default function Navbar() {
         
         // If state is selected, search within that state's cities AND local areas
         if (selectedState) {
-          const response = await api.get(`/locations/states/${encodeURIComponent(selectedState)}/cities?q=${encodeURIComponent(query)}`);
-          // When searching, API returns full location objects (cities + areas)
-          filtered = Array.isArray(response.data?.cities) ? response.data.cities : [];
-          console.log('State search results (cities + areas):', filtered.length, filtered);
+          try {
+            const response = await api.get(`/locations/states/${encodeURIComponent(selectedState)}/cities?q=${encodeURIComponent(query)}`);
+            // When searching, API returns full location objects (cities + areas)
+            filtered = Array.isArray(response.data?.cities) ? response.data.cities : [];
+            console.log('State search results (cities + areas):', filtered.length, filtered);
+          } catch (stateError: any) {
+            // If state-specific search fails, fallback to global search
+            console.warn('State search failed, falling back to global search:', stateError.message);
+            try {
+              const response = await api.get(`/locations/mobile/search?q=${encodeURIComponent(query)}&limit=20`);
+              filtered = Array.isArray(response.data?.locations) ? response.data.locations : [];
+              console.log('Fallback global search results:', filtered.length, filtered);
+            } catch (fallbackError: any) {
+              console.error('Both state and global search failed:', fallbackError.message);
+              filtered = [];
+            }
+          }
         } else {
           // Global search using API endpoint - returns both cities and local areas
-          const response = await api.get(`/locations/mobile/search?q=${encodeURIComponent(query)}&limit=20`);
-          filtered = Array.isArray(response.data?.locations) ? response.data.locations : [];
-          console.log('Global search results (cities + areas):', filtered.length, filtered);
+          try {
+            const response = await api.get(`/locations/mobile/search?q=${encodeURIComponent(query)}&limit=20`);
+            filtered = Array.isArray(response.data?.locations) ? response.data.locations : [];
+            console.log('Global search results (cities + areas):', filtered.length, filtered);
+          } catch (searchError: any) {
+            // If mobile/search endpoint fails, fallback to regular search
+            console.warn('Mobile search endpoint failed, trying fallback:', searchError.message);
+            try {
+              // Fallback: Use /locations/list with query parameter
+              const fallbackResponse = await api.get(`/locations/list?limit=20`);
+              const allLocations = Array.isArray(fallbackResponse.data?.locations) ? fallbackResponse.data.locations : [];
+              // Filter in client-side
+              const searchLower = query.toLowerCase();
+              filtered = allLocations.filter((loc: any) => {
+                const name = (loc.name || '').toLowerCase();
+                const city = (loc.city || '').toLowerCase();
+                const state = (loc.state || '').toLowerCase();
+                const neighbourhood = (loc.neighbourhood || '').toLowerCase();
+                return name.includes(searchLower) || 
+                       city.includes(searchLower) || 
+                       state.includes(searchLower) || 
+                       neighbourhood.includes(searchLower);
+              }).slice(0, 20);
+              console.log('Fallback search results:', filtered.length);
+            } catch (fallbackError: any) {
+              console.error('Both mobile search and fallback failed:', fallbackError.message);
+              filtered = [];
+            }
+          }
         }
         
         setSearchResults(filtered.slice(0, 20));
-      } catch (error) {
+      } catch (error: any) {
         console.error('Search error:', error);
+        console.error('Error details:', {
+          message: error.message,
+          response: error.response,
+          status: error.response?.status,
+          url: error.config?.url
+        });
         setSearchResults([]);
       } finally {
         setIsSearching(false);
@@ -1088,24 +1165,245 @@ export default function Navbar() {
     };
   }, [googlePlacesLoaded, inputMounted, initializeAutocomplete]);
 
-  // Load persisted location from localStorage
+  // Load persisted location from localStorage and auto-detect if not found
   useEffect(() => {
     if (!mounted) return;
     
-    try {
-      const storedLocation = localStorage.getItem('selected_location');
-      const storedCoords = localStorage.getItem('selected_location_coords');
-      
-      if (storedLocation) {
-        const locationData = JSON.parse(storedLocation);
-        if (locationData.name) {
-          setLocationInputValue(locationData.name);
-        }
+    // Helper function to set default "India" location
+    const setDefaultIndiaLocation = () => {
+      // Only set if no location is already set
+      if (!locationInputValue && !localStorage.getItem('selected_location')) {
+        const indiaLocation = {
+          slug: 'india',
+          name: 'India',
+          city: null,
+          state: null,
+          neighbourhood: null,
+        };
+        
+        // Save to localStorage
+        localStorage.setItem('selected_location', JSON.stringify(indiaLocation));
+        
+        // Update UI
+        setLocationInputValue('India');
+        setLocationSearchQuery('India');
+        setSelectedLocation('india');
+        
+        console.log('✅ Set default location: India');
       }
-    } catch (error) {
-      console.error('Error loading location from localStorage:', error);
-    }
-  }, [mounted]);
+    };
+    
+    const loadLocation = async () => {
+      try {
+        // Priority 1: Check URL params
+        const locationFromUrl = searchParams.get('location');
+        if (locationFromUrl) {
+          try {
+            const response = await api.get(`/locations/${encodeURIComponent(locationFromUrl)}`);
+            const locData = response.data?.location;
+            if (locData) {
+              setLocationInputValue(locData.name || locData.city || locationFromUrl);
+              const locationToStore = {
+                slug: locData.slug,
+                name: locData.name,
+                city: locData.city,
+                state: locData.state,
+                neighbourhood: locData.neighbourhood,
+              };
+              localStorage.setItem('selected_location', JSON.stringify(locationToStore));
+              if (locData.latitude && locData.longitude) {
+                localStorage.setItem('selected_location_coords', JSON.stringify({
+                  latitude: locData.latitude,
+                  longitude: locData.longitude,
+                }));
+              }
+              return; // Found location from URL, exit early
+            }
+          } catch (error) {
+            console.warn('Invalid location in URL, clearing it.');
+          }
+        }
+
+        // Priority 2: Check localStorage
+        const storedLocation = localStorage.getItem('selected_location');
+        const storedCoords = localStorage.getItem('selected_location_coords');
+        
+        if (storedLocation) {
+          const locationData = JSON.parse(storedLocation);
+          if (locationData.name) {
+            setLocationInputValue(locationData.name);
+            return; // Found location in localStorage, exit early
+          }
+        }
+
+        // Priority 3: Check user profile (if logged in)
+        if (isAuthenticated && user) {
+          try {
+            const userResponse = await api.get('/user/profile');
+            const userLocation = userResponse.data?.user?.preferredLocation;
+            if (userLocation) {
+              setLocationInputValue(userLocation.name || userLocation.city || '');
+              const locationToStore = {
+                slug: userLocation.slug,
+                name: userLocation.name,
+                city: userLocation.city,
+                state: userLocation.state,
+                neighbourhood: userLocation.neighbourhood,
+              };
+              localStorage.setItem('selected_location', JSON.stringify(locationToStore));
+              if (userLocation.latitude && userLocation.longitude) {
+                localStorage.setItem('selected_location_coords', JSON.stringify({
+                  latitude: userLocation.latitude,
+                  longitude: userLocation.longitude,
+                }));
+              }
+              return; // Found location in user profile, exit early
+            }
+          } catch (error) {
+            console.log('No user profile location found');
+          }
+        }
+
+        // Priority 4: Auto-detect location if not found and geolocation is available
+        const hasTriedAutoDetect = localStorage.getItem('location_auto_detect_attempted');
+        if (!hasTriedAutoDetect && typeof window !== 'undefined' && 'geolocation' in navigator) {
+          localStorage.setItem('location_auto_detect_attempted', 'true');
+          try {
+            navigator.geolocation.getCurrentPosition(
+              async (position) => {
+                const { latitude, longitude } = position.coords;
+                // Validate coordinates before sending
+                if (typeof latitude !== 'number' || typeof longitude !== 'number' || 
+                    isNaN(latitude) || isNaN(longitude) || 
+                    latitude < -90 || latitude > 90 || 
+                    longitude < -180 || longitude > 180) {
+                  console.warn('Invalid geolocation coordinates received, skipping API call.');
+                  return;
+                }
+                try {
+                  const response = await api.post('/geocoding/detect-location', {
+                    latitude,
+                    longitude,
+                  });
+                  if (response.data?.success && response.data?.nearestLocation) {
+                    const nearestLocation = response.data.nearestLocation;
+                    const detectedLocation = response.data.detectedLocation;
+                    
+                    // Fetch full location details
+                    try {
+                      const locResponse = await api.get(`/locations/${encodeURIComponent(nearestLocation.slug)}`);
+                      const locData = locResponse.data?.location;
+                      if (locData) {
+                        const locationData = {
+                          slug: locData.slug,
+                          name: locData.name,
+                          city: locData.city || detectedLocation?.city,
+                          state: locData.state || detectedLocation?.state,
+                          neighbourhood: locData.neighbourhood || detectedLocation?.neighbourhood,
+                          latitude: locData.latitude || latitude,
+                          longitude: locData.longitude || longitude,
+                        };
+                        
+                        // Save to localStorage
+                        localStorage.setItem('selected_location', JSON.stringify({
+                          slug: locationData.slug,
+                          name: locationData.name,
+                          city: locationData.city,
+                          state: locationData.state,
+                          neighbourhood: locationData.neighbourhood,
+                        }));
+                        localStorage.setItem('selected_location_coords', JSON.stringify({
+                          latitude: locationData.latitude,
+                          longitude: locationData.longitude,
+                        }));
+                        
+                        // Update UI
+                        setLocationInputValue(locationData.name);
+                        
+                        // Update location state to match handleLocationChange behavior
+                        if (locationData.state) setSelectedState(locationData.state);
+                        if (locationData.city) setSelectedCity(locationData.city);
+                        setSelectedLocation(locationData.slug);
+                        
+                        // Set location search query to display text
+                        const { name, city, state, neighbourhood } = locationData;
+                        if (neighbourhood && name === neighbourhood) {
+                          setLocationSearchQuery(`${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`);
+                        } else if (city && name === city) {
+                          setLocationSearchQuery(`${name}${state ? `, ${state}` : ''}`);
+                        } else {
+                          setLocationSearchQuery(name);
+                        }
+                        
+                        // Save to user profile if logged in (async, don't block)
+                        if (isAuthenticated) {
+                          api.put('/user/profile', {
+                            preferredLocation: locationData,
+                          }).catch(() => {
+                            // User might not be logged in, ignore
+                          });
+                        }
+                        
+                        // Update URL if on appropriate page (but not ad details page)
+                        const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
+                        const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
+                        
+                        if (!isAdDetailsPage && !isOnAdDetailsPageFlag) {
+                          const newParams = pathname === '/ads' 
+                            ? new URLSearchParams(searchParams.toString())
+                            : new URLSearchParams();
+                          newParams.set('location', locationData.slug);
+                          if (locationData.latitude && locationData.longitude) {
+                            newParams.set('latitude', String(locationData.latitude));
+                            newParams.set('longitude', String(locationData.longitude));
+                            newParams.set('radius', '50');
+                          }
+                          router.push(`/ads?${newParams.toString()}`, { scroll: false });
+                        }
+                        
+                        console.log('✅ Auto-detected location:', locationData.name);
+                      }
+                    } catch (error) {
+                      console.warn('Could not fetch location details:', error);
+                    }
+                  }
+                } catch (apiError: any) {
+                  if (apiError.response?.status !== 400) {
+                    console.log('Auto-detection failed (optional):', apiError?.message || 'Unknown error');
+                  }
+                  // Set default "India" location when API call fails
+                  setDefaultIndiaLocation();
+                }
+              },
+              (error) => {
+                console.log('Geolocation permission denied or failed (optional):', error.message);
+                // Set default "India" location when geolocation fails
+                setDefaultIndiaLocation();
+              },
+              {
+                timeout: 5000,
+                maximumAge: 600000,
+                enableHighAccuracy: false,
+              }
+            );
+          } catch (geolocationError) {
+            console.log('Geolocation not available (optional):', geolocationError);
+            // Set default "India" location when geolocation is not available
+            setDefaultIndiaLocation();
+          }
+        } else {
+          // No auto-detection attempted, set default "India" location
+          setDefaultIndiaLocation();
+        }
+      } catch (error) {
+        console.error('Error loading location:', error);
+        // Set default "India" location on error
+        setDefaultIndiaLocation();
+      }
+    };
+    
+    loadLocation();
+  }, [mounted, isAuthenticated, user, searchParams]);
 
   const handleLocationChange = async (locationSlug: string) => {
     if (locationSlug) {
@@ -1273,176 +1571,285 @@ export default function Navbar() {
     setUserMenuOpen(false);
   };
 
+  // Close location dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (locationSearchRef.current && !locationSearchRef.current.contains(event.target as Node)) {
+        setShowLocationDropdown(false);
+      }
+    };
+
+    if (showLocationDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showLocationDropdown]);
+
+  // Search bar cursor blinking animation
+  useEffect(() => {
+    if (searchText) {
+      setShowSearchCursor(false);
+      if (searchCursorIntervalRef.current) {
+        clearInterval(searchCursorIntervalRef.current);
+      }
+      return;
+    }
+
+    searchCursorIntervalRef.current = setInterval(() => {
+      setShowSearchCursor(prev => !prev);
+    }, 530);
+
+    return () => {
+      if (searchCursorIntervalRef.current) {
+        clearInterval(searchCursorIntervalRef.current);
+      }
+    };
+  }, [searchText]);
+
+  // Search bar typewriter effect for placeholder
+  useEffect(() => {
+    if (searchText) {
+      setSearchPlaceholder('');
+      if (searchTypewriterTimeoutRef.current) {
+        clearTimeout(searchTypewriterTimeoutRef.current);
+      }
+      return;
+    }
+
+    const currentExample = SEARCH_EXAMPLES[currentSearchExampleIndex];
+    let charIndex = 0;
+    let isActive = true;
+
+    const typeChar = () => {
+      if (!isActive || searchText) return;
+
+      if (charIndex < currentExample.length) {
+        setSearchPlaceholder(currentExample.substring(0, charIndex + 1));
+        charIndex++;
+        searchTypewriterTimeoutRef.current = setTimeout(typeChar, 80);
+      } else {
+        searchTypewriterTimeoutRef.current = setTimeout(() => {
+          const deleteChars = () => {
+            if (!isActive || searchText) return;
+
+            if (charIndex > 0) {
+              setSearchPlaceholder(currentExample.substring(0, charIndex - 1));
+              charIndex--;
+              searchTypewriterTimeoutRef.current = setTimeout(deleteChars, 40);
+            } else {
+              setCurrentSearchExampleIndex((prev) => (prev + 1) % SEARCH_EXAMPLES.length);
+            }
+          };
+          deleteChars();
+        }, 2000);
+      }
+    };
+
+    searchTypewriterTimeoutRef.current = setTimeout(typeChar, 500);
+
+    return () => {
+      isActive = false;
+      if (searchTypewriterTimeoutRef.current) {
+        clearTimeout(searchTypewriterTimeoutRef.current);
+      }
+    };
+  }, [searchText, currentSearchExampleIndex]);
+
   return (
     <>
       <nav 
-        className="sticky top-0 z-50 w-full bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shadow-sm" 
+        className="sticky top-0 z-50 w-full bg-white border-b border-gray-200 shadow-sm" 
         style={{ position: 'sticky', top: 0, zIndex: 50, overflow: 'visible' }}
         role="navigation"
       >
-        {/* First Row: Logo + Location Search + Post Ad Button */}
-        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-8" style={{ overflow: 'visible', position: 'relative', zIndex: 1000 }}>
-          <div className="flex items-center justify-between gap-4 py-3 h-16 md:h-18" style={{ overflow: 'visible', position: 'relative' }}>
-            {/* Logo + Location Search - Left */}
-            <div className="flex items-center gap-3 md:gap-4 flex-1 min-w-0">
+        {/* Main Navbar: Logo + Location + Search + Actions */}
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8" style={{ overflow: 'visible', position: 'relative', zIndex: 1000 }}>
+          <div className="flex items-center gap-3 py-2" style={{ overflow: 'visible', position: 'relative', height: '4.5rem' }}>
+            {/* Left: Logo */}
             <Link href="/" className="flex items-center gap-2 cursor-pointer flex-shrink-0">
               <LogoImage />
             </Link>
               
-              {/* Google Places Location Search */}
-              <div className="hidden md:flex flex-1 max-w-xs lg:max-w-sm xl:max-w-md" ref={locationSearchRef} style={{ position: 'relative', zIndex: 1000 }}>
-                <div className="relative w-full group">
-                  <div className="relative">
-                    <FiMapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 text-blue-500 w-4 h-4 pointer-events-none z-10" />
-                    <input
-                      ref={locationInputRef}
-                      type="text"
-                      placeholder="Search your location"
-                      value={locationInputValue || ''}
-                      onChange={(e) => {
-                        setLocationInputValue(e.target.value);
-                        // Clear Google Places selection when user types manually
-                        if (selectedPlaceLocation) {
-                          setSelectedPlaceLocation(null);
-                        }
-                      }}
-                      onFocus={() => {
-                        // Google Places will handle suggestions
-                      }}
-                      className="w-full pl-10 pr-10 py-2 border-0 focus:outline-none text-sm text-gray-700 placeholder-gray-400 bg-transparent"
-                    />
-                    {locationInputValue && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setLocationInputValue('');
-                          setSelectedPlaceLocation(null);
-                          localStorage.removeItem('selected_location');
-                          localStorage.removeItem('selected_location_coords');
-                          
-                          // On home page, just notify components (no redirect)
-                          if (pathname === '/') {
-                            // Trigger event to clear location on home page
-                            window.dispatchEvent(new CustomEvent('locationChanged', {
-                              detail: null
-                            }));
-                                  } else {
-                            // CRITICAL: Never redirect from ad details page
-                            const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
-                            const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
-                            if (!isAdDetailsPage && !isOnAdDetailsPageFlag) {
-                              // On other pages, remove location from URL
-                              const newParams = new URLSearchParams(searchParams.toString());
-                              newParams.delete('location');
-                              newParams.delete('latitude');
-                              newParams.delete('longitude');
-                              newParams.delete('radius');
-                              router.push(`/ads?${newParams.toString()}`, { scroll: false });
-                            }
+            {/* Location Selector (Dropdown) - Fixed Width */}
+            <div 
+              className="hidden md:flex items-center flex-shrink-0" 
+              ref={locationSearchRef} 
+              style={{ position: 'relative', zIndex: 1000, width: '180px', minWidth: '180px', maxWidth: '180px' }}
+            >
+              <div className="relative w-full">
+                <button
+                  onClick={() => setShowLocationDropdown(!showLocationDropdown)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 hover:text-gray-900 cursor-pointer w-full"
+                >
+                  <FiMapPin className="w-4 h-4 flex-shrink-0" />
+                  <span className="flex-1 min-w-0 truncate text-left">
+                    {locationInputValue || locationSearchQuery || 'Mumbai, India'}
+                  </span>
+                  <span className="material-symbols-outlined text-sm flex-shrink-0">expand_more</span>
+                </button>
+                
+                {/* Location Dropdown */}
+                {showLocationDropdown && (
+                  <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
+                    <div className="p-2">
+                      <input
+                        ref={locationInputRef}
+                        type="text"
+                        placeholder="Search location..."
+                        value={locationInputValue || ''}
+                        onChange={(e) => {
+                          setLocationInputValue(e.target.value);
+                          if (selectedPlaceLocation) {
+                            setSelectedPlaceLocation(null);
                           }
                         }}
-                        className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-opacity z-10"
-                        title="Clear location"
-                      >
-                        <FiX className="w-4 h-4" />
-                              </button>
-                    )}
-                        </div>
-                </div>
+                        onFocus={() => {}}
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      {/* Location suggestions would go here */}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Right Side Actions */}
+            {/* Center: Search Bar (Full Width - Stable) */}
+            <div className="flex-1 flex items-center min-w-0 mx-2">
+              <div className="w-full bg-white border border-gray-300 rounded-md flex items-center overflow-hidden hover:border-blue-500 transition-colors h-9">
+                <FiSearch className="w-4 h-4 text-gray-400 ml-3 flex-shrink-0" />
+                <div className="flex-1 relative">
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    value={searchText}
+                    onChange={(e) => setSearchText(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && searchText.trim()) {
+                        router.push(`/ads?search=${encodeURIComponent(searchText.trim())}`);
+                      }
+                    }}
+                    placeholder=""
+                    className="flex-1 px-3 py-1 text-sm text-gray-700 border-none outline-none bg-transparent w-full h-full"
+                    onFocus={() => {
+                      // Keep focus on input, don't navigate immediately
+                    }}
+                  />
+                  {!searchText && (
+                    <div className="absolute inset-0 flex items-center pointer-events-none px-3">
+                      <span className="text-sm text-gray-400">
+                        {searchPlaceholder}
+                        <span className={`inline-block w-0.5 h-3 bg-blue-500 ml-0.5 align-middle ${showSearchCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
+                          {' '}
+                        </span>
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    if (searchText.trim()) {
+                      router.push(`/ads?search=${encodeURIComponent(searchText.trim())}`);
+                    } else {
+                      router.push('/ads');
+                    }
+                  }}
+                  className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 flex items-center gap-1.5 transition-colors flex-shrink-0 h-full"
+                >
+                  <FiSearch className="w-4 h-4" />
+                  <span className="hidden sm:inline text-sm">Search</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Right: Login / Sell / Profile */}
             <div className="flex items-center gap-3 flex-shrink-0" style={{ overflow: 'visible', position: 'relative', zIndex: 1000 }}>
-              {/* Desktop Nav Links */}
-              <div className="hidden md:flex items-center gap-3" style={{ overflow: 'visible' }}>
-                {mounted && isAuthenticated ? (
-                  <>
-                    {/* Message Button */}
+              {mounted && isAuthenticated ? (
+                <>
+                  {/* Desktop Nav Links - Hidden in reference style */}
+                  <div className="hidden lg:flex items-center gap-3" style={{ overflow: 'visible' }}>
                     <Link
                       href="/chat"
-                      className="relative text-gray-700 hover:text-blue-600 px-3 py-2 hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                      className="relative text-gray-700 px-3 py-2 hover:bg-gray-50 flex items-center gap-2 transition-colors navbar-icon-hover"
                       title="Messages"
                     >
-                      <FiMessageCircle className="w-6 h-6 text-blue-600" />
-                      <span className="hidden sm:inline">Messages</span>
+                      <FiMessageCircle className="w-6 h-6" />
                     </Link>
-                    {/* Notification Icon */}
                     <div className="relative">
                       <NotificationIcon />
                     </div>
-                    {/* Compare Link */}
                     {comparisonMounted && comparisonCount > 0 && (
                       <Link
                         href="/compare"
-                        className="relative text-gray-700 hover:text-blue-600 px-3 py-2 hover:bg-gray-50 flex items-center gap-2"
+                        className="relative text-gray-700 px-3 py-2 hover:bg-gray-50 flex items-center gap-2 navbar-icon-hover"
                         title="Compare Products"
                       >
-                        <FiBarChart2 className="w-6 h-6 text-blue-600" />
-                        <span className="hidden sm:inline">Compare</span>
+                        <FiBarChart2 className="w-6 h-6" />
                         <span className="absolute -top-1 -right-1 bg-blue-600 text-white text-xs font-bold h-5 w-5 flex items-center justify-center rounded-full">
                           {comparisonCount}
                         </span>
                       </Link>
                     )}
-                  </>
-                ) : (
-                  <>
-                    <button 
-                      onClick={() => setLoginModalOpen(true)}
-                      className="text-sm font-bold text-slate-900 dark:text-white hover:underline"
-                    >
-                      Login
-                    </button>
-                  </>
-                )}
-              </div>
-
-              {/* Post Ad + Profile Avatar (same row, equal spacing) */}
-              <div className="flex items-center gap-3">
-                <Link
-                  href="/post-ad"
-                  className="flex items-center gap-2 bg-blue-600 text-white text-sm font-semibold py-2 px-4 hover:bg-blue-700 transition-colors"
-                  onClick={(e) => {
-                    if (!mounted || !isAuthenticated) {
-                      e.preventDefault();
-                      setSignupModalOpen(false);
-                      setLoginModalOpen(true);
-                    }
-                  }}
+                  </div>
+                </>
+              ) : (
+                <button 
+                  onClick={() => setLoginModalOpen(true)}
+                  className="text-sm font-semibold text-gray-700 hover:text-gray-900 cursor-pointer"
                 >
-                  <span className="material-symbols-outlined text-[18px]">add</span>
-                  <span className="hidden sm:inline">Post Ad</span>
-                </Link>
+                  Login
+                </button>
+              )}
 
-                {mounted && isAuthenticated && (
-                  <div
-                    className="relative"
-                    ref={userMenuRef}
-                    onMouseEnter={handleMouseEnter}
-                    onMouseLeave={handleMouseLeave}
-                    style={{ zIndex: 1000 }}
+              {/* Sell Button (Primary CTA - Pill Style) */}
+              <Link
+                href="/post-ad"
+                className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white text-sm font-bold py-2 px-4 rounded-full shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer transform hover:scale-105"
+                onClick={(e) => {
+                  if (!mounted || !isAuthenticated) {
+                    e.preventDefault();
+                    setSignupModalOpen(false);
+                    setLoginModalOpen(true);
+                  }
+                }}
+              >
+                <FiPlus className="w-4 h-4" />
+                <span className="tracking-wide">SELL</span>
+              </Link>
+
+              {/* Profile Avatar */}
+              {mounted && isAuthenticated && (
+                <div
+                  className="relative"
+                  ref={userMenuRef}
+                  onMouseEnter={handleMouseEnter}
+                  onMouseLeave={handleMouseLeave}
+                  style={{ zIndex: 1000 }}
+                >
+                  <button
+                    type="button"
+                    className="flex items-center justify-center cursor-pointer navbar-icon-hover"
+                    aria-haspopup="menu"
+                    aria-expanded={userMenuOpen}
+                    onClick={() => setUserMenuOpen((v) => !v)}
+                    title={user?.name || 'Profile'}
                   >
-                    <button
-                      type="button"
-                      className="flex items-center justify-center"
-                      aria-haspopup="menu"
-                      aria-expanded={userMenuOpen}
-                      onClick={() => setUserMenuOpen((v) => !v)}
-                      title={user?.name || 'Profile'}
-                    >
-                      {user?.avatar ? (
-                        <ImageWithFallback
-                          src={user.avatar}
-                          alt={user.name}
-                          width={32}
-                          height={32}
-                          className="w-8 h-8 rounded-full object-cover"
-                        />
-                      ) : (
-                        <FiUser className="w-7 h-7 text-blue-600" />
-                      )}
-                    </button>
+                    {user?.avatar ? (
+                      <ImageWithFallback
+                        src={user.avatar}
+                        alt={user.name}
+                        width={36}
+                        height={36}
+                        className="w-9 h-9 rounded-full object-cover border-2 border-gray-200 hover:border-blue-600 transition-colors"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-gray-200 flex items-center justify-center border-2 border-gray-200 hover:border-blue-600 transition-colors">
+                        <FiUser className="w-5 h-5" />
+                      </div>
+                    )}
+                  </button>
 
                     {userMenuOpen && (
                       <div
@@ -1462,40 +1869,40 @@ export default function Navbar() {
                       >
                         <Link
                           href="/profile"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
                         >
-                          <FiUser className="text-blue-600" /> {t('nav.profile')}
+                          <FiUser className="w-5 h-5" /> <span>{t('nav.profile')}</span>
                         </Link>
                         <Link
                           href="/my-ads"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
                         >
-                          <FiGrid className="text-blue-600" /> {t('nav.myAds')}
+                          <FiGrid className="w-5 h-5" /> <span>{t('nav.myAds')}</span>
                         </Link>
                         <Link
                           href="/favorites"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
                         >
-                          <FiHeart className="text-blue-600" /> {t('nav.favorites')}
+                          <FiHeart className="w-5 h-5" /> <span>{t('nav.favorites')}</span>
                         </Link>
                         <Link
                           href="/orders"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
                         >
-                          <FiShoppingBag className="text-blue-600" /> {t('nav.orders')}
+                          <FiShoppingBag className="w-5 h-5" /> <span>{t('nav.orders')}</span>
                         </Link>
                         <Link
                           href="/business-package"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
                         >
-                          <FiBriefcase className="text-blue-600" /> {t('nav.businessPackage')}
+                          <FiBriefcase className="w-5 h-5" /> <span>{t('nav.businessPackage')}</span>
                         </Link>
                         {user?.role === 'ADMIN' && (
                           <Link
                             href="/admin"
-                            className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                            className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
                           >
-                            <FiSettings className="text-blue-600" /> {t('nav.admin')}
+                            <FiSettings className="w-5 h-5" /> <span>{t('nav.admin')}</span>
                           </Link>
                         )}
                         <button
@@ -1503,30 +1910,29 @@ export default function Navbar() {
                           onClick={() => {
                             logout();
                           }}
-                          className="block w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                          className="block w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
                         >
-                          <FiLogOut className="text-blue-600" /> {t('nav.logout')}
+                          <FiLogOut className="w-5 h-5" /> <span>{t('nav.logout')}</span>
                         </button>
                       </div>
                     )}
                   </div>
                 )}
-              </div>
 
-              {/* Mobile Menu Button */}
-              <button
-                className="md:hidden text-gray-700 p-2 hover:bg-gray-100 transition-colors"
-                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                aria-label="Toggle menu"
-              >
-                {mobileMenuOpen ? <FiX className="w-6 h-6 text-teal-600" /> : <FiMenu className="w-6 h-6 text-teal-600" />}
-              </button>
+                {/* Mobile Menu Button */}
+                <button
+                  className="md:hidden text-gray-700 p-2 hover:bg-gray-100 transition-colors navbar-icon-hover"
+                  onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                  aria-label="Toggle menu"
+                >
+                  {mobileMenuOpen ? <FiX className="w-6 h-6" /> : <FiMenu className="w-6 h-6" />}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Second Row: Categories */}
-        <div className="border-t border-gray-200">
+        {/* Second Navbar: Categories (Below Main Navbar) */}
+        <div className="border-t border-gray-200 bg-white">
           <CategoryChips />
         </div>
 

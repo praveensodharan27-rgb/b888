@@ -4,6 +4,12 @@ import ProductPageClient from './ProductPageClient';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
 
+type ProductRouteParams = {
+  categorySlug: string;
+  subcategorySlug: string;
+  productSlug: string;
+};
+
 async function getProductData(categorySlug: string, subcategorySlug: string, productSlug: string) {
   try {
     const res = await fetch(`${API_URL}/categories/${categorySlug}/${subcategorySlug}/${productSlug}`, {
@@ -25,9 +31,10 @@ async function getProductData(categorySlug: string, subcategorySlug: string, pro
 export async function generateMetadata({ 
   params 
 }: { 
-  params: { categorySlug: string; subcategorySlug: string; productSlug: string } 
+  params: Promise<ProductRouteParams>
 }): Promise<Metadata> {
-  const data = await getProductData(params.categorySlug, params.subcategorySlug, params.productSlug);
+  const { categorySlug, subcategorySlug, productSlug } = await params;
+  const data = await getProductData(categorySlug, subcategorySlug, productSlug);
 
   if (!data || !data.product) {
     return {
@@ -73,9 +80,10 @@ export async function generateMetadata({
 export default async function ProductPage({ 
   params 
 }: { 
-  params: { categorySlug: string; subcategorySlug: string; productSlug: string } 
+  params: Promise<ProductRouteParams>
 }) {
-  const data = await getProductData(params.categorySlug, params.subcategorySlug, params.productSlug);
+  const { categorySlug, subcategorySlug, productSlug } = await params;
+  const data = await getProductData(categorySlug, subcategorySlug, productSlug);
 
   if (!data || !data.product) {
     notFound();
@@ -84,9 +92,9 @@ export default async function ProductPage({
   return (
     <ProductPageClient 
       data={data}
-      categorySlug={params.categorySlug}
-      subcategorySlug={params.subcategorySlug}
-      productSlug={params.productSlug}
+      categorySlug={categorySlug}
+      subcategorySlug={subcategorySlug}
+      productSlug={productSlug}
     />
   );
 }

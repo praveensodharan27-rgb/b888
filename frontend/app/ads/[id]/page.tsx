@@ -22,7 +22,15 @@ import api from '@/lib/api';
 export default function AdDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const adId = params.id as string;
+  // Sanitize and validate ad ID from URL params
+  const adId = (params.id as string)?.trim() || '';
+  
+  // Log ID for debugging (development only)
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development' && adId) {
+      console.log('🔍 Ad Detail Page - ID from URL:', adId);
+    }
+  }, [adId]);
   
   // CRITICAL: This page must NEVER automatically redirect
   // All navigation must be user-initiated only
@@ -73,29 +81,49 @@ export default function AdDetailPage() {
   const hasNavigatedRef = useRef(false);
   
   // CRITICAL: Monitor router calls to detect automatic navigation attempts
+  // Only flag navigation that happens automatically (from useEffect, etc.), not user clicks
   useEffect(() => {
     if (typeof window === 'undefined') return;
     
     // Log any router calls to help debug automatic redirects
     const logRouterCall = (method: string, args: any[]) => {
-      if (!hasNavigatedRef.current) {
-        console.error(`❌ AUTOMATIC ${method}() CALL DETECTED:`, {
+      // Only log in development mode
+      if (process.env.NODE_ENV !== 'development') return;
+      
+      // Skip if already marked as user-initiated
+      if (hasNavigatedRef.current) return;
+      
+      // Check if navigating away from ad details page (usually user-initiated)
+      const currentPath = window.location.pathname;
+      const targetPath = args[0] || '';
+      const isNavigatingAway = typeof targetPath === 'string' && 
+        targetPath !== currentPath && 
+        !targetPath.startsWith(currentPath);
+      
+      // If navigating to a different page, it's likely user-initiated (click on link, category, etc.)
+      // Only log if staying on the same page or navigating to a sub-route
+      if (!isNavigatingAway) {
+        // This might be automatic navigation - log as warning (not error)
+        console.warn(`⚠️ Possible automatic ${method}() call detected:`, {
           method,
           args,
-          stack: new Error().stack
+          currentPath,
+          targetPath,
+          note: 'If this is from a user click, it\'s safe to ignore'
         });
       }
+      // Don't log navigation away from page - it's almost always user-initiated
     };
     
     // Wrap router methods to detect automatic calls
-    const originalBack = router.back.bind(router);
-    const originalPush = router.push.bind(router);
-    const originalReplace = router.replace.bind(router);
+    const originalBack = router.back.bind(router) as () => void;
+    const originalPush = router.push.bind(router) as (...args: any[]) => any;
+    const originalReplace = router.replace.bind(router) as (...args: any[]) => any;
     
     // Override to log but still allow (we'll block in useLocationPersistence instead)
-    (router as any).back = (...args: any[]) => {
-      logRouterCall('router.back', args);
-      return originalBack(...args);
+    (router as any).back = () => {
+      logRouterCall('router.back', []);
+      return originalBack();
     };
     
     (router as any).push = (...args: any[]) => {
@@ -134,9 +162,9 @@ export default function AdDetailPage() {
     const title = (ad?.title || '').toLowerCase();
     const tokens = title
       .split(/[^a-z0-9]+/i)
-      .map(t => t.trim())
+      .map((t: string) => t.trim())
       .filter(Boolean)
-      .filter(t => t.length >= 3);
+      .filter((t: string) => t.length >= 3);
     // Keep it short to avoid overly-broad search
     return tokens.slice(0, 5).join(' ');
   }, [ad?.title]);
@@ -171,11 +199,25 @@ export default function AdDetailPage() {
     queryKey: ['seller-ads', sellerUserId],
     queryFn: async () => {
       if (!sellerUserId) return { ads: [] };
-      const response = await api.get(`/ads?userId=${sellerUserId}&limit=10`);
-      return response.data;
+      try {
+        const response = await api.get(`/ads?userId=${sellerUserId}&limit=10`);
+        return response.data;
+      } catch (error: any) {
+        // If 401 (not authenticated), return empty array instead of throwing
+        // This allows unauthenticated users to view ad details
+        if (error.response?.status === 401) {
+          // Silently handle 401 - this is expected for unauthenticated users
+          return { ads: [] };
+        }
+        // For other errors, log but don't break the page
+        console.warn('Error fetching seller ads:', error.response?.status || error.message);
+        return { ads: [] };
+      }
     },
     enabled: !!sellerUserId && !!ad && sellerUserId !== '' && !!adId,
     staleTime: 60 * 1000,
+    retry: false, // Don't retry on errors
+    throwOnError: false, // Don't throw errors - handle them gracefully
   });
 
   // Check if current user is the ad owner
@@ -202,24 +244,49 @@ export default function AdDetailPage() {
       return 1; // Free/Normal
     };
 
-    const tokenize = (text: string) => {
+    const tokenize = (text: string): string[] => {
       const raw = text
         .toLowerCase()
         .split(/[^a-z0-9]+/i)
-        .map(t => t.trim())
+        .map((t: string) => t.trim())
         .filter(Boolean)
-        .filter(t => t.length >= 3)
-        .filter(t => !stopwords.has(t));
-      return new Set(raw.slice(0, 60));
+        .filter((t: string) => t.length >= 3)
+        .filter((t: string) => !stopwords.has(t));
+
+      // Keep up to 60 unique tokens without using Set iteration (older TS targets).
+      const seen: Record<string, 1> = {};
+      const out: string[] = [];
+      for (let i = 0; i < raw.length && out.length < 60; i++) {
+        const t = raw[i];
+        if (!seen[t]) {
+          seen[t] = 1;
+          out.push(t);
+        }
+      }
+      return out;
     };
 
     const similarity = (aText: string, bText: string) => {
-      const aSet = tokenize(aText);
-      const bSet = tokenize(bText);
-      const unionSize = new Set([...aSet, ...bSet]).size;
-      if (unionSize === 0) return 0;
+      const aTokens = tokenize(aText);
+      const bTokens = tokenize(bText);
+
+      if (aTokens.length === 0 && bTokens.length === 0) return 0;
+
+      const bLookup: Record<string, 1> = {};
+      for (let i = 0; i < bTokens.length; i++) bLookup[bTokens[i]] = 1;
+
       let intersection = 0;
-      for (const t of aSet) if (bSet.has(t)) intersection++;
+      const union: Record<string, 1> = {};
+
+      for (let i = 0; i < aTokens.length; i++) {
+        const t = aTokens[i];
+        union[t] = 1;
+        if (bLookup[t]) intersection++;
+      }
+      for (let i = 0; i < bTokens.length; i++) union[bTokens[i]] = 1;
+
+      const unionSize = Object.keys(union).length;
+      if (unionSize === 0) return 0;
       return intersection / unionSize; // 0..1
     };
 
@@ -484,13 +551,40 @@ export default function AdDetailPage() {
           }
         })
         .catch(error => {
-          console.error('❌ Backend geocoding error:', error);
+          const errorMessage = error.response?.data?.message || error.message || '';
+          const isApiKeyError = errorMessage.includes('referrer restrictions') || 
+                               errorMessage.includes('API key') ||
+                               errorMessage.includes('referer restrictions');
+          
+          // Don't log 401 errors - they're expected for unauthenticated users
+          // Don't log API key configuration errors - these are backend configuration issues
+          // that will be handled by fallback to client-side geocoding
+          if (error.response?.status !== 401 && !isApiKeyError) {
+            console.error('❌ Backend geocoding error:', error);
+          } else if (isApiKeyError && process.env.NODE_ENV === 'development') {
+            // Only log API key errors in development for debugging
+            console.warn('⚠️ Backend geocoding API key issue (will use client-side fallback):', errorMessage);
+          }
+          
+          // Always try client-side geocoding as fallback
           if (!coordinatesSet && googleMapsLoaded && window.google && window.google.maps) {
             tryGoogleGeocoding();
           } else if (!coordinatesSet) {
+            // If Google Maps isn't loaded yet, wait a bit and try again
+            const checkInterval = setInterval(() => {
+              if (googleMapsLoaded && window.google && window.google.maps) {
+                clearInterval(checkInterval);
+                tryGoogleGeocoding();
+              }
+            }, 500);
+            
+            // Timeout after 5 seconds
             setTimeout(() => {
-              setIsLoadingMap(false);
-            }, 2000);
+              clearInterval(checkInterval);
+              if (!coordinatesSet) {
+                setIsLoadingMap(false);
+              }
+            }, 5000);
           }
         });
 
@@ -807,7 +901,7 @@ export default function AdDetailPage() {
     console.log('⏳ Ad Detail Page: Loading state');
     return (
       <div className="min-h-screen bg-gray-50">
-        <div className="container mx-auto px-4 py-8">
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="animate-pulse">
             <div className="h-96 bg-gray-200 rounded-lg mb-6"></div>
             <div className="h-8 bg-gray-200 rounded w-3/4 mb-4"></div>
@@ -859,7 +953,7 @@ export default function AdDetailPage() {
     console.warn('⚠️ Ad Detail Page: Unexpected state - not loading but no ad, showing loading (NOT redirecting)');
     return (
       <div className="min-h-screen bg-gray-50">
-        <div className="container mx-auto px-4 py-8">
+        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="animate-pulse">
             <div className="h-96 bg-gray-200 rounded-lg mb-6"></div>
             <div className="h-8 bg-gray-200 rounded w-3/4 mb-4"></div>
@@ -877,7 +971,7 @@ export default function AdDetailPage() {
   }
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="container mx-auto px-4 py-6">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Back Button */}
         <button
           onClick={handleBack}
@@ -963,27 +1057,38 @@ export default function AdDetailPage() {
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Description</h2>
               <p className="text-gray-700 whitespace-pre-wrap leading-relaxed mb-4">{ad.description}</p>
               
-              {/* Attributes/Specs */}
+              {/* Attributes/Specs - Show ALL specifications */}
               {ad.attributes && typeof ad.attributes === 'object' && Object.keys(ad.attributes).length > 0 && (
                 <div className="mt-4 pt-4 border-t border-gray-200">
-                  <ul className="space-y-2">
-                    {Object.entries(ad.attributes as Record<string, any>).slice(0, 5).map(([key, value]) => {
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
+                  <ul className="space-y-3">
+                    {Object.entries(ad.attributes as Record<string, any>).map(([key, value]) => {
+                      // Skip null, undefined, or empty values
                       if (value === null || value === undefined || value === '') return null;
                       
+                      // Format key: replace underscores with spaces and capitalize words
                       const formattedKey = key
                         .replace(/_/g, ' ')
                         .replace(/\b\w/g, l => l.toUpperCase());
                       
-                      const displayValue = Array.isArray(value) 
-                        ? value.join(', ') 
-                        : String(value);
+                      // Handle different value types
+                      let displayValue: string;
+                      if (Array.isArray(value)) {
+                        displayValue = value.filter(v => v !== null && v !== undefined && v !== '').join(', ');
+                      } else if (typeof value === 'object') {
+                        // Handle nested objects
+                        displayValue = JSON.stringify(value);
+                      } else {
+                        displayValue = String(value);
+                      }
+                      
+                      // Skip if display value is empty after processing
+                      if (!displayValue || displayValue.trim() === '') return null;
                       
                       return (
-                        <li key={key} className="flex items-start">
-                          <span className="text-gray-600 mr-2">•</span>
-                          <span className="text-gray-700">
-                            <span className="font-medium">{formattedKey}:</span> {displayValue}
-                          </span>
+                        <li key={key} className="flex items-start gap-3">
+                          <span className="text-gray-500 font-medium min-w-[120px]">{formattedKey}:</span>
+                          <span className="text-gray-700 flex-1">{displayValue}</span>
                         </li>
                       );
                     })}

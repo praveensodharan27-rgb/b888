@@ -10,13 +10,20 @@ import { useAuth } from '@/hooks/useAuth';
 import { getSocket } from '@/lib/socket';
 import { useGooglePlaces } from '@/hooks/useGooglePlaces';
 import { usePlacesAutocomplete } from '@/hooks/usePlacesAutocomplete';
+import CreatableSelect from 'react-select/creatable';
 import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage, FiUser, FiCamera, FiMapPin, FiSearch, FiMap, FiHome } from 'react-icons/fi';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import ImageWithFallback from '@/components/ImageWithFallback';
-import CategoryAttributes from '@/components/CategoryAttributes';
+import ProductSpecifications from '@/components/ProductSpecifications';
 import AdLimitAlert from '@/components/AdLimitAlert';
 import toast from 'react-hot-toast';
+
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
 
 // Lazy load PaymentModal (heavy component with Razorpay SDK)
 // Using same pattern as other components (AdLimitAlert, PremiumFeatureButton)
@@ -71,6 +78,26 @@ export default function PostAdPage() {
   const [currentStep, setCurrentStep] = useState(1);
   // Map coordinates state
   const [mapCoordinates, setMapCoordinates] = useState<{ lat: number; lng: number } | null>(null);
+  // Brand and Model states
+  const [selectedBrand, setSelectedBrand] = useState<string>('');
+  const [brands, setBrands] = useState<Array<{ id: string; name: string }>>([]);
+  const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [isLoadingBrands, setIsLoadingBrands] = useState(false);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  
+  // Brand and Model states for autocomplete
+  const [brandOptions, setBrandOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [brandSearchQuery, setBrandSearchQuery] = useState('');
+  const [modelSearchQuery, setModelSearchQuery] = useState('');
+  
+  // Color and Storage states for autocomplete
+  const [colorOptions, setColorOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [storageOptions, setStorageOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [isLoadingColors, setIsLoadingColors] = useState(false);
+  const [isLoadingStorage, setIsLoadingStorage] = useState(false);
+  const [colorSearchQuery, setColorSearchQuery] = useState('');
+  const [storageSearchQuery, setStorageSearchQuery] = useState('');
   // Location Autocomplete (Typeahead) states
   const [locationQuery, setLocationQuery] = useState('');
   const [locationSuggestions, setLocationSuggestions] = useState<any[]>([]);
@@ -137,7 +164,7 @@ export default function PostAdPage() {
   // Get premium offers (public endpoint for users) - must be after useState hooks
   const { data: premiumSettings, isLoading: isLoadingOffers } = useQuery({
     queryKey: ['premium-offers'],
-    queryFn: async () => {
+    queryFn: async (): Promise<Array<{ id: string; type: string; name: string; description: string; price: number; originalPrice: number; duration: number; hasOffer: boolean }>> => {
       const response = await api.get('/premium/offers');
       const offersData = response.data.offers;
       
@@ -145,7 +172,7 @@ export default function PostAdPage() {
       // API returns: { prices: {...}, offerPrices: {...}, durations: {...} }
       // We need: [{ type: 'TOP', name: '...', price: ..., duration: ... }, ...]
       if (offersData && typeof offersData === 'object' && !Array.isArray(offersData)) {
-        const offersArray = [];
+        const offersArray: Array<{ id: string; type: string; name: string; description: string; price: number; originalPrice: number; duration: number; hasOffer: boolean }> = [];
         const premiumTypes = ['TOP', 'FEATURED', 'BUMP_UP', 'URGENT'];
         
         premiumTypes.forEach((type) => {
@@ -213,8 +240,19 @@ export default function PostAdPage() {
   const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
   const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId);
   
+  // Check if this is mobile phones subcategory
+  const isMobilePhones = selectedCategory?.slug === 'mobiles' && selectedSubcategory?.slug === 'mobile-phones';
+  // Check if this is any mobile subcategory
+  const isMobileCategory = selectedCategory?.slug === 'mobiles' || selectedCategory?.name?.toLowerCase().includes('mobile');
+  
   // Check if premium features are selected
   const hasPremiumFeatures = !!(selectedPremium || isUrgent);
+  
+  // Ensure premiumSettings is always an array to prevent .find() errors
+  const safePremiumSettings = Array.isArray(premiumSettings) ? premiumSettings : [];
+  
+  // Watch brand from attributes
+  const selectedBrandFromForm = watch('attributes.brand');
 
   // Real-time quota updates via socket
   useEffect(() => {
@@ -374,6 +412,293 @@ export default function PostAdPage() {
       router.push('/login');
     }
   }, [mounted, isAuthenticated, isLoading, router]);
+
+  // Fetch popular brands when mobile phones subcategory is selected
+  useEffect(() => {
+    if (isMobilePhones && !isLoadingBrands) {
+      setIsLoadingBrands(true);
+      api.get('/categories/brands', {
+        params: {
+          categorySlug: selectedCategory?.slug,
+          subcategorySlug: selectedSubcategory?.slug,
+          limit: 10
+        }
+      })
+        .then(response => {
+          if (response.data.success && response.data.brands) {
+            setBrands(response.data.brands);
+            setBrandOptions(response.data.brands.map((brand: { id: string; name: string }) => ({
+              value: brand.name,
+              label: brand.name
+            })));
+          }
+        })
+        .catch(error => {
+          console.error('Failed to fetch brands:', error);
+          setBrands([]);
+          setBrandOptions([]);
+        })
+        .finally(() => {
+          setIsLoadingBrands(false);
+        });
+    } else if (!isMobilePhones) {
+      // Clear brands if not mobile phones
+      setBrands([]);
+      setBrandOptions([]);
+      setSelectedBrand('');
+      setValue('attributes.brand', '');
+    }
+  }, [isMobilePhones, selectedCategory?.slug, selectedSubcategory?.slug, setValue]);
+
+  // Search brands with debounce
+  useEffect(() => {
+    if (!isMobilePhones || !brandSearchQuery.trim()) {
+      // Reset to popular brands if no search
+      if (brandOptions.length === 0 && brands.length > 0) {
+        setBrandOptions(brands.map((brand: { id: string; name: string }) => ({
+          value: brand.name,
+          label: brand.name
+        })));
+      }
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      setIsLoadingBrands(true);
+      api.get('/categories/brands', {
+        params: {
+          categorySlug: selectedCategory?.slug,
+          subcategorySlug: selectedSubcategory?.slug,
+          limit: 20,
+          search: brandSearchQuery
+        }
+      })
+        .then(response => {
+          if (response.data.success && response.data.brands) {
+            setBrandOptions(response.data.brands.map((brand: { id: string; name: string }) => ({
+              value: brand.name,
+              label: brand.name
+            })));
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          setIsLoadingBrands(false);
+        });
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [brandSearchQuery, isMobilePhones, selectedCategory?.slug, selectedSubcategory?.slug, brands]);
+
+  // Fetch models when brand is selected
+  useEffect(() => {
+    const brandName = selectedBrandFromForm || selectedBrand;
+    if (isMobilePhones && brandName && !isLoadingModels) {
+      setIsLoadingModels(true);
+      // Find brand ID from brands list using brand name
+      const brandObj = brands.find(b => b.name === brandName);
+      const brandId = brandObj?.id || brandName.toLowerCase().replace(/\s+/g, '-');
+      
+      api.get('/categories/models', {
+        params: { brand: brandId, limit: 20 }
+      })
+        .then(response => {
+          if (response.data.success && response.data.models) {
+            setModels(response.data.models);
+            setModelOptions(response.data.models.map((model: { id: string; name: string }) => ({
+              value: model.name,
+              label: model.name
+            })));
+          }
+        })
+        .catch(error => {
+          console.error('Failed to fetch models:', error);
+          setModels([]);
+          setModelOptions([]);
+        })
+        .finally(() => {
+          setIsLoadingModels(false);
+        });
+    } else if (!brandName) {
+      // Clear models if no brand selected
+      setModels([]);
+      setModelOptions([]);
+      setValue('attributes.model', '');
+    }
+  }, [isMobilePhones, selectedBrandFromForm, selectedBrand, brands, setValue]);
+
+  // Search models with debounce
+  useEffect(() => {
+    const brandName = selectedBrandFromForm || selectedBrand;
+    if (!isMobilePhones || !brandName || !modelSearchQuery.trim()) {
+      // Reset to popular models if no search
+      if (modelOptions.length === 0 && models.length > 0) {
+        setModelOptions(models.map((model: { id: string; name: string }) => ({
+          value: model.name,
+          label: model.name
+        })));
+      }
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      setIsLoadingModels(true);
+      const brandObj = brands.find(b => b.name === brandName);
+      const brandId = brandObj?.id || brandName.toLowerCase().replace(/\s+/g, '-');
+      
+      api.get('/categories/models', {
+        params: { brand: brandId, limit: 20, search: modelSearchQuery }
+      })
+        .then(response => {
+          if (response.data.success && response.data.models) {
+            setModelOptions(response.data.models.map((model: { id: string; name: string }) => ({
+              value: model.name,
+              label: model.name
+            })));
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          setIsLoadingModels(false);
+        });
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [modelSearchQuery, isMobilePhones, selectedBrandFromForm, selectedBrand, brands, models]);
+
+  // Fetch popular colors when mobile phones subcategory is selected
+  useEffect(() => {
+    if (isMobilePhones && !isLoadingColors) {
+      setIsLoadingColors(true);
+      api.get('/categories/mobile/colors', {
+        params: { limit: 10 }
+      })
+        .then(response => {
+          if (response.data.success && response.data.colors) {
+            setColorOptions(response.data.colors.map((color: string) => ({
+              value: color,
+              label: color
+            })));
+          }
+        })
+        .catch(error => {
+          console.error('Failed to fetch colors:', error);
+          // Fallback to default colors
+          const defaultColors = ['Black', 'White', 'Blue', 'Red', 'Green', 'Gold', 'Silver', 'Grey', 'Midnight', 'Starlight'];
+          setColorOptions(defaultColors.map(color => ({ value: color, label: color })));
+        })
+        .finally(() => {
+          setIsLoadingColors(false);
+        });
+    } else if (!isMobilePhones) {
+      setColorOptions([]);
+      setValue('attributes.color', '');
+    }
+  }, [isMobilePhones, setValue]);
+
+  // Fetch popular storage when mobile phones subcategory is selected
+  useEffect(() => {
+    if (isMobilePhones && !isLoadingStorage) {
+      setIsLoadingStorage(true);
+      api.get('/categories/mobile/storage', {
+        params: { limit: 10 }
+      })
+        .then(response => {
+          if (response.data.success && response.data.storage) {
+            setStorageOptions(response.data.storage.map((storage: string) => ({
+              value: storage,
+              label: storage
+            })));
+          }
+        })
+        .catch(error => {
+          console.error('Failed to fetch storage:', error);
+          // Fallback to default storage
+          const defaultStorage = ['128 GB', '256 GB', '64 GB', '512 GB', '32 GB', '1 TB', '16 GB', '8 GB', '2 TB'];
+          setStorageOptions(defaultStorage.map(storage => ({ value: storage, label: storage })));
+        })
+        .finally(() => {
+          setIsLoadingStorage(false);
+        });
+    } else if (!isMobilePhones) {
+      setStorageOptions([]);
+      setValue('attributes.storage', '');
+    }
+  }, [isMobilePhones, setValue]);
+
+  // Search colors with debounce
+  useEffect(() => {
+    if (!isMobilePhones || !colorSearchQuery.trim()) {
+      // Reset to popular colors if no search
+      if (colorOptions.length === 0) {
+        api.get('/categories/mobile/colors', { params: { limit: 10 } })
+          .then(response => {
+            if (response.data.success && response.data.colors) {
+              setColorOptions(response.data.colors.map((color: string) => ({
+                value: color,
+                label: color
+              })));
+            }
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      api.get('/categories/mobile/colors', {
+        params: { limit: 20, search: colorSearchQuery }
+      })
+        .then(response => {
+          if (response.data.success && response.data.colors) {
+            setColorOptions(response.data.colors.map((color: string) => ({
+              value: color,
+              label: color
+            })));
+          }
+        })
+        .catch(() => {});
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [colorSearchQuery, isMobilePhones]);
+
+  // Search storage with debounce
+  useEffect(() => {
+    if (!isMobilePhones || !storageSearchQuery.trim()) {
+      // Reset to popular storage if no search
+      if (storageOptions.length === 0) {
+        api.get('/categories/mobile/storage', { params: { limit: 10 } })
+          .then(response => {
+            if (response.data.success && response.data.storage) {
+              setStorageOptions(response.data.storage.map((storage: string) => ({
+                value: storage,
+                label: storage
+              })));
+            }
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      api.get('/categories/mobile/storage', {
+        params: { limit: 20, search: storageSearchQuery }
+      })
+        .then(response => {
+          if (response.data.success && response.data.storage) {
+            setStorageOptions(response.data.storage.map((storage: string) => ({
+              value: storage,
+              label: storage
+            })));
+          }
+        })
+        .catch(() => {});
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [storageSearchQuery, isMobilePhones]);
 
   // Navigate to next step
   const goToNextStep = () => {
@@ -907,8 +1232,22 @@ export default function PostAdPage() {
           }
         })
         .catch(error => {
-          console.error('Failed to fetch neighborhoods:', error);
-          setNeighborhoodSuggestions([]);
+          // 404 is expected if neighborhoods don't exist for the state - silently handle
+          if (error.response?.status === 404 || error.isExpected404) {
+            // Suppress error completely - neighborhoods may not exist for this state
+            setNeighborhoodSuggestions([]);
+            // Don't log or rethrow - prevent error from propagating
+            return; // Exit early
+          } else if (error.response?.status === 400) {
+            // 400 might be validation errors - suppress
+            setNeighborhoodSuggestions([]);
+            // Don't log or rethrow - prevent error from propagating
+            return; // Exit early
+          } else {
+            // Only log unexpected errors
+            console.error('Failed to fetch neighborhoods:', error.response?.status || error.message);
+            setNeighborhoodSuggestions([]);
+          }
         })
         .finally(() => {
           setIsLoadingNeighborhoods(false);
@@ -924,15 +1263,34 @@ export default function PostAdPage() {
           params.state = currentState;
         }
         
-        const response = await api.get('/locations/neighborhoods', { params });
-        if (response.data.success && response.data.neighborhoods) {
-          setNeighborhoodSuggestions(response.data.neighborhoods);
-          setShowNeighborhoodDropdown(true);
-        } else {
-          setNeighborhoodSuggestions([]);
+        try {
+          const response = await api.get('/locations/neighborhoods', { params });
+          if (response.data.success && response.data.neighborhoods) {
+            setNeighborhoodSuggestions(response.data.neighborhoods);
+            setShowNeighborhoodDropdown(true);
+          } else {
+            setNeighborhoodSuggestions([]);
+          }
+        } catch (apiError: any) {
+          // 404 is expected if neighborhoods don't exist for the state/query - silently handle
+          if (apiError.response?.status === 404 || apiError.isExpected404) {
+            // Suppress error completely - neighborhoods may not exist for this state/query
+            setNeighborhoodSuggestions([]);
+            // Don't log or rethrow - error is expected
+            return; // Exit early to prevent further error handling
+          } else if (apiError.response?.status === 400) {
+            // 400 might be validation errors - suppress
+            setNeighborhoodSuggestions([]);
+            // Don't log or rethrow - error is expected
+            return; // Exit early to prevent further error handling
+          } else {
+            // Only log unexpected errors
+            console.error('Failed to fetch neighborhoods:', apiError.response?.status || apiError.message);
+            setNeighborhoodSuggestions([]);
+          }
         }
-      } catch (error) {
-        console.error('Failed to fetch neighborhoods:', error);
+      } catch (error: any) {
+        // Outer catch for any other errors (shouldn't happen, but safety net)
         setNeighborhoodSuggestions([]);
       } finally {
         setIsLoadingNeighborhoods(false);
@@ -1201,8 +1559,8 @@ export default function PostAdPage() {
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    if (images.length + files.length > 12) {
-      alert('Maximum 12 images allowed');
+    if (images.length + files.length > 4) {
+      alert('Maximum 4 images allowed');
       return;
     }
 
@@ -1371,6 +1729,9 @@ export default function PostAdPage() {
         console.error('API Error Details:', {
           status: statusCode,
           data: errorData,
+          message: errorData?.message || errorData?.error_message,
+          error_message: errorData?.error_message,
+          status_field: errorData?.status,
           url: error.config?.url
         });
         
@@ -1378,7 +1739,13 @@ export default function PostAdPage() {
         if (statusCode === 401) {
           toast.error('Please log in to use location detection. You can still enter location manually.', { duration: 5000 });
         } else if (statusCode === 403) {
-          toast.error('Access denied. Please check your permissions.', { duration: 5000 });
+          // Use backend error message if available, otherwise show generic message
+          const backendMessage = errorData?.message || errorData?.error_message;
+          if (backendMessage && backendMessage.includes('Geocoding API')) {
+            toast.error(backendMessage, { duration: 6000 });
+          } else {
+            toast.error('Access denied. Please check your permissions.', { duration: 5000 });
+          }
         } else if (statusCode === 404) {
           toast.error('No location found for your coordinates. Please enter location manually.', { duration: 5000 });
         } else if (statusCode === 429) {
@@ -1458,13 +1825,37 @@ export default function PostAdPage() {
   };
 
   const onSubmit = async (data: any) => {
+    // Check authentication before submission
+    if (!isAuthenticated || !user) {
+      console.error('❌ User not authenticated, redirecting to login');
+      toast.error('Please login to post an ad');
+      router.push('/login');
+      return;
+    }
+    
     console.log('🚀 onSubmit called', { 
       hasPremiumFeatures, 
       requiresPayment, 
       requiresPaymentBeforePosting,
       isPaymentVerified,
       selectedPremium, 
-      imagesCount: images.length 
+      imagesCount: images.length,
+      isAuthenticated,
+      userId: user?.id
+    });
+    
+    // Log form data for debugging
+    console.log('📋 Form data:', {
+      title: data.title?.substring(0, 50),
+      description: data.description?.substring(0, 50),
+      price: data.price,
+      categoryId: data.categoryId,
+      subcategoryId: data.subcategoryId,
+      state: data.state,
+      city: data.city,
+      attributes: data.attributes,
+      attributesKeys: data.attributes ? Object.keys(data.attributes) : [],
+      attributesCount: data.attributes ? Object.keys(data.attributes).length : 0
     });
 
     // CRITICAL: Block submission if payment is required but not verified
@@ -1517,6 +1908,8 @@ export default function PostAdPage() {
         state: data.state,
         city: data.city,
         neighbourhood: data.neighbourhood,
+        attributes: data.attributes || {}, // Include attributes
+        specifications: data._specifications || [], // Include specifications
         premiumType: selectedPremium || null,
         isUrgent: isUrgent || false,
       };
@@ -1552,6 +1945,11 @@ export default function PostAdPage() {
               formData.append('attributes', JSON.stringify(data.attributes));
             }
 
+            // Add specifications if they exist (for new ads)
+            if (data._specifications && Array.isArray(data._specifications) && data._specifications.length > 0) {
+              formData.append('specifications', JSON.stringify(data._specifications));
+            }
+
             images.forEach((image) => {
               formData.append('images', image);
             });
@@ -1585,7 +1983,9 @@ export default function PostAdPage() {
             return;
           }
           setPaymentOrder(response);
-          setShowPaymentModal(true);
+          // Directly open Razorpay checkout instead of showing payment modal popup
+          // Pass form data to capture in closure
+          openRazorpayCheckout(response, { ...data, attributes: data.attributes || {} });
         },
         onError: (error: any) => {
           console.error('❌ Payment order creation failed:', error);
@@ -1627,8 +2027,28 @@ export default function PostAdPage() {
     }
     
     // Add attributes if they exist
-    if (data.attributes && Object.keys(data.attributes).length > 0) {
-      formData.append('attributes', JSON.stringify(data.attributes));
+    // Clean attributes: remove empty strings and null values
+    const cleanedAttributes: any = {};
+    if (data.attributes) {
+      Object.keys(data.attributes).forEach(key => {
+        const value = data.attributes[key];
+        // Only include non-empty values
+        if (value !== null && value !== undefined && value !== '') {
+          cleanedAttributes[key] = value;
+        }
+      });
+    }
+    
+    if (Object.keys(cleanedAttributes).length > 0) {
+      console.log('📦 Adding attributes to form:', cleanedAttributes);
+      formData.append('attributes', JSON.stringify(cleanedAttributes));
+    } else {
+      console.log('⚠️ No attributes to add (all empty or undefined)');
+    }
+
+    // Add specifications if they exist (for new ads)
+    if (data._specifications && Array.isArray(data._specifications) && data._specifications.length > 0) {
+      formData.append('specifications', JSON.stringify(data._specifications));
     }
 
     images.forEach((image) => {
@@ -1638,11 +2058,53 @@ export default function PostAdPage() {
     createAd.mutate(formData, {
       onSuccess: (adResponse) => {
         console.log('✅ Ad created successfully:', adResponse);
-        const createdAdId = adResponse?.data?.id || adResponse?.id;
+        console.log('📋 Ad response structure:', {
+          hasData: !!adResponse?.data,
+          hasAd: !!adResponse?.ad,
+          hasId: !!adResponse?.id,
+          dataKeys: adResponse ? Object.keys(adResponse) : [],
+          adKeys: adResponse?.ad ? Object.keys(adResponse.ad) : [],
+          dataAdKeys: adResponse?.data?.ad ? Object.keys(adResponse.data.ad) : []
+        });
+        
+        // Backend returns: { success: true, ad: {...} }
+        // Frontend receives: response.data = { success: true, ad: {...} }
+        const createdAd = adResponse?.ad || adResponse?.data?.ad;
+        const createdAdId = createdAd?.id || adResponse?.data?.id || adResponse?.id;
+        
+        console.log('🆔 Extracted ad ID:', createdAdId);
+        console.log('📋 Created ad details:', {
+          id: createdAdId,
+          title: createdAd?.title,
+          status: createdAd?.status
+        });
+        
+        if (!createdAdId) {
+          console.error('❌ No ad ID found in response:', adResponse);
+          toast.error('Ad created but ID not found. Please check My Ads page.');
+          setTimeout(() => {
+            router.push('/my-ads');
+          }, 2000);
+          return;
+        }
+        
+        // Invalidate queries to ensure My Ads page shows the new ad
+        queryClient.invalidateQueries({ queryKey: ['user', 'ads'] });
+        queryClient.invalidateQueries({ queryKey: ['my-ads'] });
         
         // Invalidate and refetch ad limit status
         queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
         queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
+        
+        // CRITICAL: Invalidate user ads query to ensure new ad appears in My Ads page
+        queryClient.invalidateQueries({ queryKey: ['user', 'ads'] });
+        queryClient.invalidateQueries({ queryKey: ['my-ads'] });
+        
+        // Also set the ad in cache for immediate access
+        if (createdAd) {
+          queryClient.setQueryData(['ad', createdAdId], createdAd);
+          console.log('✅ Ad cached for immediate access:', createdAdId);
+        }
         
         // If premium features were selected, show payment modal AFTER posting
         // BUT: Skip payment if business package is active and free ads remain
@@ -1675,7 +2137,9 @@ export default function PostAdPage() {
               console.log('✅ Premium payment order created:', paymentResponse);
               if (paymentResponse.requiresPayment && paymentResponse.razorpayOrder) {
                 setPaymentOrder(paymentResponse);
-                setShowPaymentModal(true);
+                // Directly open Razorpay checkout instead of showing payment modal popup
+                // Note: Ad is already created, so we don't need form data for this flow
+                openRazorpayCheckout(paymentResponse);
               } else {
                 toast.success('Premium features applied successfully!');
                 setTimeout(() => {
@@ -1702,6 +2166,16 @@ export default function PostAdPage() {
       },
       onError: (error: any) => {
         console.error('❌ Ad creation failed:', error);
+        console.error('❌ Error details:', {
+          message: error.message,
+          response: error.response,
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          data: error.response?.data,
+          config: error.config,
+          requestUrl: error.config?.url,
+          requestMethod: error.config?.method
+        });
         const errorData = error.response?.data;
         const status = error.response?.status;
         
@@ -1732,23 +2206,28 @@ export default function PostAdPage() {
     });
   };
 
-  const handlePaymentSuccess = async (paymentId: string, signature: string, orderIdFromResponse?: string) => {
-    console.log('💳 Payment success received:', { paymentId, signature, orderIdFromResponse, paymentOrder });
+  const handlePaymentSuccess = async (paymentId: string, signature: string, orderIdFromResponse?: string, orderOverride?: any, formDataOverride?: any) => {
+    // Use orderOverride if provided, otherwise use paymentOrder from state
+    const currentOrder = orderOverride || paymentOrder;
+    // Use formDataOverride if provided, otherwise use adFormData from state
+    const currentFormData = formDataOverride || adFormData;
     
-    if (!paymentOrder) {
+    console.log('💳 Payment success received:', { paymentId, signature, orderIdFromResponse, hasOrder: !!currentOrder, hasFormData: !!currentFormData });
+    
+    if (!currentOrder) {
       console.error('❌ Payment order missing');
       toast.error('Payment order not found. Please try again.');
       return;
     }
 
-    if (!adFormData) {
+    if (!currentFormData) {
       console.error('❌ Ad form data missing');
       toast.error('Ad form data not found. Please try again.');
       return;
     }
 
-    // Use orderId from response if available, otherwise use from paymentOrder
-    const orderIdToVerify = orderIdFromResponse || paymentOrder.razorpayOrder.id;
+    // Use orderId from response if available, otherwise use from currentOrder
+    const orderIdToVerify = orderIdFromResponse || currentOrder.razorpayOrder.id;
     console.log('🔄 Verifying payment with orderId:', orderIdToVerify);
     
     verifyPayment.mutate(
@@ -1770,25 +2249,25 @@ export default function PostAdPage() {
           
           // Now create the ad with payment order ID
           console.log('📝 Creating ad with data:', { 
-            title: adFormData.title, 
-            imagesCount: adFormData.images?.length || 0,
-            paymentOrderId: paymentOrder.razorpayOrder.id 
+            title: currentFormData.title, 
+            imagesCount: currentFormData.images?.length || 0,
+            paymentOrderId: currentOrder.razorpayOrder.id 
           });
 
           const formData = new FormData();
-          formData.append('title', adFormData.title);
-          formData.append('description', adFormData.description);
-          formData.append('price', String(adFormData.price || ''));
-          if (adFormData.originalPrice) formData.append('originalPrice', adFormData.originalPrice);
-          if (adFormData.discount) formData.append('discount', adFormData.discount);
-          if (adFormData.condition) formData.append('condition', adFormData.condition);
-          formData.append('categoryId', adFormData.categoryId);
-          if (adFormData.subcategoryId) formData.append('subcategoryId', adFormData.subcategoryId);
-          if (adFormData.state) formData.append('state', adFormData.state);
-          if (adFormData.city) formData.append('city', adFormData.city);
-          if (adFormData.neighbourhood) formData.append('neighbourhood', adFormData.neighbourhood);
+          formData.append('title', currentFormData.title);
+          formData.append('description', currentFormData.description);
+          formData.append('price', String(currentFormData.price || ''));
+          if (currentFormData.originalPrice) formData.append('originalPrice', currentFormData.originalPrice);
+          if (currentFormData.discount) formData.append('discount', currentFormData.discount);
+          if (currentFormData.condition) formData.append('condition', currentFormData.condition);
+          formData.append('categoryId', currentFormData.categoryId);
+          if (currentFormData.subcategoryId) formData.append('subcategoryId', currentFormData.subcategoryId);
+          if (currentFormData.state) formData.append('state', currentFormData.state);
+          if (currentFormData.city) formData.append('city', currentFormData.city);
+          if (currentFormData.neighbourhood) formData.append('neighbourhood', currentFormData.neighbourhood);
           formData.append('showPhone', String(showPhoneInAds));
-          formData.append('paymentOrderId', paymentOrder.razorpayOrder.id);
+          formData.append('paymentOrderId', currentOrder.razorpayOrder.id);
           
           // IMPORTANT: Add premium features to formData so backend detects it as premium ad
           // This prevents quota check when payment order exists
@@ -1798,8 +2277,8 @@ export default function PostAdPage() {
           }
           
           // Add attributes if they exist
-          if (adFormData.attributes && Object.keys(adFormData.attributes).length > 0) {
-            formData.append('attributes', JSON.stringify(adFormData.attributes));
+          if (currentFormData.attributes && Object.keys(currentFormData.attributes).length > 0) {
+            formData.append('attributes', JSON.stringify(currentFormData.attributes));
           }
 
           // Use images from state (File objects persist in state)
@@ -1816,7 +2295,7 @@ export default function PostAdPage() {
 
           console.log('📤 Submitting ad creation with:', {
             hasPaymentOrder: true,
-            paymentOrderId: paymentOrder.razorpayOrder.id,
+            paymentOrderId: currentOrder.razorpayOrder.id,
             premiumType: selectedPremium || null,
             isUrgent: isUrgent || false,
             isPremiumAd: !!(selectedPremium || isUrgent)
@@ -1864,6 +2343,131 @@ export default function PostAdPage() {
     setShowPaymentModal(false);
   };
 
+  // Function to directly open Razorpay checkout without showing payment modal popup
+  const openRazorpayCheckout = useCallback((order: any, formDataToCapture?: any) => {
+    if (!order?.razorpayOrder) {
+      console.error('❌ Payment order missing required fields');
+      toast.error('Invalid payment order. Please try again.');
+      return;
+    }
+
+    const { razorpayOrder } = order;
+    // Capture form data in closure to avoid state timing issues
+    const capturedFormData = formDataToCapture || adFormData;
+
+    // Load Razorpay script if not already loaded
+    const loadRazorpayScript = (): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        if (window.Razorpay) {
+          resolve();
+          return;
+        }
+
+        // Check if script is already being loaded
+        const existingScript = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');
+        if (existingScript) {
+          existingScript.addEventListener('load', () => resolve());
+          existingScript.addEventListener('error', () => reject(new Error('Failed to load Razorpay script')));
+          return;
+        }
+
+        // Load Razorpay script
+        const script = document.createElement('script');
+        script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        script.async = true;
+        script.defer = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Failed to load Razorpay script'));
+        document.head.appendChild(script);
+      });
+    };
+
+    // Load script and open Razorpay
+    loadRazorpayScript()
+      .then(() => {
+        if (!window.Razorpay) {
+          toast.error('Payment gateway not loaded. Please refresh and try again.');
+          return;
+        }
+
+        const amountInPaise = razorpayOrder.amount || Math.round((order.amount || 0) * 100);
+
+        if (isNaN(amountInPaise) || amountInPaise < 100 || amountInPaise > 10000000) {
+          console.error('❌ Invalid payment amount:', { amountInPaise, razorpayOrderAmount: razorpayOrder.amount, amount: order.amount });
+          toast.error('Invalid payment amount. Please contact support.');
+          return;
+        }
+
+        const premiumOffer = safePremiumSettings.find((offer: any) => offer.type === selectedPremium);
+        const descriptionText = selectedPremium 
+          ? `Complete payment to post your ${selectedPremium === 'TOP' ? 'Top' : selectedPremium === 'FEATURED' ? 'Featured' : 'Bump Up'} ad`
+          : 'Complete payment to post your ad';
+
+        const options = {
+          key: razorpayOrder.key,
+          amount: amountInPaise,
+          currency: 'INR',
+          name: 'SellIt',
+          description: descriptionText,
+          order_id: razorpayOrder.id,
+          handler: function (response: any) {
+            console.log('✅ Payment successful:', response);
+            // Pass order and form data from closure to handlePaymentSuccess to avoid state timing issues
+            handlePaymentSuccess(
+              response.razorpay_payment_id,
+              response.razorpay_signature,
+              response.razorpay_order_id,
+              order, // Pass order from closure
+              capturedFormData // Pass form data from closure
+            );
+          },
+          prefill: {
+            name: user?.name || '',
+            email: user?.email || '',
+            contact: user?.phone || ''
+          },
+          theme: {
+            color: '#4F46E5'
+          },
+          modal: {
+            ondismiss: function() {
+              console.log('⚠️ Payment modal dismissed by user');
+            }
+          },
+          'payment.error': function(error: any) {
+            console.error('❌ Razorpay payment error:', error);
+            let errorMessage = error.error?.description || error.error?.reason || error.error?.code || 'Payment failed. Please try again.';
+            if (errorMessage.toLowerCase().includes('international') || errorMessage.toLowerCase().includes('not supported')) {
+              errorMessage = 'International cards are not supported. Please use an Indian card.';
+            }
+            toast.error(errorMessage);
+            handlePaymentError(error);
+          },
+          'payment.cancel': function() {
+            console.log('⚠️ Payment cancelled by user');
+          },
+          'payment.failed': function(error: any) {
+            console.error('❌ Payment failed:', error);
+            toast.error('Payment could not be completed. Please try again.');
+            handlePaymentError(error);
+          }
+        };
+
+        try {
+          const razorpay = new window.Razorpay(options);
+          razorpay.open();
+        } catch (error: any) {
+          console.error('❌ Failed to initialize Razorpay:', error);
+          toast.error('Failed to initialize payment');
+          handlePaymentError(error);
+        }
+      })
+      .catch((error) => {
+        console.error('❌ Failed to load Razorpay script:', error);
+        toast.error('Failed to load payment gateway. Please refresh and try again.');
+      });
+  }, [handlePaymentSuccess, handlePaymentError, selectedPremium, premiumSettings, user]);
+
   // Remove body padding for post-ad page - must be before any early returns
   useEffect(() => {
     document.body.classList.add('no-navbar-padding');
@@ -1888,12 +2492,12 @@ export default function PostAdPage() {
   const canSubmit = !isLoadingAdLimit && adLimitStatus !== null;
 
   return (
-    <div className="min-h-screen bg-[#faf9f7]" style={{ margin: 0, padding: 0 }}>
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
-        <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">Post Your Ad</h1>
-          <p className="text-gray-600 text-lg">Complete the details below to reach thousands of potential buyers.</p>
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Modern Header */}
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">Post a New Ad</h1>
+          <p className="text-gray-600">Fill in the details to sell your item quickly and reach thousands of buyers.</p>
         </div>
 
         {/* Loading indicator for ad limits (non-blocking) */}
@@ -2162,30 +2766,49 @@ export default function PostAdPage() {
               onSubmit={handleSubmit(onSubmit)} 
               className="space-y-6"
             >
-              {/* Section 1: Choose a category */}
-              <div 
-                ref={(el) => { stepRefs.current[0] = el; }}
-                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
-              >
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xl font-bold">1</span>
+              {/* Ad Details Section - Modern Design */}
+              <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                <h2 className="text-xl font-semibold text-gray-900 mb-6">Ad Details</h2>
+                
+                <div className="space-y-5">
+                  {/* Ad Title */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Ad Title <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      {...register('title', { 
+                        required: 'Title is required', 
+                        maxLength: { value: 70, message: 'Title must not exceed 70 characters' },
+                        minLength: { value: 5, message: 'Title must be at least 5 characters' }
+                      })}
+                      className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                        errors.title ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                      }`}
+                      placeholder="Keep it short and distinct (e.g. iPhone 14 Pro Max 256GB)"
+                    />
+                    {errors.title && (
+                      <p className="text-red-500 text-sm mt-1">{errors.title.message as string}</p>
+                    )}
                   </div>
-                  <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Choose a Category</h2>
-                    <p className="text-sm text-gray-600 mb-4">Select where your item fits best</p>
-                    <div className="space-y-4">
+
+                  {/* Category & Subcategory */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Main Category</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Category <span className="text-red-500">*</span>
+                      </label>
                         <select
                           {...register('categoryId', { required: 'Category is required' })}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 appearance-none bg-white"
+                        className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                            errors.categoryId ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                          }`}
                           onChange={(e) => {
                             setValue('categoryId', e.target.value);
-                            setValue('subcategoryId', ''); // Reset subcategory when category changes
+                          setValue('subcategoryId', '');
                           }}
                         >
-                          <option value="">Select category</option>
+                        <option value="">Select Category</option>
                           {categories?.map((cat: any) => (
                             <option key={cat.id} value={cat.id}>
                               {cat.name}
@@ -2193,22 +2816,21 @@ export default function PostAdPage() {
                           ))}
                         </select>
                         {errors.categoryId && (
-                          <div className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</div>
+                        <p className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</p>
                         )}
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Sub-Category</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Subcategory <span className="text-red-500">*</span>
+                      </label>
                         <select
                           {...register('subcategoryId', { required: 'Subcategory is required' })}
-                          className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 appearance-none bg-white ${
-                            errors.subcategoryId ? 'border-red-500' : 'border-gray-300'
+                        className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                          errors.subcategoryId ? 'border-red-500 bg-red-50' : 'border-gray-300'
                           }`}
                           disabled={!selectedCategory}
-                          onChange={(e) => {
-                            setValue('subcategoryId', e.target.value);
-                          }}
                         >
-                          <option value="">Select sub-category</option>
+                        <option value="">Select Subcategory</option>
                           {selectedCategory?.subcategories?.map((sub: any) => (
                             <option key={sub.id} value={sub.id}>
                               {sub.name}
@@ -2216,110 +2838,1214 @@ export default function PostAdPage() {
                           ))}
                         </select>
                         {errors.subcategoryId && (
-                          <p className="mt-1 text-sm text-red-600">{errors.subcategoryId.message as string}</p>
+                        <p className="text-red-500 text-sm mt-1">{errors.subcategoryId.message as string}</p>
                         )}
-                      </div>
-                    </div>
-                  </div>
                 </div>
               </div>
 
-              {/* Section 2: Include some details */}
-              <div 
-                ref={(el) => { stepRefs.current[3] = el; }}
-                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
-              >
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xl font-bold">2</span>
-                  </div>
-                  <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Include some details</h2>
-                    <p className="text-sm text-gray-600 mb-4">Be descriptive to attract the right buyers</p>
-                    <div className="space-y-4">
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <label className="block text-sm font-medium text-gray-700">Ad Title</label>
-                          <span className="text-xs text-gray-500">{title?.length || 0}/70 characters</span>
-                        </div>
+                  {/* Price - Hidden for Mobile Phones */}
+                  {!isMobilePhones && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Price <span className="text-red-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-600 font-semibold">$</span>
                         <input
-                          {...register('title', { required: 'Title is required', maxLength: 70 })}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-                          placeholder="e.g. Brand new iPhone 14 Pro Max - 128GB"
+                          type="number"
+                          step="0.01"
+                          {...register('price', { 
+                            required: !isMobilePhones ? 'Price is required' : false, 
+                            min: { value: 0, message: 'Price must be greater than or equal to 0' }
+                          })}
+                          className={`w-full pl-8 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                            errors.price ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                          }`}
+                          placeholder="0.00"
                         />
-                        {errors.title && (
-                          <div className="text-red-500 text-sm mt-1">{errors.title.message as string}</div>
-                        )}
                       </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
-                        <textarea
-                          {...register('description', { required: 'Description is required' })}
-                          rows={6}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 resize-none"
-                          placeholder="Describe what you are selling. Include details like brand, condition, features, and reason for selling."
+                      <div className="mt-2 flex items-center">
+                        <input
+                          type="checkbox"
+                          id="negotiable"
+                          className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
                         />
-                        {errors.description && (
-                          <div className="text-red-500 text-sm mt-1">{errors.description.message as string}</div>
-                        )}
+                        <label htmlFor="negotiable" className="ml-2 text-sm text-gray-700">
+                          Price is negotiable
+                        </label>
                       </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Set a Price</label>
-                        <div className="relative">
-                          <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-600 font-semibold">₹</span>
-                          <input
-                            type="number"
-                            step="0.01"
-                            {...register('price', { required: 'Price is required', min: 0 })}
-                            className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-                            placeholder="0"
-                          />
-                        </div>
-                        {errors.price && (
-                          <div className="text-red-500 text-sm mt-1">{errors.price.message as string}</div>
-                        )}
-                      </div>
-
-                      {/* Specifications - Show when category and subcategory are selected */}
-                      {selectedCategory && selectedSubcategory && (
-                        <div className="mt-6 pt-6 border-t border-gray-200">
-                          <h3 className="text-lg font-semibold text-gray-900 mb-4">Specifications</h3>
-                          <CategoryAttributes
-                            categorySlug={selectedCategory.slug}
-                            subcategorySlug={selectedSubcategory.slug}
-                            register={register}
-                            watch={watch}
-                            setValue={setValue}
-                            errors={errors}
-                          />
-                        </div>
+                      {errors.price && (
+                        <p className="text-red-500 text-sm mt-1">{errors.price.message as string}</p>
                       )}
                     </div>
-                  </div>
+                  )}
+
+                  {/* Description with Rich Text Editor */}
+                      <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Description <span className="text-red-500">*</span>
+                    </label>
+                    {/* Rich Text Toolbar */}
+                    <div className="flex items-center gap-2 mb-2 p-2 bg-gray-50 rounded-t-lg border-b border-gray-200">
+                      <button type="button" className="p-2 hover:bg-gray-200 rounded" title="Bold">
+                        <span className="font-bold">B</span>
+                      </button>
+                      <button type="button" className="p-2 hover:bg-gray-200 rounded" title="Italic">
+                        <span className="italic">I</span>
+                      </button>
+                      <button type="button" className="p-2 hover:bg-gray-200 rounded" title="List">
+                        <span>•</span>
+                      </button>
+                    </div>
+                        <textarea
+                          {...register('description', { 
+                            required: 'Description is required',
+                            minLength: { value: 10, message: 'Description must be at least 10 characters' },
+                        maxLength: { value: 5000, message: 'Description must not exceed 5000 characters' }
+                          })}
+                      rows={8}
+                      className={`w-full px-4 py-3 border rounded-b-lg focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none ${
+                            errors.description ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                          }`}
+                      placeholder="Describe your item in detail. Include condition, features, and why you are selling it..."
+                        />
+                    <div className="flex justify-between items-center mt-1">
+                      <p className="text-xs text-gray-500">SUPPORTED FORMATS: Plain text</p>
+                      <p className="text-xs text-gray-500">{(watch('description')?.length || 0)}/5000</p>
+                    </div>
+                        {errors.description && (
+                      <p className="text-red-500 text-sm mt-1">{errors.description.message as string}</p>
+                    )}
+                          </div>
                 </div>
               </div>
 
-              {/* Section 3: Upload photos */}
-              <div 
-                ref={(el) => { stepRefs.current[4] = el; }}
-                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
-              >
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xl font-bold">3</span>
+
+              {/* Product Specifications - Category Specific */}
+              {selectedCategory && selectedSubcategory && (
+                <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                  <h2 className="text-xl font-semibold text-gray-900 mb-6">Product Specifications</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Mobiles Category Fields */}
+                    {(selectedCategory.slug === 'mobiles' || selectedCategory.name?.toLowerCase().includes('mobile')) && (
+                      <>
+                        {/* Brand Dropdown with Autocomplete */}
+                        {isMobilePhones && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Brand <span className="text-red-500">*</span>
+                            </label>
+                            <CreatableSelect
+                              options={brandOptions}
+                              value={watch('attributes.brand') ? {
+                                value: watch('attributes.brand'),
+                                label: watch('attributes.brand')
+                              } : null}
+                              onChange={(newValue, actionMeta) => {
+                                if (actionMeta.action === 'create-option') {
+                                  // New value created - add to options and select
+                                  const newBrand = actionMeta.option.value;
+                                  setBrandOptions(prev => [
+                                    { value: newBrand, label: newBrand },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.brand', newBrand);
+                                  setSelectedBrand(newBrand);
+                                  // Clear model when brand changes
+                                  setValue('attributes.model', '');
+                                  setModels([]);
+                                  setModelOptions([]);
+                                } else if (newValue) {
+                                  setValue('attributes.brand', newValue.value);
+                                  setSelectedBrand(newValue.value);
+                                  // Clear model when brand changes
+                                  setValue('attributes.model', '');
+                                  setModels([]);
+                                  setModelOptions([]);
+                                } else {
+                                  setValue('attributes.brand', '');
+                                  setSelectedBrand('');
+                                  setValue('attributes.model', '');
+                                  setModels([]);
+                                  setModelOptions([]);
+                                }
+                              }}
+                              onInputChange={(inputValue) => {
+                                setBrandSearchQuery(inputValue);
+                              }}
+                              onCreateOption={(inputValue) => {
+                                // User typed a new value - create it
+                                const newBrand = inputValue.trim();
+                                if (newBrand) {
+                                  setBrandOptions(prev => [
+                                    { value: newBrand, label: newBrand },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.brand', newBrand);
+                                  setSelectedBrand(newBrand);
+                                  // Clear model when brand changes
+                                  setValue('attributes.model', '');
+                                  setModels([]);
+                                  setModelOptions([]);
+                                }
+                              }}
+                              placeholder={isLoadingBrands ? 'Loading brands...' : 'Select or type brand'}
+                              isClearable
+                              isSearchable
+                              isLoading={isLoadingBrands}
+                              formatCreateLabel={(inputValue) => `+ Add "${inputValue}"`}
+                              className="react-select-container"
+                              classNamePrefix="react-select"
+                              styles={{
+                                control: (base) => ({
+                                  ...base,
+                                  minHeight: '48px',
+                                  borderColor: errors.attributes?.brand ? '#ef4444' : '#d1d5db',
+                                  '&:hover': {
+                                    borderColor: errors.attributes?.brand ? '#ef4444' : '#9ca3af'
+                                  }
+                                })
+                              }}
+                            />
+                            {errors.attributes?.brand && (
+                              <p className="text-red-500 text-sm mt-1">
+                                {(errors.attributes.brand as any)?.message || 'Brand is required'}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {/* Model Dropdown with Autocomplete - Show after brand is selected */}
+                        {isMobilePhones && selectedBrandFromForm && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Model <span className="text-red-500">*</span>
+                            </label>
+                            <CreatableSelect
+                              options={modelOptions}
+                              value={watch('attributes.model') ? {
+                                value: watch('attributes.model'),
+                                label: watch('attributes.model')
+                              } : null}
+                              onChange={(newValue, actionMeta) => {
+                                if (actionMeta.action === 'create-option') {
+                                  // New value created - add to options and select
+                                  const newModel = actionMeta.option.value;
+                                  setModelOptions(prev => [
+                                    { value: newModel, label: newModel },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.model', newModel);
+                                } else if (newValue) {
+                                  setValue('attributes.model', newValue.value);
+                                } else {
+                                  setValue('attributes.model', '');
+                                }
+                              }}
+                              onInputChange={(inputValue) => {
+                                setModelSearchQuery(inputValue);
+                              }}
+                              onCreateOption={(inputValue) => {
+                                // User typed a new value - create it
+                                const newModel = inputValue.trim();
+                                if (newModel) {
+                                  setModelOptions(prev => [
+                                    { value: newModel, label: newModel },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.model', newModel);
+                                }
+                              }}
+                              placeholder={isLoadingModels ? 'Loading models...' : 'Select or type model'}
+                              isClearable
+                              isSearchable
+                              isLoading={isLoadingModels}
+                              formatCreateLabel={(inputValue) => `+ Add "${inputValue}"`}
+                              className="react-select-container"
+                              classNamePrefix="react-select"
+                              styles={{
+                                control: (base) => ({
+                                  ...base,
+                                  minHeight: '48px',
+                                  borderColor: errors.attributes?.model ? '#ef4444' : '#d1d5db',
+                                  '&:hover': {
+                                    borderColor: errors.attributes?.model ? '#ef4444' : '#9ca3af'
+                                  }
+                                })
+                              }}
+                            />
+                            {errors.attributes?.model && (
+                              <p className="text-red-500 text-sm mt-1">
+                                {(errors.attributes.model as any)?.message || 'Model is required'}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {/* Color Dropdown with Autocomplete */}
+                        {isMobilePhones && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
+                            <CreatableSelect
+                              options={colorOptions}
+                              value={watch('attributes.color') ? {
+                                value: watch('attributes.color'),
+                                label: watch('attributes.color')
+                              } : null}
+                              onChange={(newValue, actionMeta) => {
+                                if (actionMeta.action === 'create-option') {
+                                  // New value created - add to options and select
+                                  const newColor = actionMeta.option.value;
+                                  setColorOptions(prev => [
+                                    { value: newColor, label: newColor },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.color', newColor);
+                                } else if (newValue) {
+                                  setValue('attributes.color', newValue.value);
+                                } else {
+                                  setValue('attributes.color', '');
+                                }
+                              }}
+                              onInputChange={(inputValue) => {
+                                setColorSearchQuery(inputValue);
+                              }}
+                              onCreateOption={(inputValue) => {
+                                // User typed a new value - create it
+                                const newColor = inputValue.trim();
+                                if (newColor) {
+                                  setColorOptions(prev => [
+                                    { value: newColor, label: newColor },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.color', newColor);
+                                }
+                              }}
+                              placeholder={isLoadingColors ? 'Loading colors...' : 'Select or type color'}
+                              isClearable
+                              isSearchable
+                              isLoading={isLoadingColors}
+                              formatCreateLabel={(inputValue) => `+ Add "${inputValue}"`}
+                              className="react-select-container"
+                              classNamePrefix="react-select"
+                              styles={{
+                                control: (base) => ({
+                                  ...base,
+                                  minHeight: '48px',
+                                  borderColor: errors.attributes?.color ? '#ef4444' : '#d1d5db',
+                                  '&:hover': {
+                                    borderColor: errors.attributes?.color ? '#ef4444' : '#9ca3af'
+                                  }
+                                })
+                              }}
+                            />
+                            {errors.attributes?.color && (
+                              <p className="text-red-500 text-sm mt-1">
+                                {errors.attributes.color.message as string}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {/* Storage Dropdown with Autocomplete */}
+                        {isMobilePhones && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Storage</label>
+                            <CreatableSelect
+                              options={storageOptions}
+                              value={watch('attributes.storage') ? {
+                                value: watch('attributes.storage'),
+                                label: watch('attributes.storage')
+                              } : null}
+                              onChange={(newValue, actionMeta) => {
+                                if (actionMeta.action === 'create-option') {
+                                  // New value created - add to options and select
+                                  const newStorage = actionMeta.option.value;
+                                  setStorageOptions(prev => [
+                                    { value: newStorage, label: newStorage },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.storage', newStorage);
+                                } else if (newValue) {
+                                  setValue('attributes.storage', newValue.value);
+                                } else {
+                                  setValue('attributes.storage', '');
+                                }
+                              }}
+                              onInputChange={(inputValue) => {
+                                setStorageSearchQuery(inputValue);
+                              }}
+                              onCreateOption={(inputValue) => {
+                                // User typed a new value - create it
+                                const newStorage = inputValue.trim();
+                                if (newStorage) {
+                                  setStorageOptions(prev => [
+                                    { value: newStorage, label: newStorage },
+                                    ...prev
+                                  ]);
+                                  setValue('attributes.storage', newStorage);
+                                }
+                              }}
+                              placeholder={isLoadingStorage ? 'Loading storage...' : 'Select or type storage'}
+                              isClearable
+                              isSearchable
+                              isLoading={isLoadingStorage}
+                              formatCreateLabel={(inputValue) => `+ Add "${inputValue}"`}
+                              className="react-select-container"
+                              classNamePrefix="react-select"
+                              styles={{
+                                control: (base) => ({
+                                  ...base,
+                                  minHeight: '48px',
+                                  borderColor: errors.attributes?.storage ? '#ef4444' : '#d1d5db',
+                                  '&:hover': {
+                                    borderColor: errors.attributes?.storage ? '#ef4444' : '#9ca3af'
+                                  }
+                                })
+                              }}
+                            />
+                            {errors.attributes?.storage && (
+                              <p className="text-red-500 text-sm mt-1">
+                                {errors.attributes.storage.message as string}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {/* Price - Show for Mobile Phones in Product Specifications */}
+                        {isMobilePhones && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Price <span className="text-red-500">*</span>
+                            </label>
+                            <div className="relative">
+                              <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-600 font-semibold">₹</span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                {...register('price', { 
+                                  required: isMobilePhones ? 'Price is required' : false, 
+                                  min: { value: 0, message: 'Price must be greater than or equal to 0' }
+                                })}
+                                className={`w-full pl-8 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                                  errors.price ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                                }`}
+                                placeholder="0.00"
+                              />
+                            </div>
+                            <div className="mt-2 flex items-center">
+                              <input
+                                type="checkbox"
+                                id="negotiable-specs"
+                                {...register('isNegotiable')}
+                                className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
+                              />
+                              <label htmlFor="negotiable-specs" className="ml-2 text-sm text-gray-700">
+                                Price is negotiable
+                              </label>
+                            </div>
+                            {errors.price && (
+                              <p className="text-red-500 text-sm mt-1">{errors.price.message as string}</p>
+                            )}
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Warranty</label>
+                          <select
+                            {...register('attributes.warranty')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Warranty</option>
+                            <option value="no_warranty">No Warranty</option>
+                            <option value="1_month">1 Month</option>
+                            <option value="3_months">3 Months</option>
+                            <option value="6_months">6 Months</option>
+                            <option value="1_year">1 Year</option>
+                            <option value="2_years">2 Years</option>
+                            <option value="manufacturer_warranty">Manufacturer Warranty</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Battery Health</label>
+                          <select
+                            {...register('attributes.battery_health')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Battery Health</option>
+                            <option value="100">100%</option>
+                            <option value="90-99">90-99%</option>
+                            <option value="80-89">80-89%</option>
+                            <option value="70-79">70-79%</option>
+                            <option value="60-69">60-69%</option>
+                            <option value="below_60">Below 60%</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.price_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹5,000 - ₹10,000"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Vehicles Category Fields */}
+                    {(selectedCategory.slug === 'vehicles' || selectedCategory.name?.toLowerCase().includes('vehicle') || selectedCategory.name?.toLowerCase().includes('car') || selectedCategory.name?.toLowerCase().includes('bike')) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Brand</label>
+                          <input
+                            type="text"
+                            {...register('attributes.brand')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Maruti, Honda, Toyota"
+                          />
+                      </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Model</label>
+                          <input
+                            type="text"
+                            {...register('attributes.model')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Swift, City, Innova"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Year</label>
+                          <input
+                            type="number"
+                            {...register('attributes.year')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. 2020"
+                            min="1900"
+                            max={new Date().getFullYear() + 1}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Fuel Type</label>
+                          <select
+                            {...register('attributes.fuel_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Fuel Type</option>
+                            <option value="petrol">Petrol</option>
+                            <option value="diesel">Diesel</option>
+                            <option value="cng">CNG</option>
+                            <option value="lpg">LPG</option>
+                            <option value="electric">Electric</option>
+                            <option value="hybrid">Hybrid</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">KM Driven</label>
+                          <input
+                            type="number"
+                            {...register('attributes.km_driven')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. 50000"
+                            min="0"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Owner Type</label>
+                          <select
+                            {...register('attributes.owner_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Owner Type</option>
+                            <option value="first_owner">First Owner</option>
+                            <option value="second_owner">Second Owner</option>
+                            <option value="third_owner">Third Owner</option>
+                            <option value="fourth_owner_plus">Fourth Owner & Above</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Transmission</label>
+                          <select
+                            {...register('attributes.transmission')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Transmission</option>
+                            <option value="manual">Manual</option>
+                            <option value="automatic">Automatic</option>
+                            <option value="cvt">CVT</option>
+                            <option value="amt">AMT</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Insurance Status</label>
+                          <select
+                            {...register('attributes.insurance_status')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Insurance Status</option>
+                            <option value="valid">Valid</option>
+                            <option value="expired">Expired</option>
+                            <option value="not_available">Not Available</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
+                          <input
+                            type="text"
+                            {...register('attributes.color')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. White, Black, Red"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Properties Category Fields */}
+                    {(selectedCategory.slug === 'properties' || selectedCategory.name?.toLowerCase().includes('property') || selectedCategory.name?.toLowerCase().includes('real estate') || selectedCategory.name?.toLowerCase().includes('house')) && (
+                      <>
+                      <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Property Type</label>
+                          <select
+                            {...register('attributes.property_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Property Type</option>
+                            <option value="apartment">Apartment</option>
+                            <option value="house">House</option>
+                            <option value="villa">Villa</option>
+                            <option value="plot">Plot</option>
+                            <option value="commercial">Commercial</option>
+                            <option value="office">Office</option>
+                            <option value="shop">Shop</option>
+                            <option value="warehouse">Warehouse</option>
+                            <option value="land">Land</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Area (Sqft)</label>
+                          <input
+                            type="number"
+                            {...register('attributes.area_sqft')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. 1200"
+                            min="0"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Bedrooms</label>
+                          <select
+                            {...register('attributes.bedrooms')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Bedrooms</option>
+                            <option value="1">1 BHK</option>
+                            <option value="2">2 BHK</option>
+                            <option value="3">3 BHK</option>
+                            <option value="4">4 BHK</option>
+                            <option value="5">5 BHK</option>
+                            <option value="5+">5+ BHK</option>
+                            <option value="studio">Studio</option>
+                          </select>
+                          </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Bathrooms</label>
+                          <select
+                            {...register('attributes.bathrooms')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Bathrooms</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                            <option value="5+">5+</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Furnishing</label>
+                          <select
+                            {...register('attributes.furnishing')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Furnishing</option>
+                            <option value="furnished">Furnished</option>
+                            <option value="semi_furnished">Semi-Furnished</option>
+                            <option value="unfurnished">Unfurnished</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Parking</label>
+                          <select
+                            {...register('attributes.parking')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Parking</option>
+                            <option value="0">No Parking</option>
+                            <option value="1">1 Parking</option>
+                            <option value="2">2 Parking</option>
+                            <option value="3">3 Parking</option>
+                            <option value="4+">4+ Parking</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Facing</label>
+                          <select
+                            {...register('attributes.facing')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Facing</option>
+                            <option value="north">North</option>
+                            <option value="south">South</option>
+                            <option value="east">East</option>
+                            <option value="west">West</option>
+                            <option value="north_east">North-East</option>
+                            <option value="north_west">North-West</option>
+                            <option value="south_east">South-East</option>
+                            <option value="south_west">South-West</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Ownership Type</label>
+                          <select
+                            {...register('attributes.ownership_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Ownership Type</option>
+                            <option value="freehold">Freehold</option>
+                            <option value="leasehold">Leasehold</option>
+                            <option value="cooperative">Cooperative</option>
+                            <option value="power_of_attorney">Power of Attorney</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.price_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹50,00,000 - ₹1,00,00,000"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Home & Furniture Category Fields */}
+                    {(selectedCategory.slug === 'home-furniture' || selectedCategory.slug === 'home' || selectedCategory.name?.toLowerCase().includes('home') || selectedCategory.name?.toLowerCase().includes('furniture')) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Material</label>
+                          <input
+                            type="text"
+                            {...register('attributes.material')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Wood, Metal, Plastic"
+                          />
+                      </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Brand</label>
+                          <input
+                            type="text"
+                            {...register('attributes.brand')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. IKEA, Godrej"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Condition</label>
+                          <select
+                            {...register('attributes.condition')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Condition</option>
+                            <option value="new">New</option>
+                            <option value="like_new">Like New</option>
+                            <option value="excellent">Excellent</option>
+                            <option value="good">Good</option>
+                            <option value="fair">Fair</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
+                          <input
+                            type="text"
+                            {...register('attributes.color')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Brown, White, Black"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Dimensions</label>
+                          <input
+                            type="text"
+                            {...register('attributes.dimensions')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. 120cm x 60cm x 75cm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Assembly Required</label>
+                          <select
+                            {...register('attributes.assembly_required')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select</option>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                            <option value="pre_assembled">Pre-Assembled</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.price_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹5,000 - ₹20,000"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Fashion Category Fields */}
+                    {(selectedCategory.slug === 'fashion' || selectedCategory.name?.toLowerCase().includes('fashion') || selectedCategory.name?.toLowerCase().includes('clothing') || selectedCategory.name?.toLowerCase().includes('apparel')) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Brand</label>
+                          <input
+                            type="text"
+                            {...register('attributes.brand')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Zara, H&M, Levi's"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Size</label>
+                          <input
+                            type="text"
+                            {...register('attributes.size')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. S, M, L, XL, 32, 36"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
+                          <input
+                            type="text"
+                            {...register('attributes.color')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Red, Blue, Black"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Gender</label>
+                          <select
+                            {...register('attributes.gender')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Gender</option>
+                            <option value="men">Men</option>
+                            <option value="women">Women</option>
+                            <option value="boys">Boys</option>
+                            <option value="girls">Girls</option>
+                            <option value="unisex">Unisex</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Material</label>
+                          <input
+                            type="text"
+                            {...register('attributes.material')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Cotton, Polyester, Denim"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Fit Type</label>
+                          <select
+                            {...register('attributes.fit_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Fit Type</option>
+                            <option value="slim">Slim</option>
+                            <option value="regular">Regular</option>
+                            <option value="loose">Loose</option>
+                            <option value="skinny">Skinny</option>
+                            <option value="relaxed">Relaxed</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Condition</label>
+                          <select
+                            {...register('attributes.condition')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Condition</option>
+                            <option value="new">New</option>
+                            <option value="like_new">Like New</option>
+                            <option value="excellent">Excellent</option>
+                            <option value="good">Good</option>
+                            <option value="fair">Fair</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.price_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹500 - ₹5,000"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Books, Sports & Hobbies Category Fields */}
+                    {(selectedCategory.slug === 'books' || selectedCategory.slug === 'sports' || selectedCategory.slug === 'hobbies' || selectedCategory.name?.toLowerCase().includes('book') || selectedCategory.name?.toLowerCase().includes('sport') || selectedCategory.name?.toLowerCase().includes('hobby')) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Category Type</label>
+                          <input
+                            type="text"
+                            {...register('attributes.category_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Fiction, Sports Equipment, Musical Instrument"
+                          />
+                    </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Brand</label>
+                          <input
+                            type="text"
+                            {...register('attributes.brand')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Nike, Adidas, Penguin"
+                          />
                   </div>
-                  <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Upload photos</h2>
-                    <p className="text-sm text-gray-600 mb-4">The first photo will be your main cover image</p>
-                    <p className="text-sm text-gray-600 mb-4">Add up to 12 photos. First photo will be your cover.</p>
-                    <div className="grid grid-cols-4 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Author / Maker</label>
+                          <input
+                            type="text"
+                            {...register('attributes.author_maker')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. J.K. Rowling, Company Name"
+                          />
+                </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Language</label>
+                          <select
+                            {...register('attributes.language')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Language</option>
+                            <option value="english">English</option>
+                            <option value="hindi">Hindi</option>
+                            <option value="malayalam">Malayalam</option>
+                            <option value="tamil">Tamil</option>
+                            <option value="telugu">Telugu</option>
+                            <option value="kannada">Kannada</option>
+                            <option value="bengali">Bengali</option>
+                            <option value="gujarati">Gujarati</option>
+                            <option value="marathi">Marathi</option>
+                            <option value="other">Other</option>
+                          </select>
+              </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Age Group</label>
+                          <select
+                            {...register('attributes.age_group')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Age Group</option>
+                            <option value="0-2">0-2 years</option>
+                            <option value="3-5">3-5 years</option>
+                            <option value="6-8">6-8 years</option>
+                            <option value="9-12">9-12 years</option>
+                            <option value="13-17">13-17 years</option>
+                            <option value="18+">18+ years</option>
+                            <option value="all_ages">All Ages</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Condition</label>
+                          <select
+                            {...register('attributes.condition')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Condition</option>
+                            <option value="new">New</option>
+                            <option value="like_new">Like New</option>
+                            <option value="excellent">Excellent</option>
+                            <option value="good">Good</option>
+                            <option value="fair">Fair</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.price_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹100 - ₹5,000"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Pets Category Fields */}
+                    {(selectedCategory.slug === 'pets' || selectedCategory.name?.toLowerCase().includes('pet') || selectedCategory.name?.toLowerCase().includes('animal')) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Breed</label>
+                          <input
+                            type="text"
+                            {...register('attributes.breed')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Golden Retriever, Persian Cat"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Age</label>
+                          <input
+                            type="text"
+                            {...register('attributes.age')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. 2 months, 1 year"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Gender</label>
+                          <select
+                            {...register('attributes.gender')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Gender</option>
+                            <option value="male">Male</option>
+                            <option value="female">Female</option>
+                          </select>
+                  </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Vaccinated</label>
+                          <select
+                            {...register('attributes.vaccinated')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select</option>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                            <option value="partially">Partially</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Trained</label>
+                          <select
+                            {...register('attributes.trained')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select</option>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                            <option value="basic">Basic Training</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">With Papers</label>
+                          <select
+                            {...register('attributes.with_papers')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select</option>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
+                          <input
+                            type="text"
+                            {...register('attributes.color')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Golden, Black, White"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.price_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹5,000 - ₹50,000"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Services Category Fields */}
+                    {(selectedCategory.slug === 'services' || selectedCategory.name?.toLowerCase().includes('service')) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Service Type</label>
+                          <input
+                            type="text"
+                            {...register('attributes.service_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Plumbing, Electrician, Tutor"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Experience Level</label>
+                          <select
+                            {...register('attributes.experience_level')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Experience Level</option>
+                            <option value="beginner">Beginner (0-1 years)</option>
+                            <option value="intermediate">Intermediate (2-5 years)</option>
+                            <option value="experienced">Experienced (5-10 years)</option>
+                            <option value="expert">Expert (10+ years)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Availability</label>
+                          <select
+                            {...register('attributes.availability')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Availability</option>
+                            <option value="full_time">Full Time</option>
+                            <option value="part_time">Part Time</option>
+                            <option value="weekends_only">Weekends Only</option>
+                            <option value="flexible">Flexible</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Service Mode</label>
+                          <select
+                            {...register('attributes.service_mode')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Service Mode</option>
+                            <option value="online">Online</option>
+                            <option value="offline">Offline</option>
+                            <option value="both">Both</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
+                          <input
+                            type="text"
+                            {...register('attributes.location')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. City, Area"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.price_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹500 - ₹5,000 per hour"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Jobs Category Fields */}
+                    {(selectedCategory.slug === 'jobs' || selectedCategory.name?.toLowerCase().includes('job') || selectedCategory.name?.toLowerCase().includes('career')) && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Job Role</label>
+                          <input
+                            type="text"
+                            {...register('attributes.job_role')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. Software Developer, Sales Executive"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Experience Level</label>
+                          <select
+                            {...register('attributes.experience_level')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Experience Level</option>
+                            <option value="fresher">Fresher (0 years)</option>
+                            <option value="0-1">0-1 years</option>
+                            <option value="1-3">1-3 years</option>
+                            <option value="3-5">3-5 years</option>
+                            <option value="5-10">5-10 years</option>
+                            <option value="10+">10+ years</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Job Type</label>
+                          <select
+                            {...register('attributes.job_type')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Job Type</option>
+                            <option value="full_time">Full Time</option>
+                            <option value="part_time">Part Time</option>
+                            <option value="contract">Contract</option>
+                            <option value="internship">Internship</option>
+                            <option value="freelance">Freelance</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Work Mode</label>
+                          <select
+                            {...register('attributes.work_mode')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          >
+                            <option value="">Select Work Mode</option>
+                            <option value="work_from_home">Work From Home</option>
+                            <option value="office">Office</option>
+                            <option value="hybrid">Hybrid</option>
+                            <option value="field">Field Work</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Qualification</label>
+                          <input
+                            type="text"
+                            {...register('attributes.qualification')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. B.Tech, MBA, Diploma"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Salary Range</label>
+                          <input
+                            type="text"
+                            {...register('attributes.salary_range')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. ₹20,000 - ₹50,000 per month"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
+                          <input
+                            type="text"
+                            {...register('attributes.location')}
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            placeholder="e.g. City, Area"
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Images Section - Modern Design */}
+              <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold text-gray-900">Images</h2>
+                  <span className="text-sm text-gray-500">Max 12 photos</span>
+                </div>
+                
+                <div className="space-y-4">
+                  {/* Drag & Drop Upload Area */}
                       <label className="block">
-                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-orange-500 transition-colors cursor-pointer bg-gray-50">
+                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-orange-500 transition-colors cursor-pointer bg-gray-50">
                           <div className="flex flex-col items-center">
-                            <FiCamera className="w-8 h-8 text-gray-400 mb-2" />
-                            <span className="text-sm text-gray-600 font-medium">Add Photo</span>
+                        <FiCamera className="w-10 h-10 text-gray-400 mb-3" />
+                        <span className="text-sm font-medium text-gray-700 mb-1">ADD PHOTOS</span>
+                        <span className="text-xs text-gray-500">or drag & drop</span>
                           </div>
                           <input
                             type="file"
@@ -2330,449 +4056,265 @@ export default function PostAdPage() {
                           />
                         </div>
                       </label>
+
+                  {/* Image Previews */}
+                  {previews.length > 0 && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       {previews.map((preview, index) => (
                         <div key={index} className="relative group">
+                          <div className="aspect-square rounded-lg overflow-hidden border-2 border-gray-200">
                           <img
                             src={preview}
                             alt={`Preview ${index + 1}`}
-                            className="w-full h-32 object-cover rounded-lg border-2 border-gray-200"
+                              className="w-full h-full object-cover"
                           />
+                          </div>
                           {index === 0 && (
-                            <span className="absolute bottom-1 left-1 bg-white text-gray-900 text-xs font-semibold px-2 py-0.5 rounded">
+                            <span className="absolute bottom-2 left-2 bg-white text-gray-900 text-xs font-semibold px-2 py-1 rounded">
                               MAIN PHOTO
                             </span>
                           )}
                           <button
                             type="button"
                             onClick={() => removeImage(index)}
-                            className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
                           >
-                            <FiX className="w-3 h-3" />
+                            <FiX className="w-4 h-4" />
                           </button>
                         </div>
                       ))}
-                      {Array.from({ length: Math.max(0, 3 - previews.length) }).map((_, index) => (
-                        <div key={`placeholder-${index}`} className="border-2 border-gray-200 rounded-lg p-6 flex items-center justify-center bg-gray-50">
-                          <div className="text-gray-400">
-                            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                            </svg>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                  )}
+
+                  <p className="text-xs text-gray-500">
+                    SUPPORTED FORMATS: JPG, PNG. MAX SIZE: 5MB PER IMAGE.
+                  </p>
+                  
                     {images.length === 0 && (
-                      <p className="text-red-500 text-sm mt-2">At least one image is required</p>
+                    <p className="text-red-500 text-sm flex items-center gap-1">
+                        <FiAlertCircle className="w-4 h-4" />
+                        At least one image is required
+                      </p>
                     )}
-                  </div>
                 </div>
               </div>
 
-              {/* Section 5: Location */}
-              <div 
-                ref={(el) => { stepRefs.current[6] = el; }}
-                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
-                style={{ overflow: 'visible' }}
-              >
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xl font-bold">5</span>
-                  </div>
-                  <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Location</h2>
-                    <p className="text-sm text-gray-600 mb-4">Help buyers find your item locally</p>
-                    
-                    <div className="space-y-6">
-                      {/* Search Address Section with Auto Detect */}
-                      <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                        <div className="flex items-center justify-between mb-3">
-                          <label className="block text-sm font-semibold text-gray-800 flex items-center gap-2">
-                            <FiSearch className="w-4 h-4 text-gray-600" />
-                            Search Address
-                          </label>
-                          <button
-                            type="button"
-                            onClick={detectLocation}
-                            disabled={isDetectingLocation}
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm"
-                          >
-                            {isDetectingLocation ? (
-                              <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                <span>Detecting...</span>
-                              </>
-                            ) : (
-                              <>
-                                <FiNavigation className="w-4 h-4" />
-                                <span>Auto Detect</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                        <div className="relative" style={{ zIndex: 1000 }}>
-                          {/* CRITICAL: Input MUST always be rendered - NEVER conditionally hidden */}
+              {/* Location Information - Modern Design */}
+              <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                <h2 className="text-xl font-semibold text-gray-900 mb-6">Location Information</h2>
+                
+                <div className="space-y-4">
+                  {/* Location Input with Auto-detect */}
+                  <div className="flex gap-4">
+                    <div className="flex-1">
+                      <div className="relative">
+                        <FiSearch className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
                           <input
                             id="location-input"
                             ref={(el) => {
                               locationAutocompleteRef.current = el;
                               const isMounted = !!el;
                               setLocationInputMounted(isMounted);
-                              if (isMounted) {
-                                console.log('✅ Location input mounted in DOM');
-                              }
                             }}
                             type="text"
                             autoComplete="off"
-                            value={locationQuery || ''}
+                          value={locationQuery || watch('city') || ''}
                             onChange={(e) => {
                               const value = e.target.value;
                               setLocationQuery(value);
-                              // Hide autocomplete dropdown if less than 3 characters
-                              setTimeout(() => {
-                                const pacContainer = document.querySelector('.pac-container') as HTMLElement;
-                                if (pacContainer && value.trim().length < 3) {
-                                  pacContainer.style.display = 'none';
-                                }
-                              }, 50);
-                            }}
-                            className="w-full pl-11 pr-4 py-3.5 bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-all shadow-sm"
-                            placeholder="Start typing your city or area..."
-                          />
-                          <FiSearch className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
+                          }}
+                          className="w-full pl-11 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                          placeholder="New York, NY"
+                        />
                         </div>
-                        {googlePlacesLoaded && (
-                          <p className="mt-2 text-xs text-gray-600 flex items-center gap-1">
-                            <FiInfo className="w-3 h-3" />
-                            Type at least 3 characters to see suggestions. Select from suggestions to auto-fill fields below.
+                      {(watch('city') || watch('state')) && (
+                        <div className="mt-2 bg-yellow-50 border border-yellow-200 rounded-lg p-3 flex items-center gap-2">
+                          <FiCheckCircle className="w-5 h-5 text-yellow-600" />
+                          <p className="text-sm text-yellow-900">
+                            Auto-detected. We've set your location based on your profile preferences.
                           </p>
-                        )}
                       </div>
-
-                      {/* City and Neighborhood Grid */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* City Field */}
-                        <div>
-                          <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
-                            <FiMapPin className="w-4 h-4 text-orange-500" />
-                            City <span className="text-red-500">*</span>
-                          </label>
-                          <input
-                            type="text"
-                            {...register('city', { required: 'City is required' })}
-                            value={watch('city') || ''}
-                            onChange={(e) => {
-                              setValue('city', e.target.value, { shouldValidate: true });
-                            }}
-                            className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-all ${
-                              errors.city ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-white hover:border-orange-300'
-                            }`}
-                            placeholder="Enter city name"
-                          />
-                          {errors.city && (
-                            <p className="mt-1.5 text-sm text-red-600 flex items-center gap-1">
-                              <FiAlertCircle className="w-4 h-4" />
-                              {errors.city.message as string}
-                            </p>
                           )}
                         </div>
-
-                        {/* Neighborhood Field */}
-                        <div>
-                          <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
-                            <FiHome className="w-4 h-4 text-orange-500" />
-                            Neighborhood
-                          </label>
-                          <input
-                            type="text"
-                            {...register('neighbourhood')}
-                            value={neighborhoodQuery || watch('neighbourhood') || ''}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              setNeighborhoodQuery(value);
-                              setValue('neighbourhood', value, { shouldValidate: false });
-                            }}
-                            className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition-all ${
-                              errors.neighbourhood ? 'border-red-500 bg-red-50' : 'border-gray-300 bg-white hover:border-orange-300'
-                            }`}
-                            placeholder="Enter neighborhood or area"
-                          />
-                          {errors.neighbourhood && (
-                            <p className="mt-1.5 text-sm text-red-600 flex items-center gap-1">
-                              <FiAlertCircle className="w-4 h-4" />
-                              {errors.neighbourhood.message as string}
-                            </p>
-                          )}
-                        </div>
+                    <button
+                      type="button"
+                      onClick={detectLocation}
+                      disabled={isDetectingLocation}
+                      className="px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                      title="Auto Detect Location"
+                    >
+                      <FiNavigation className="w-5 h-5 text-gray-600" />
+                    </button>
                       </div>
 
-                      {/* Map View Section */}
-                      <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                        <div className="flex items-center gap-2 mb-3">
-                          <FiMap className="w-5 h-5 text-gray-600" />
-                          <label className="block text-sm font-semibold text-gray-800">Map View</label>
-                        </div>
+                  {/* Map Preview */}
                         {mapCoordinates && 
                          typeof mapCoordinates.lat === 'number' && 
                          typeof mapCoordinates.lng === 'number' &&
                          !isNaN(mapCoordinates.lat) &&
                          !isNaN(mapCoordinates.lng) ? (
-                          <div className="rounded-lg overflow-hidden border border-gray-200 shadow-md bg-white map-container-hide-attribution" style={{ height: '400px', minHeight: '300px', position: 'relative' }}>
+                    <div className="relative h-48 rounded-lg overflow-hidden border border-gray-200">
                             <div 
                               ref={mapRef}
-                              style={{ width: '100%', height: '100%' }}
-                            />
-                            <div className="absolute top-3 left-3 z-10 bg-white rounded-full p-2.5 shadow-xl border border-orange-200">
-                              <FiMapPin className="w-5 h-5 text-orange-600" />
-                            </div>
-                            <div className="absolute bottom-3 right-3 z-10 bg-white/95 backdrop-blur-sm rounded-lg px-3 py-2 shadow-lg border border-gray-200">
-                              <p className="text-xs font-mono text-gray-700">
-                                <span className="font-semibold">Lat:</span> {mapCoordinates.lat.toFixed(6)}
-                                <span className="mx-2">|</span>
-                                <span className="font-semibold">Lng:</span> {mapCoordinates.lng.toFixed(6)}
-                              </p>
-                            </div>
+                        className="w-full h-full"
+                        style={{ minHeight: '200px' }}
+                      />
                           </div>
                         ) : (
-                          <div className="rounded-lg border border-gray-200 bg-gray-50 shadow-sm" style={{ height: '300px' }}>
-                            <div className="h-full flex flex-col items-center justify-center p-6">
-                              <div className="bg-orange-100 rounded-full p-4 mb-4">
-                                <FiMapPin className="w-10 h-10 text-orange-500" />
-                              </div>
-                              <p className="text-sm font-medium text-gray-700 mb-1">No location selected</p>
-                              <p className="text-xs text-gray-500 text-center max-w-xs">
-                                Search for an address above or select from autocomplete suggestions to view the map
-                              </p>
+                    <div className="h-48 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center">
+                      <div className="text-center">
+                        <FiMapPin className="w-10 h-10 text-gray-400 mx-auto mb-2" />
+                        <p className="text-sm text-gray-500">Map will appear when location is selected</p>
                             </div>
                           </div>
                         )}
-                        {mapCoordinates && 
-                         typeof mapCoordinates.lat === 'number' && 
-                         typeof mapCoordinates.lng === 'number' &&
-                         !isNaN(mapCoordinates.lat) &&
-                         !isNaN(mapCoordinates.lng) && (
-                          <div className="mt-3 flex items-start gap-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                            <FiInfo className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
-                            <p className="text-xs text-blue-800">
-                              <span className="font-semibold">Tip:</span> Drag the marker on the map to fine-tune your location.
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
                 </div>
               </div>
 
-              {/* Section 6: Review your details */}
-              <div 
-                ref={(el) => { stepRefs.current[7] = el; }}
-                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
-              >
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xl font-bold">6</span>
-                  </div>
-                  <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900 mb-1">Review your details</h2>
-                    <p className="text-sm text-gray-600 mb-4">Confirm your contact information</p>
-                    {user && (
-                      <div className="space-y-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center">
-                            {user?.avatar ? (
-                              <ImageWithFallback
-                                src={user.avatar}
-                                alt={user?.name || 'User'}
-                                width={48}
-                                height={48}
-                                className="w-12 h-12 rounded-full object-cover"
-                              />
-                            ) : (
-                              <FiUser className="w-6 h-6 text-orange-600" />
-                            )}
-                          </div>
-                          <div>
-                            <p className="font-semibold text-gray-900">{user?.name || 'User'}</p>
-                            <p className="text-sm text-gray-600">{user?.phone || '+1 202 555 0192'}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 pt-4 border-t border-gray-200">
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={showPhoneInAds}
-                              onChange={(e) => setShowPhoneInAds(e.target.checked)}
-                              className="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
-                            />
-                            <div>
-                              <p className="text-sm font-medium text-gray-900">Show my phone number in ads</p>
-                              <p className="text-xs text-gray-500">Buyers can contact you directly via call or SMS</p>
-                            </div>
-                          </label>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
 
-              {/* Section 7: Premium Features (Optional) */}
+              {/* Business Package Status - Modern Design */}
               <div 
                 data-premium-section
                 className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
               >
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xl font-bold">7</span>
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <h2 className="text-xl font-semibold text-gray-900">Boost your Ad</h2>
-                      <span className="bg-green-500 text-white text-xs font-semibold px-2 py-0.5 rounded">NEW</span>
-                    </div>
-                    <p className="text-sm text-gray-600 mb-4">Get up to 10x more views by promoting your ad</p>
-                    
-                    {/* Info message when business package is active and free ads remain */}
-                    {hasFreeAdsRemaining && (
-                      <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-                        <p className="text-sm font-medium text-green-800 mb-1">
-                          You have {freeAdsRemaining} free ad{freeAdsRemaining !== 1 ? 's' : ''} remaining
-                        </p>
-                        <p className="text-sm text-green-700">
-                          Your ad will be posted using your free credit. Premium features are optional but recommended for faster sales.
-                        </p>
-                      </div>
-                    )}
-                    
-                    {/* Hide premium payment options if business package is active and free ads remain */}
-                    {hasActiveBusinessPackage && hasFreeAdsRemaining ? (
-                      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                        <p className="text-sm text-gray-600 text-center">
-                          Premium features are disabled because you have free ads available. You can post your ad without any payment.
-                        </p>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="text-sm text-gray-600 mb-4">Enhance your ad visibility with premium features. Payment will be collected after posting.</p>
-                    
+                <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-yellow-500 rounded-lg flex items-center justify-center">
+                      <FiCheckCircle className="w-6 h-6 text-white" />
+                          </div>
+                          <div>
+                      <h2 className="text-xl font-semibold text-gray-900">Business Package Status</h2>
+                      <p className="text-sm text-gray-600">Select premium features to boost your ad visibility.</p>
+                          </div>
+                        </div>
+                  {adLimitStatus && adLimitStatus.businessAdsRemaining > 0 && (
+                    <span className="bg-orange-600 text-white text-xs font-semibold px-3 py-1 rounded-full">
+                      {adLimitStatus.businessAdsRemaining} CREDITS AVAILABLE
+                    </span>
+                  )}
+              </div>
+
+                {/* Premium Features with Toggles */}
                         {isLoadingOffers ? (
                           <div className="flex items-center justify-center py-8">
                             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
                             <span className="ml-3 text-gray-600">Loading premium options...</span>
                           </div>
-                        ) : Array.isArray(premiumSettings) && premiumSettings.length > 0 ? (
-                          <>
-                            <div className="space-y-3">
-                              {premiumSettings.map((offer: any) => (
-                                <label
-                                  key={offer.id || offer.type}
-                                  className={`flex items-start gap-3 p-4 border-2 rounded-lg transition-all ${
-                                    selectedPremium === offer.type
-                                      ? 'border-blue-500 bg-blue-50'
-                                      : 'border-gray-200 hover:border-gray-300'
-                                  } ${hasActiveBusinessPackage && hasFreeAdsRemaining ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                                >
-                                  <input
-                                    type="radio"
-                                    name="premiumFeature"
-                                    checked={selectedPremium === offer.type}
-                                    disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
-                                    onChange={() => {
-                                      if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
-                                      setSelectedPremium(offer.type);
-                                    }}
-                                    className="w-5 h-5 text-blue-600 border-gray-300 focus:ring-blue-500 mt-0.5"
-                                  />
-                                  <div className="flex-1">
-                                    <div className="font-semibold text-gray-900 mb-1">{offer.name || offer.type}</div>
-                                    <div className="text-sm text-gray-600">{offer.description || 'Enhance your ad visibility'}</div>
-                                    {offer.hasOffer && offer.originalPrice && (
-                                      <div className="mt-1 flex items-center gap-2">
-                                        <span className="text-xs text-gray-400 line-through">${offer.originalPrice.toFixed(2)}</span>
-                                        <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded">Special Offer</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="text-right">
-                                    {offer.hasOffer && offer.originalPrice ? (
-                                      <div>
-                                        <div className="text-lg font-bold text-gray-900">${(offer.price || 0).toFixed(2)}</div>
-                                        <div className="text-xs text-gray-400 line-through">${offer.originalPrice.toFixed(2)}</div>
-                                      </div>
-                                    ) : (
-                                      <div className="text-lg font-bold text-gray-900">${(offer.price || 0).toFixed(2)}</div>
-                                    )}
-                                  </div>
-                                </label>
-                              ))}
-                            </div>
-                            {selectedPremium && (
-                              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                                <p className="text-sm text-blue-800">
-                                  <strong>Selected:</strong> {premiumSettings.find((o: any) => o.type === selectedPremium)?.name || selectedPremium}
-                                  {' - '}
-                                  {premiumSettings.find((o: any) => o.type === selectedPremium)?.description || 'Premium feature selected'}
-                                </p>
-                                <p className="text-xs text-blue-600 mt-1">
-                                  Payment will be collected after you submit the ad form.
-                                </p>
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <div className="p-4 bg-gray-50 rounded-lg text-center text-gray-600">
-                            No premium options available at the moment.
+                ) : (
+                  <div className="space-y-4">
+                    {/* TOP Ads */}
+                    {safePremiumSettings.find((o: any) => o.type === 'TOP') && (
+                      <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
+                        <div className="flex items-center gap-3 flex-1">
+                          <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
+                            <span className="text-white font-bold">T</span>
                           </div>
-                        )}
-                      </>
-                    )}
-                    
-                    {/* Urgent Badge Option - Only show if not already in premiumSettings */}
-                    {!Array.isArray(premiumSettings) || !premiumSettings.find((o: any) => o.type === 'URGENT') ? (
-                      <div className="mt-4">
-                        <label className={`flex items-center gap-3 p-4 border-2 rounded-lg transition-all ${
-                          hasActiveBusinessPackage && hasFreeAdsRemaining 
-                            ? 'opacity-50 cursor-not-allowed border-gray-200' 
-                            : 'cursor-pointer hover:bg-gray-50 border-gray-200'
-                        }`}>
+                          <div className="flex-1">
+                            <div className="font-semibold text-gray-900">TOP Ads</div>
+                            <div className="text-sm text-gray-600">Display in the exclusive top section of search results.</div>
+                          </div>
+                          <div className="text-right mr-4">
+                            <span className="text-sm font-semibold text-gray-900">
+                              {safePremiumSettings.find((o: any) => o.type === 'TOP')?.price || 0} CREDITS
+                            </span>
+                          </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                                  <input
+                            type="checkbox"
+                            checked={selectedPremium === 'TOP'}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedPremium('TOP');
+                              } else {
+                                setSelectedPremium(null);
+                              }
+                            }}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+                        </label>
+                                      </div>
+                                    )}
+
+                    {/* Featured Ad */}
+                    {safePremiumSettings.find((o: any) => o.type === 'FEATURED') && (
+                      <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
+                        <div className="flex items-center gap-3 flex-1">
+                          <FiStar className="w-10 h-10 text-yellow-500" />
+                          <div className="flex-1">
+                            <div className="font-semibold text-gray-900">Featured Ad</div>
+                            <div className="text-sm text-gray-600">Pin your ad to the top of the category for 7 days.</div>
+                                  </div>
+                          <div className="text-right mr-4">
+                            <span className="text-sm font-semibold text-gray-900">
+                              {safePremiumSettings.find((o: any) => o.type === 'FEATURED')?.price || 0} CREDIT
+                            </span>
+                                      </div>
+                                  </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
                           <input
                             type="checkbox"
-                            checked={isUrgent}
-                            disabled={hasActiveBusinessPackage && hasFreeAdsRemaining}
+                            checked={selectedPremium === 'FEATURED'}
                             onChange={(e) => {
-                              if (hasActiveBusinessPackage && hasFreeAdsRemaining) return;
-                              setIsUrgent(e.target.checked);
+                              if (e.target.checked) {
+                                setSelectedPremium('FEATURED');
+                              } else {
+                                setSelectedPremium(null);
+                              }
                             }}
-                            className="w-5 h-5 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+                            className="sr-only peer"
                           />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+                                </label>
+                              </div>
+                    )}
+
+                    {/* Bump Up */}
+                    {safePremiumSettings.find((o: any) => o.type === 'BUMP_UP') && (
+                      <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
+                        <div className="flex items-center gap-3 flex-1">
+                          <FiTrendingUp className="w-10 h-10 text-green-500" />
                           <div className="flex-1">
-                            <div className="font-semibold text-gray-900">Mark as Urgent</div>
-                            <div className="text-sm text-gray-600">Stand out with a bright badge and priority search ranking</div>
+                            <div className="font-semibold text-gray-900">Bump Up</div>
+                            <div className="text-sm text-gray-600">Move your ad to the top of the list every 24h.</div>
                           </div>
-                          <div className="text-lg font-bold text-gray-900">$12.99</div>
+                          <div className="text-right mr-4">
+                            <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded">
+                              INCLUDED IN PACKAGE
+                            </span>
+                          </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={selectedPremium === 'BUMP_UP'}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedPremium('BUMP_UP');
+                              } else {
+                                setSelectedPremium(null);
+                              }
+                            }}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
                         </label>
                       </div>
-                    ) : null}
-                    
-                    {(selectedPremium || isUrgent) && !hasActiveBusinessPackage && !hasFreeAdsRemaining && (
-                      <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                        <p className="text-sm text-blue-800">
-                          <strong>Note:</strong> Your ad will be posted first. Payment for premium features will be collected after posting.
-                        </p>
+                    )}
                       </div>
                     )}
-                  </div>
-                </div>
               </div>
 
-              {/* Footer Actions */}
+              {/* Footer Actions - Modern Design */}
               <div className="flex justify-between items-center mt-8 pt-6 border-t border-gray-200">
-                <Link
-                  href="/my-ads"
-                  className="text-gray-600 hover:text-gray-800 font-medium transition-colors"
+                <button
+                  type="button"
+                  onClick={() => router.push('/my-ads')}
+                  className="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
                 >
-                  Discard and Cancel
-                </Link>
+                  Save Draft
+                </button>
                 <button
                   type="submit"
                   disabled={
@@ -2780,22 +4322,22 @@ export default function PostAdPage() {
                     createAd.isPending || 
                     createPaymentOrder.isPending
                   }
-                  className="px-8 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+                  className="px-8 py-3 bg-orange-600 text-white rounded-lg font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {createAd.isPending || createPaymentOrder.isPending ? (
                     <>
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white inline-block mr-2"></div>
                       Processing...
                     </>
                   ) : (
-                    <>
-                      Post Ad Now
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </>
+                    'Post Ad Now'
                   )}
                 </button>
+              </div>
+
+              {/* Copyright Footer */}
+              <div className="text-center text-sm text-gray-500 mt-8 pb-4">
+                © 2024 Classifieds Marketplace. All rights reserved. Professional Selling Platform Variant 1.
               </div>
 
             </form>
@@ -3019,8 +4561,10 @@ export default function PostAdPage() {
                           }
                           
                           setPaymentOrder(response);
-                          setShowPaymentModal(true);
-                          console.log('✅ Payment modal state set to true, should be visible now');
+                          // Directly open Razorpay checkout instead of showing payment modal popup
+                          // Pass form data to capture in closure
+                          openRazorpayCheckout(response, adFormData);
+                          console.log('✅ Opening Razorpay checkout directly');
                         },
                         onError: (error: any) => {
                           console.error('❌ Payment order creation failed:', error);
@@ -3073,7 +4617,7 @@ export default function PostAdPage() {
       {/* Payment Modal */}
       {showPaymentModal && paymentOrder && paymentOrder.razorpayOrder && (() => {
         // Get premium offer details
-        const premiumOffer = premiumSettings?.find((offer: any) => offer.type === selectedPremium);
+        const premiumOffer = safePremiumSettings.find((offer: any) => offer.type === selectedPremium);
         const premiumPrice = premiumOffer?.price || 0;
         const baseAdPrice = paymentOrder.amount ? (paymentOrder.razorpayOrder.amount / 100) - premiumPrice : 0;
         const totalAmount = paymentOrder.razorpayOrder?.amount 

@@ -75,11 +75,23 @@ require('dotenv').config();
 
 let razorpay = null;
 if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+  // Ensure TEST key is used (rzp_test_xxx)
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const isTestKey = keyId.startsWith('rzp_test_');
+  
+  if (!isTestKey && process.env.NODE_ENV !== 'production') {
+    console.warn('⚠️ WARNING: Non-test Razorpay key detected in non-production environment:', keyId.substring(0, 10) + '...');
+    console.warn('⚠️ Expected TEST key format: rzp_test_xxx');
+  }
+  
   razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID,
     key_secret: process.env.RAZORPAY_KEY_SECRET
   });
-  console.log('✅ Razorpay initialized successfully');
+  console.log('✅ Razorpay initialized successfully', {
+    keyType: isTestKey ? 'TEST' : 'LIVE',
+    keyPrefix: keyId.substring(0, 10) + '...'
+  });
 } else {
   console.warn('⚠️ Razorpay not initialized - keys missing:', {
     hasKeyId: !!process.env.RAZORPAY_KEY_ID,
@@ -169,23 +181,51 @@ router.post('/order',
 
       // Get current settings
       const settings = await getPremiumSettings();
-      const amount = settings.prices[type] * 100; // Convert to paise
+      // Convert to paise: ₹2121 → 212100
+      const amount = Math.round(settings.prices[type] * 100);
       const duration = settings.durations[type];
+
+      // Validate amount (minimum 100 paise = ₹1)
+      if (amount < 100) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Amount too low. Minimum ₹1 required. Got: ₹${(amount / 100).toFixed(2)}` 
+        });
+      }
 
       // Generate short receipt (max 40 chars for Razorpay)
       const receipt = `PRM${adId.slice(-8)}${Date.now().toString().slice(-8)}`.slice(0, 40);
       
-      // Create Razorpay order
-      const razorpayOrder = await razorpay.orders.create({
-        amount: amount,
-        currency: 'INR',
-        receipt: receipt,
-        notes: {
-          adId,
-          type,
-          userId: req.user.id
-        }
-      });
+      // Create Razorpay order (backend only - order must be created here)
+      let razorpayOrder;
+      try {
+        razorpayOrder = await razorpay.orders.create({
+          amount: amount, // Amount in paise
+          currency: 'INR',
+          receipt: receipt,
+          notes: {
+            adId,
+            type,
+            userId: req.user.id
+          }
+        });
+        console.log('✅ Razorpay order created:', {
+          orderId: razorpayOrder.id,
+          amount: razorpayOrder.amount,
+          amountInINR: `₹${(razorpayOrder.amount / 100).toFixed(2)}`
+        });
+      } catch (razorpayError) {
+        console.error('❌ Razorpay order creation failed:');
+        console.error('   Error:', razorpayError.message);
+        console.error('   Status Code:', razorpayError.statusCode);
+        console.error('   Error Description:', razorpayError.error?.description);
+        
+        return res.status(500).json({ 
+          success: false, 
+          message: razorpayError.error?.description || razorpayError.message || 'Failed to create Razorpay order',
+          error: process.env.NODE_ENV === 'development' ? razorpayError.message : undefined
+        });
+      }
 
       // Create premium order in database
       const premiumOrder = await prisma.premiumOrder.create({
@@ -227,19 +267,25 @@ router.post('/order',
         // Payment processor can still work with PremiumOrder record
       }
 
+      // Return order details with proper Order ID
       res.json({
         success: true,
         order: premiumOrder,
         razorpayOrder: {
-          id: razorpayOrder.id,
-          amount: razorpayOrder.amount,
-          currency: razorpayOrder.currency,
-          key: process.env.RAZORPAY_KEY_ID
+          id: razorpayOrder.id, // Order ID must be passed correctly to frontend
+          amount: razorpayOrder.amount, // Amount in paise (₹2121 → 212100)
+          currency: razorpayOrder.currency || 'INR',
+          key: process.env.RAZORPAY_KEY_ID // Key ID for frontend checkout
         }
       });
     } catch (error) {
-      console.error('Create premium order error:', error);
-      res.status(500).json({ success: false, message: 'Failed to create order' });
+      console.error('❌ Create premium order error:', error);
+      console.error('Error stack:', error.stack);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Failed to create order',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
     }
   }
 );
@@ -261,14 +307,44 @@ router.post('/verify',
 
       const { orderId, paymentId, signature } = req.body;
 
-      // Verify payment signature
-      const crypto = require('crypto');
-      const generatedSignature = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(`${orderId}|${paymentId}`)
-        .digest('hex');
+      // Validate inputs
+      if (!orderId || !paymentId || !signature) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Missing required fields: orderId, paymentId, and signature are required' 
+        });
+      }
+
+      // Verify payment signature with proper error handling
+      let generatedSignature;
+      try {
+        const crypto = require('crypto');
+        if (!process.env.RAZORPAY_KEY_SECRET) {
+          return res.status(500).json({ 
+            success: false, 
+            message: 'Payment verification service not configured' 
+          });
+        }
+        
+        generatedSignature = crypto
+          .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+          .update(`${orderId}|${paymentId}`)
+          .digest('hex');
+      } catch (cryptoError) {
+        console.error('❌ Error generating signature:', cryptoError);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Payment verification failed' 
+        });
+      }
 
       if (generatedSignature !== signature) {
+        console.error('❌ Invalid payment signature:', {
+          orderId,
+          paymentId,
+          expectedSignature: generatedSignature.substring(0, 20) + '...',
+          receivedSignature: signature.substring(0, 20) + '...'
+        });
         return res.status(400).json({ success: false, message: 'Invalid payment signature' });
       }
 
@@ -286,16 +362,25 @@ router.post('/verify',
         return res.status(403).json({ success: false, message: 'Not authorized' });
       }
 
-      // Use central payment processor
+      // Use central payment processor with error handling
       const { processPaymentVerification } = require('../services/paymentProcessor');
       
-      const result = await processPaymentVerification({
-        orderId,
-        paymentId,
-        signature,
-        userId: req.user.id,
-        orderType: 'premium'
-      });
+      let result;
+      try {
+        result = await processPaymentVerification({
+          orderId,
+          paymentId,
+          signature,
+          userId: req.user.id,
+          orderType: 'premium'
+        });
+      } catch (verificationError) {
+        console.error('❌ Payment verification error:', verificationError);
+        return res.status(500).json({ 
+          success: false, 
+          message: verificationError.message || 'Payment verification failed' 
+        });
+      }
 
       // Update premium order with activation details
       if (result.activation?.activationDetails?.expiresAt) {

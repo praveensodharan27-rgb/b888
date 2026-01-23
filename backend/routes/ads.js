@@ -5,11 +5,12 @@ const { authenticate } = require('../middleware/auth');
 const { uploadImages } = require('../middleware/upload');
 const { cacheMiddleware, clearCache } = require('../middleware/cache');
 const { indexAd, deleteAd, searchAds } = require('../services/meilisearch');
-const { moderateAd, getModerationStatus } = require('../services/contentModeration');
+const { moderateAdContent, moderateAd, getModerationStatus } = require('../services/contentModeration');
 const { generateUniqueAdSlug } = require('../utils/slug');
 const { rankAds } = require('../services/adRankingService');
 const { rankAdsOGNOX } = require('../services/ognoxRankingService');
 const { rankAdsWithRotation, insertAdsIntoFeed, categorizeAd } = require('../services/ognoxAdsRotationService');
+const { rankAdsWithSmartScoring, getCurrentLocationFromRequest } = require('../services/smartAdScoringService');
 const Razorpay = require('razorpay');
 
 // Ensure dotenv is loaded
@@ -23,11 +24,23 @@ const isValidObjectId = (value = '') => /^[a-fA-F0-9]{24}$/.test(value);
 // Initialize Razorpay (only if keys are provided)
 let razorpay = null;
 if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+  // Ensure TEST key is used (rzp_test_xxx)
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const isTestKey = keyId.startsWith('rzp_test_');
+  
+  if (!isTestKey && process.env.NODE_ENV !== 'production') {
+    console.warn('⚠️ WARNING: Non-test Razorpay key detected in non-production environment:', keyId.substring(0, 10) + '...');
+    console.warn('⚠️ Expected TEST key format: rzp_test_xxx');
+  }
+  
   razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID,
     key_secret: process.env.RAZORPAY_KEY_SECRET
   });
-  console.log('✅ Razorpay initialized in ads route');
+  console.log('✅ Razorpay initialized in ads route', {
+    keyType: isTestKey ? 'TEST' : 'LIVE',
+    keyPrefix: keyId.substring(0, 10) + '...'
+  });
 } else {
   console.warn('⚠️ Razorpay not initialized in ads route - keys missing');
 }
@@ -234,15 +247,22 @@ router.get('/',
             const adsMap = new Map(ads.map(ad => [ad.id, ad]));
             ads = adIds.map(id => adsMap.get(id)).filter(Boolean);
             
-            // Apply Premium → Business → Free ranking to search results
+            // Apply smart ranking with location boost for search results
             if (ads.length > 0) {
               try {
-                const { rankAdsWithRotation } = require('../services/ognoxAdsRotationService');
-                ads = await rankAdsWithRotation(ads, {
-                  locationKey: 'search', // Use 'search' as location key for search results
-                  updateLastShown: true
+                // Get current location for ranking
+                let currentLocationForRanking = null;
+                if (city || state) {
+                  currentLocationForRanking = { city, state };
+                }
+                
+                // Use smart scoring with location boost (isSearch = true)
+                ads = rankAdsWithSmartScoring(ads, {
+                  query: search.trim(),
+                  currentLocation: currentLocationForRanking,
+                  isSearch: true // Enable search location boost
                 });
-                console.log(`✅ Applied Premium → Business → Free ranking to search results`);
+                console.log(`✅ Applied smart ranking with location boost to search results`);
               } catch (rankingError) {
                 console.error('⚠️ Error applying ranking to search results:', rankingError);
                 // Continue with unranked results if ranking fails
@@ -314,7 +334,7 @@ router.get('/',
               premiumType: true,
               isUrgent: true,
               views: true,
-              postedAt: true,
+              postedAt: true, // For displaying "time ago" in ad cards
               expiresAt: true,
               createdAt: true,
               updatedAt: true,
@@ -322,6 +342,9 @@ router.get('/',
               lastShownAt: true,
               userId: true,
               attributes: true,
+              slug: true, // For SEO-friendly URLs in ad cards
+              city: true, // Direct city field from Ad model
+              state: true, // Direct state field from Ad model
               category: { select: { id: true, name: true, slug: true } },
               subcategory: { select: { id: true, name: true, slug: true } },
               location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
@@ -342,17 +365,51 @@ router.get('/',
 
       // LOCATION-BASED ADS FETCHING with fallback hierarchy
       // Strategy: City/Radius → State → All India (NEVER HIDE ADS)
-      // IMPORTANT: When a search keyword is present, we DO NOT hard-filter by location.
-      // Search results should NOT disappear when user selects a location.
       let locationKey = 'all'; // For rotation seed
       let adsWithDistance = [];
 
-      // If a text search is active, completely skip location filtering.
-      // This ensures: search + location will still show all search results (location only affects messaging, not filtering).
+      // Get current location for city-first filtering in search
+      let currentLocation = null;
+      if (city || state) {
+        currentLocation = { city, state };
+      }
+
+      // If a text search is active, apply CITY-FIRST filtering
+      // City ads appear at top, state ads as fallback if city results are low
       if (search && search.trim()) {
-        adsWithDistance = ads;
-        locationKey = 'all';
-        console.log('🔎 Search active -> skipping strict location filtering. Showing all search results.');
+        if (currentLocation && currentLocation.city) {
+          // Separate city ads and other ads
+          const cityAdsList = ads.filter(ad => {
+            const adCity = (ad.city || ad.location?.city || '').toLowerCase();
+            return adCity === currentLocation.city.toLowerCase();
+          });
+          
+          const otherAds = ads.filter(ad => {
+            const adCity = (ad.city || ad.location?.city || '').toLowerCase();
+            return adCity !== currentLocation.city.toLowerCase();
+          });
+
+          // If city results are low (< 10), include state-level ads
+          if (cityAdsList.length < 10 && currentLocation.state) {
+            const stateAdsList = otherAds.filter(ad => {
+              const adState = (ad.state || ad.location?.state || '').toLowerCase();
+              return adState === currentLocation.state.toLowerCase();
+            });
+            
+            // Combine: city ads first, then state ads
+            adsWithDistance = [...cityAdsList, ...stateAdsList];
+            console.log(`🔎 Search: ${cityAdsList.length} city ads + ${stateAdsList.length} state ads`);
+          } else {
+            // Enough city results or no state - use only city ads
+            adsWithDistance = cityAdsList;
+            console.log(`🔎 Search: ${cityAdsList.length} city ads (enough results)`);
+          }
+        } else {
+          // No location - show all search results
+          adsWithDistance = ads;
+          console.log('🔎 Search active -> no location filter, showing all search results.');
+        }
+        locationKey = currentLocation?.city || 'all';
       } else {
         // If no search keyword, apply normal location-based filtering with fallback
         if (city || state || (latitude && longitude)) {
@@ -587,6 +644,229 @@ router.get('/',
     } catch (error) {
       console.error('Get ads error:', error);
       res.status(500).json({ success: false, message: 'Failed to fetch ads' });
+    }
+  }
+);
+
+// Home Feed Endpoint - Uses navbar location with smart ranking
+router.get('/home-feed',
+  cacheMiddleware(60 * 1000), // Cache for 60 seconds
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('city').optional().isString(),
+    query('state').optional().isString(),
+    query('location').optional().isString(), // Location slug
+  ],
+  async (req, res) => {
+    try {
+      const {
+        page = 1,
+        limit = 12, // Default smaller batch for lazy loading
+        city,
+        state,
+        location: locationSlug
+      } = req.query;
+
+      const now = new Date();
+      
+      // Get current location from navbar (priority: query params > location slug)
+      let currentLocation = null;
+      if (city || state) {
+        currentLocation = { city, state };
+      } else if (locationSlug) {
+        try {
+          const location = await prisma.location.findFirst({
+            where: { slug: locationSlug },
+            select: { city: true, state: true, neighbourhood: true }
+          });
+          if (location) {
+            currentLocation = {
+              city: location.city,
+              state: location.state,
+              neighbourhood: location.neighbourhood
+            };
+          }
+        } catch (error) {
+          console.error('Error fetching location:', error);
+        }
+      }
+
+      // If no location provided, show all approved ads (fallback)
+      let where = {
+        status: 'APPROVED',
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gt: now } }
+        ]
+      };
+
+      // STEP 1: If location is provided, try to fetch ads from same city
+      if (currentLocation && currentLocation.city) {
+        where.city = currentLocation.city;
+      }
+
+      // Fetch enough ads to maintain priority across multiple pages
+      // We need to fetch more than one page to ensure proper ranking
+      const fetchLimit = Math.max(parseInt(limit) * 10, 200); // Fetch 10 pages worth or 200, whichever is larger
+      
+      // If no location provided, increase fetch limit to show more ads
+      const actualFetchLimit = (currentLocation && currentLocation.city) ? fetchLimit : Math.max(parseInt(limit) * 20, 500);
+      
+      let ads = await prisma.ad.findMany({
+        where,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          price: true,
+          originalPrice: true,
+          discount: true,
+          condition: true,
+          images: true,
+          status: true,
+          isPremium: true,
+          premiumType: true,
+          isUrgent: true,
+          views: true,
+          postedAt: true,
+          expiresAt: true,
+          createdAt: true,
+          updatedAt: true,
+          packageType: true,
+          lastShownAt: true,
+          userId: true,
+          attributes: true,
+          slug: true,
+          city: true,
+          state: true,
+          neighbourhood: true,
+          category: { select: { id: true, name: true, slug: true } },
+          subcategory: { select: { id: true, name: true, slug: true } },
+          location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+          user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
+          _count: { select: { favorites: true } }
+        },
+        take: actualFetchLimit // Fetch enough for multiple pages
+      });
+
+      // STEP 2: If results < 10 and location is provided, expand to state level
+      if (ads.length < 10 && currentLocation && currentLocation.state) {
+        const stateWhere = {
+          status: 'APPROVED',
+          OR: [
+            { expiresAt: null },
+            { expiresAt: { gt: now } }
+          ],
+          state: currentLocation.state
+        };
+
+        const stateAds = await prisma.ad.findMany({
+          where: stateWhere,
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            price: true,
+            originalPrice: true,
+            discount: true,
+            condition: true,
+            images: true,
+            status: true,
+            isPremium: true,
+            premiumType: true,
+            isUrgent: true,
+            views: true,
+            postedAt: true,
+            expiresAt: true,
+            createdAt: true,
+            updatedAt: true,
+            packageType: true,
+            lastShownAt: true,
+            userId: true,
+            attributes: true,
+            slug: true,
+            city: true,
+            state: true,
+            neighbourhood: true,
+            category: { select: { id: true, name: true, slug: true } },
+            subcategory: { select: { id: true, name: true, slug: true } },
+            location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true, city: true, state: true } },
+            user: { select: { id: true, name: true, avatar: true, phone: true, showPhone: true, isVerified: true } },
+            _count: { select: { favorites: true } }
+          },
+          take: actualFetchLimit // Fetch enough for multiple pages
+        });
+
+        // Merge: city ads first, then state ads (avoid duplicates)
+        const cityAdIds = new Set(ads.map(ad => ad.id));
+        const additionalStateAds = stateAds.filter(ad => !cityAdIds.has(ad.id));
+        ads = [...ads, ...additionalStateAds];
+      }
+
+      // STEP 3: Apply smart ranking with Premium → Business → Free priority
+      // Sort by: 1) Package priority (Premium → Business → Free), 2) Recency (newest first)
+      // This ensures Premium ads always appear first, then Business, then Free
+      // Within each package type, sort by date (newest first)
+      
+      // Separate ads by package type
+      const premiumAds = ads.filter(ad => {
+        if (!ad || !ad.id) return false;
+        return ad.isPremium === true;
+      });
+      
+      const businessAds = ads.filter(ad => {
+        if (!ad || !ad.id) return false;
+        if (ad.isPremium === true) return false; // Exclude premium
+        return ad.packageType && ['SELLER_PRIME', 'SELLER_PLUS', 'MAX_VISIBILITY'].includes(ad.packageType);
+      });
+      
+      const freeAds = ads.filter(ad => {
+        if (!ad || !ad.id) return false;
+        if (ad.isPremium === true) return false; // Exclude premium
+        return !ad.packageType || ad.packageType === 'NORMAL';
+      });
+      
+      // Sort each group by date (newest first)
+      const sortByDate = (a, b) => {
+        const dateA = new Date(a.createdAt || 0);
+        const dateB = new Date(b.createdAt || 0);
+        return dateB - dateA; // Newest first
+      };
+      
+      premiumAds.sort(sortByDate);
+      businessAds.sort(sortByDate);
+      freeAds.sort(sortByDate);
+      
+      // Combine: Premium → Business → Free (maintaining date order within each)
+      const rankedAds = [...premiumAds, ...businessAds, ...freeAds];
+
+      // Apply pagination (maintains priority across pages)
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const paginatedAds = rankedAds.slice(skip, skip + parseInt(limit));
+
+      // Filter phone numbers based on privacy
+      const adsWithPrivacy = paginatedAds.map(ad => ({
+        ...ad,
+        user: ad.user ? {
+          ...ad.user,
+          phone: (req.user && ad.user.showPhone) ? ad.user.phone : null
+        } : ad.user
+      }));
+
+      res.json({
+        success: true,
+        ads: adsWithPrivacy,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: rankedAds.length,
+          pages: Math.ceil(rankedAds.length / parseInt(limit))
+        }
+      });
+    } catch (error) {
+      console.error('Home feed error:', error);
+      res.status(500).json({ success: false, message: 'Failed to fetch home feed' });
     }
   }
 );
@@ -1309,7 +1589,8 @@ router.get('/live-location',
 );
 
 // Get single ad
-router.get('/:id', cacheMiddleware(60 * 1000), async (req, res) => {
+// NOTE: No cache middleware - view count needs to increment on every request
+router.get('/:id', async (req, res) => {
   try {
     const ad = await prisma.ad.findUnique({
       where: { id: req.params.id },
@@ -1361,6 +1642,9 @@ router.get('/:id', cacheMiddleware(60 * 1000), async (req, res) => {
       where: { id: ad.id },
       data: { views: { increment: 1 } }
     });
+    
+    // Update the ad object with incremented view count for response
+    ad.views = (ad.views || 0) + 1;
 
     // Apply phone privacy filtering + viewer auth
     // Rule: show phone only if seller enabled AND viewer is authenticated
@@ -1399,12 +1683,26 @@ router.post('/',
           description: req.body?.description?.substring(0, 50),
           price: req.body?.price,
           categoryId: req.body?.categoryId,
-          hasImages: !!req.uploadedImages?.length
+          subcategoryId: req.body?.subcategoryId,
+          state: req.body?.state,
+          city: req.body?.city,
+          hasImages: !!req.uploadedImages?.length,
+          hasAttributes: !!req.body?.attributes,
+          attributesType: typeof req.body?.attributes
         });
+        
+        // Format errors for better frontend display
+        const formattedErrors = errors.array().map(err => ({
+          field: err.param || err.path || 'unknown',
+          message: err.msg || err.message || 'Validation failed',
+          value: err.value
+        }));
+        
         return res.status(400).json({ 
           success: false, 
           message: 'Validation failed',
-          errors: errors.array() 
+          errors: formattedErrors,
+          validationErrors: errors.array() // Keep original format for compatibility
         });
       }
       
@@ -1448,8 +1746,8 @@ router.post('/',
         });
       }
 
-      if (req.uploadedImages.length > 12) {
-        return res.status(400).json({ success: false, message: 'Maximum 12 images allowed' });
+      if (req.uploadedImages.length > 4) {
+        return res.status(400).json({ success: false, message: 'Maximum 4 images allowed' });
       }
 
       // Ad posting is now FREE - only premium features require payment
@@ -1552,7 +1850,7 @@ router.post('/',
         });
       }
 
-      const { title, description, price, originalPrice, discount, condition, categoryId, subcategoryId, locationId, state, city, neighbourhood, exactLocation, attributes } = req.body;
+      const { title, description, price, originalPrice, discount, condition, categoryId, subcategoryId, locationId, state, city, neighbourhood, exactLocation, attributes, specifications } = req.body;
 
       // Verify category exists
       const category = await prisma.category.findUnique({ where: { id: categoryId } });
@@ -1603,6 +1901,17 @@ router.post('/',
       if (imageAltTexts.some(alt => alt)) {
         console.log('📝 Image alt texts generated:', imageAltTexts.filter(alt => alt).length);
       }
+
+      // ==================== CONTENT MODERATION ====================
+      // NEW FLOW: Post ad first, moderate in background
+      // If inappropriate content found, ad will be DISABLED (status: DISABLED)
+      // User can edit and resubmit disabled ads
+      
+      console.log('📝 Ad will be created with PENDING status. Moderation will run in background.');
+      
+      // Store images for background moderation (use URLs as buffers won't be available later)
+      const imagesForModeration = imagesArray.length > 0 ? imagesArray : [];
+      // ==================== END MODERATION ====================
       
       // Expiry will be calculated based on ad type (free vs business/premium)
       // Will be set after determining quota usage
@@ -2014,8 +2323,11 @@ router.post('/',
       if (attributes) {
         try {
           parsedAttributes = typeof attributes === 'string' ? JSON.parse(attributes) : attributes;
+          console.log('✅ Attributes parsed successfully:', Object.keys(parsedAttributes || {}).length, 'fields');
         } catch (e) {
-          console.error('Error parsing attributes:', e);
+          console.error('❌ Error parsing attributes:', e);
+          console.error('   Raw attributes value:', attributes?.substring ? attributes.substring(0, 200) : attributes);
+          // Don't fail the request if attributes parsing fails, just log it
           parsedAttributes = null;
         }
       }
@@ -2100,28 +2412,16 @@ router.post('/',
       });
 
       // ==================== CONTENT MODERATION ====================
-      console.log('🔍 Starting AI content moderation (results will be applied after 5 minutes)...');
-      const moderationResult = await moderateAd(title, description, imagesArray);
+      // NEW FLOW: Create ad with PENDING status, moderate in background
+      // If inappropriate content found, ad will be DISABLED
+      // User can edit and resubmit disabled ads
       
-      // Store moderation results but keep as PENDING for 5 minutes
-      adData.status = 'PENDING'; // Always PENDING initially
-      adData.moderationStatus = 'pending_review';
-      adData.moderationFlags = moderationResult.moderationFlags;
+      // Create ad with PENDING status - will be approved/disabled after moderation
+      adData.status = 'PENDING';
+      adData.moderationStatus = 'pending_moderation';
+      // Don't set postedAt yet - will be set when approved
       
-      // Store rejection reason if flagged, but don't reject yet
-      if (moderationResult.rejectionReason) {
-        adData.rejectionReason = moderationResult.rejectionReason;
-      }
-      
-      // Mark if should be auto-rejected (will be processed after 5 min)
-      adData.autoRejected = moderationResult.shouldReject;
-      
-      console.log('🎯 Moderation completed, results saved:', {
-        shouldReject: moderationResult.shouldReject,
-        shouldAutoApprove: moderationResult.shouldAutoApprove,
-        willProcessIn: '5 minutes'
-      });
-      console.log('⏳ Ad will be approved/rejected after 5-minute review period');
+      console.log('✅ Ad will be created with PENDING status. Background moderation will run asynchronously.');
       // ==================== END MODERATION ====================
 
       // Update user's phone visibility preference (from ad posting checkbox)
@@ -2159,6 +2459,227 @@ router.post('/',
         });
         console.log('✅ Ad created successfully:', ad.id);
         
+        // ==================== BACKGROUND MODERATION ====================
+        // Run moderation asynchronously after ad creation
+        // If inappropriate content found, ad will be DISABLED
+        // User can edit and resubmit disabled ads
+        
+        // Check moderation status first
+        const { getModerationStatus } = require('../services/contentModeration');
+        const moderationStatus = getModerationStatus();
+        console.log('🔍 Moderation Service Status:', {
+          enabled: moderationStatus.enabled,
+          available: moderationStatus.available,
+          failClosed: moderationStatus.failClosed,
+          hasApiKey: moderationStatus.hasApiKey,
+          hasCredentials: moderationStatus.hasCredentials
+        });
+        
+        // Run moderation immediately (don't wait, but don't block response)
+        // Use Promise to ensure it runs but don't await
+        (async () => {
+          try {
+            console.log(`🔍 [MODERATION] Starting background moderation for ad: ${ad.id}`);
+            console.log(`🔍 [MODERATION] Ad title: ${title.substring(0, 50)}...`);
+            console.log(`🔍 [MODERATION] Images count: ${imagesForModeration.length}`);
+            
+            // Small delay to ensure ad is fully saved
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Get fresh ad data to ensure we have the latest
+            const freshAd = await prisma.ad.findUnique({
+              where: { id: ad.id },
+              select: {
+                id: true,
+                title: true,
+                description: true,
+                images: true,
+                userId: true,
+                status: true
+              }
+            });
+            
+            if (!freshAd) {
+              console.error(`❌ [MODERATION] Ad ${ad.id} not found for moderation`);
+              return;
+            }
+            
+            console.log(`🔍 [MODERATION] Fresh ad retrieved. Current status: ${freshAd.status}`);
+            console.log(`🔍 [MODERATION] Running moderation check...`);
+            
+            // Run moderation check using fresh ad data
+            const moderationResult = await moderateAdContent(
+              freshAd.images || imagesForModeration,
+              freshAd.title || title,
+              freshAd.description || description
+            );
+            
+            console.log(`🔍 [MODERATION] Moderation check completed for ad: ${ad.id}`);
+            
+            console.log('🔍 [MODERATION] Background moderation result:', {
+              adId: ad.id,
+              isSafe: moderationResult.isSafe,
+              hasNudity: moderationResult.hasNudity,
+              hasAdultText: moderationResult.hasAdultText,
+              moderationDisabled: moderationResult.moderationDisabled,
+              moderationUnavailable: moderationResult.moderationUnavailable,
+              error: moderationResult.error
+            });
+            
+            // Log warning if moderation is disabled or unavailable
+            if (moderationResult.moderationDisabled) {
+              console.warn(`⚠️ [MODERATION] Moderation is DISABLED - ad ${ad.id} will be approved without check`);
+            }
+            if (moderationResult.moderationUnavailable) {
+              console.error(`🚨 [MODERATION] Moderation is UNAVAILABLE - ad ${ad.id} moderation failed`);
+            }
+            
+            // Update ad based on moderation result
+            if (!moderationResult.isSafe) {
+              // Unsafe content found - DISABLE ad
+              console.log(`❌ [MODERATION] Unsafe content detected for ad ${ad.id} - DISABLING`);
+              const rejectionReason = moderationResult.rejectionReason || 
+                'Your ad contains inappropriate content (nudity, violence, or adult content). Please edit and resubmit with appropriate content.';
+              
+              const updateResult = await prisma.ad.update({
+                where: { id: ad.id },
+                data: {
+                  status: 'DISABLED',
+                  moderationStatus: 'disabled_auto',
+                  rejectionReason: rejectionReason,
+                  autoRejected: true,
+                  moderationFlags: {
+                    hasNudity: moderationResult.hasNudity,
+                    hasAdultText: moderationResult.hasAdultText,
+                    imageDetails: moderationResult.imageDetails,
+                    textDetails: moderationResult.textDetails,
+                    checkedAt: new Date().toISOString()
+                  }
+                }
+              });
+              
+              console.log(`✅ [MODERATION] Ad ${ad.id} status updated to DISABLED`);
+              
+              // Create notification for user
+              await prisma.notification.create({
+                data: {
+                  userId: freshAd.userId,
+                  title: 'Ad Disabled - Edit and Resubmit',
+                  message: `Your ad "${freshAd.title}" was disabled due to inappropriate content. ${rejectionReason} You can edit and resubmit your ad.`,
+                  type: 'ad_rejected',
+                  link: `/ads/${freshAd.id}/edit`
+                }
+              }).catch(notifError => {
+                console.error('⚠️ [MODERATION] Failed to create disabled notification:', notifError);
+              });
+              
+              // Remove from search index if indexed
+              try {
+                const { deleteAd } = require('../services/meilisearch');
+                await deleteAd(ad.id);
+                console.log(`✅ [MODERATION] Removed disabled ad from search index: ${ad.id}`);
+              } catch (indexError) {
+                console.error('⚠️ [MODERATION] Error removing ad from search index:', indexError);
+              }
+              
+              console.log(`❌ [MODERATION] Ad ${ad.id} DISABLED due to inappropriate content`);
+              
+            } else {
+              // Safe content - APPROVE ad
+              console.log(`✅ [MODERATION] Safe content detected for ad ${ad.id} - APPROVING`);
+              
+              const updateResult = await prisma.ad.update({
+                where: { id: ad.id },
+                data: {
+                  status: 'APPROVED',
+                  moderationStatus: 'approved_auto',
+                  postedAt: new Date(),
+                  moderationFlags: {
+                    hasNudity: false,
+                    hasAdultText: false,
+                    imageDetails: moderationResult.imageDetails,
+                    textDetails: moderationResult.textDetails,
+                    checkedAt: new Date().toISOString()
+                  }
+                }
+              });
+              
+              console.log(`✅ [MODERATION] Ad ${ad.id} status updated to APPROVED`);
+              
+              // Create notification for user
+              await prisma.notification.create({
+                data: {
+                  userId: freshAd.userId,
+                  title: 'Ad Approved - Now Active',
+                  message: `Your ad "${freshAd.title}" has been approved and is now active!`,
+                  type: 'ad_approved',
+                  link: `/ads/${freshAd.id}`
+                }
+              }).catch(notifError => {
+                console.error('⚠️ [MODERATION] Failed to create approval notification:', notifError);
+              });
+              
+              // Index in search
+              try {
+                const { indexAd } = require('../services/meilisearch');
+                const updatedAd = await prisma.ad.findUnique({
+                  where: { id: ad.id },
+                  include: {
+                    category: true,
+                    subcategory: true,
+                    location: true,
+                    user: {
+                      select: {
+                        id: true,
+                        name: true,
+                        email: true,
+                        phone: true,
+                        avatar: true
+                      }
+                    }
+                  }
+                });
+                if (updatedAd) {
+                  await indexAd(updatedAd);
+                  console.log(`✅ [MODERATION] Indexed approved ad in search: ${ad.id}`);
+                }
+              } catch (indexError) {
+                console.error('⚠️ [MODERATION] Error indexing ad:', indexError);
+              }
+              
+              console.log(`✅ [MODERATION] Ad ${ad.id} APPROVED and is now ACTIVE`);
+            }
+          } catch (moderationError) {
+            console.error(`❌ [MODERATION] CRITICAL ERROR in background moderation for ad ${ad.id}:`, moderationError);
+            console.error(`❌ [MODERATION] Error message:`, moderationError.message);
+            console.error(`❌ [MODERATION] Error stack:`, moderationError.stack);
+            
+            // If moderation fails, keep ad as PENDING for manual review
+            // Don't fail the ad creation - let admin review it
+            try {
+              await prisma.ad.update({
+                where: { id: ad.id },
+                data: {
+                  moderationStatus: 'moderation_error',
+                  moderationFlags: {
+                    error: moderationError.message || 'Unknown moderation error',
+                    errorStack: moderationError.stack?.substring(0, 500),
+                    checkedAt: new Date().toISOString()
+                  }
+                }
+              });
+              console.log(`⚠️ [MODERATION] Ad ${ad.id} marked as PENDING due to moderation error - requires manual review`);
+            } catch (updateError) {
+              console.error(`❌ [MODERATION] Failed to update ad moderation status:`, updateError);
+            }
+          }
+        })().catch(criticalError => {
+          // Catch any unhandled errors in the async function
+          console.error(`❌ [MODERATION] CRITICAL: Background moderation function failed completely:`, criticalError);
+          console.error(`❌ [MODERATION] This means moderation did NOT run for ad ${ad.id}`);
+        }); // Run asynchronously, don't await
+        // ==================== END BACKGROUND MODERATION ====================
+        
         // Generate unique slug for the ad
         const slug = await generateUniqueAdSlug(title, ad.id, prisma, categoryId, subcategoryId);
         if (slug) {
@@ -2169,6 +2690,9 @@ router.post('/',
           });
           console.log('✅ Ad slug generated:', slug);
         }
+
+        // Don't index ad immediately - it's PENDING, will be indexed after moderation approves it
+        // Indexing happens in background moderation function
       } catch (createError) {
         console.error('❌ Prisma create error details:');
         console.error('   Code:', createError.code);
@@ -2426,50 +2950,17 @@ router.post('/',
         // Don't fail ad creation if socket emit fails
       }
 
-      // Create premium order record if premium was purchased
+      // NOTE: Premium order is NOT created separately anymore
+      // The AdPostingOrder already contains all premium information in its adData field
+      // This prevents duplicate orders in "My Orders" page
+      // Premium features are tracked via the Ad model's premiumType and isUrgent fields
       if (premiumType && paymentOrder) {
-        try {
-          // Get premium prices from database settings
-          const settingsRecord = await prisma.premiumSettings.findUnique({
-            where: { key: 'premium_settings' }
-          });
-          
-          let PREMIUM_PRICES = {
-            TOP: parseFloat(process.env.PREMIUM_PRICE_TOP || '299'),
-            FEATURED: parseFloat(process.env.PREMIUM_PRICE_FEATURED || '199'),
-            BUMP_UP: parseFloat(process.env.PREMIUM_PRICE_BUMP_UP || '99'),
-          };
-          
-          if (settingsRecord && settingsRecord.value) {
-            try {
-              const parsed = JSON.parse(settingsRecord.value);
-              PREMIUM_PRICES = parsed.prices || PREMIUM_PRICES;
-            } catch (e) {
-              console.error('Error parsing premium prices:', e);
-            }
-          }
-          
-          // Get razorpayPaymentId from paymentOrder
-          const razorpayPaymentId = paymentOrder.razorpayPaymentId || null;
-          
-          await prisma.premiumOrder.create({
-            data: {
-              type: premiumType,
-              amount: PREMIUM_PRICES[premiumType] || 0,
-              razorpayOrderId: paymentOrderId,
-              razorpayPaymentId: razorpayPaymentId,
-              userId: req.user.id,
-              adId: ad.id,
-              status: 'paid',
-              expiresAt: premiumExpiresAt
-            }
-          });
-          
-          console.log('✅ Premium order created for ad:', ad.id);
-        } catch (premiumError) {
-          console.error('⚠️ Error creating premium order:', premiumError);
-          // Don't fail ad creation if premium order creation fails
-        }
+        console.log('✅ Premium features applied via payment order (no separate PremiumOrder created):', {
+          adId: ad.id,
+          premiumType,
+          isUrgent,
+          paymentOrderId
+        });
       }
 
       // Link ad to payment order if premium features were purchased
@@ -2540,6 +3031,121 @@ router.post('/',
       };
       
       console.log('📸 Created ad response with images:', { id: adWithImages.id, title: adWithImages.title, images: adWithImages.images });
+
+      // Create product-specific specifications if provided
+      let parsedSpecifications = null;
+      if (specifications) {
+        try {
+          parsedSpecifications = typeof specifications === 'string' ? JSON.parse(specifications) : specifications;
+        } catch (e) {
+          console.error('Error parsing specifications:', e);
+          parsedSpecifications = null;
+        }
+      }
+
+      if (parsedSpecifications && Array.isArray(parsedSpecifications)) {
+        try {
+          console.log(`📋 Creating ${parsedSpecifications.length} specifications for ad ${ad.id}`);
+          
+          for (const specData of parsedSpecifications) {
+            const { name, label, type, required, placeholder, order, options } = specData;
+            
+            // Create specification
+            const specification = await prisma.specification.create({
+              data: {
+                name: name.trim(),
+                label: label.trim(),
+                type,
+                adId: ad.id,
+                required: required || false,
+                placeholder: placeholder?.trim() || null,
+                order: order || 0
+              }
+            });
+
+            // Create options if provided (for select/multiselect types)
+            if ((type === 'select' || type === 'multiselect') && options && Array.isArray(options)) {
+              for (const optionData of options) {
+                await prisma.specificationOption.create({
+                  data: {
+                    value: optionData.value.trim(),
+                    label: optionData.label?.trim() || optionData.value.trim(),
+                    specificationId: specification.id,
+                    order: optionData.order || 0
+                  }
+                });
+              }
+            }
+          }
+          
+          console.log(`✅ Successfully created specifications for ad ${ad.id}`);
+        } catch (specError) {
+          console.error('⚠️ Error creating specifications:', specError);
+          // Don't fail ad creation if specification creation fails
+        }
+      }
+
+      // Save specification values (from attributes) if provided
+      if (parsedAttributes && typeof parsedAttributes === 'object') {
+        try {
+          // Get all specifications for this ad
+          const adSpecs = await prisma.specification.findMany({
+            where: { adId: ad.id },
+            include: { options: true }
+          });
+
+          for (const [specName, value] of Object.entries(parsedAttributes)) {
+            const spec = adSpecs.find(s => s.name === specName);
+            if (!spec) continue;
+
+            // Handle array values (multiselect)
+            const values = Array.isArray(value) ? value : [value];
+            
+            for (const val of values) {
+              if (!val) continue;
+
+              // Check if value matches an existing option
+              const matchingOption = spec.options.find(opt => opt.value === val);
+              
+              // Check if this is a custom value (not in predefined options)
+              const isCustom = !matchingOption;
+
+              // Find or create AdSpecificationValue
+              const existingValue = await prisma.adSpecificationValue.findFirst({
+                where: {
+                  adId: ad.id,
+                  specificationId: spec.id,
+                  value: val
+                }
+              });
+
+              if (existingValue) {
+                // Update usage count
+                await prisma.adSpecificationValue.update({
+                  where: { id: existingValue.id },
+                  data: { usageCount: { increment: 1 } }
+                });
+              } else {
+                // Create new value
+                await prisma.adSpecificationValue.create({
+                  data: {
+                    adId: ad.id,
+                    specificationId: spec.id,
+                    optionId: matchingOption?.id || null,
+                    value: val,
+                    isCustom
+                  }
+                });
+              }
+            }
+          }
+          
+          console.log(`✅ Successfully saved specification values for ad ${ad.id}`);
+        } catch (valueError) {
+          console.error('⚠️ Error saving specification values:', valueError);
+          // Don't fail ad creation if value saving fails
+        }
+      }
 
       // Clear cache after creation
       clearCache('ads');
@@ -2624,6 +3230,8 @@ router.post('/',
       res.status(500).json({ 
         success: false, 
         message: errorMessage,
+        error: error.name || 'UnknownError',
+        errorCode: error.code || 'UNKNOWN_ERROR',
         paymentOrderId: paymentOrderId || null,
         requiresSupport: !!paymentOrderId,
         error: process.env.NODE_ENV === 'development' ? {
@@ -2699,6 +3307,15 @@ router.put('/:id',
           console.error('Error parsing attributes:', e);
         }
       }
+      // If ad was REJECTED or DISABLED, allow resubmission - reset status and clear rejection
+      if (ad.status === 'REJECTED' || ad.status === 'DISABLED') {
+        console.log('🔄 Rejected/Disabled ad being edited - resetting for resubmission');
+        updateData.status = 'PENDING';
+        updateData.moderationStatus = 'pending_moderation';
+        updateData.rejectionReason = null; // Clear rejection reason
+        updateData.autoRejected = false;
+      }
+      
       // Handle image updates - merge existing with new if provided
       if (req.uploadedImages && req.uploadedImages.length > 0) {
         // Normalize uploaded images: extract URLs if objects
@@ -2717,7 +3334,12 @@ router.put('/:id',
         } else {
           updateData.images = normalizedNewImages;
         }
-        updateData.status = 'PENDING'; // Require re-approval if images changed
+        // If images changed, require re-moderation (unless already being reset to PENDING from disabled/rejected)
+        // Note: Don't check updatedAd.status here - it doesn't exist yet. Check ad.status instead.
+        if (ad.status !== 'REJECTED' && ad.status !== 'DISABLED' && ad.status !== 'PENDING') {
+          updateData.status = 'PENDING'; // Require re-approval if images changed
+          updateData.moderationStatus = 'pending_moderation';
+        }
       } else if (req.body.existingImages) {
         // Only existing images, no new uploads
         updateData.images = Array.isArray(req.body.existingImages) 
@@ -2733,9 +3355,141 @@ router.put('/:id',
         include: {
           category: { select: { id: true, name: true, slug: true } },
           subcategory: { select: { id: true, name: true, slug: true } },
-          location: { select: { id: true, name: true, slug: true } }
+          location: { select: { id: true, name: true, slug: true } },
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true
+            }
+          }
         }
       });
+      
+      // If ad was DISABLED or REJECTED and is being resubmitted, run background moderation
+      if ((ad.status === 'DISABLED' || ad.status === 'REJECTED') && updatedAd.status === 'PENDING') {
+        console.log(`🔍 Running background moderation for resubmitted ad: ${updatedAd.id}`);
+        
+        // Run moderation asynchronously
+        (async () => {
+          try {
+            const imagesForModeration = updatedAd.images || [];
+            const moderationResult = await moderateAdContent(
+              imagesForModeration,
+              updatedAd.title,
+              updatedAd.description
+            );
+            
+            console.log('🔍 Resubmission moderation result:', {
+              adId: updatedAd.id,
+              isSafe: moderationResult.isSafe,
+              hasNudity: moderationResult.hasNudity,
+              hasAdultText: moderationResult.hasAdultText
+            });
+            
+            if (!moderationResult.isSafe) {
+              // Still unsafe - disable again
+              const rejectionReason = moderationResult.rejectionReason || 
+                'Your ad still contains inappropriate content. Please review and edit again.';
+              
+              await prisma.ad.update({
+                where: { id: updatedAd.id },
+                data: {
+                  status: 'DISABLED', // Changed from REJECTED to DISABLED
+                  moderationStatus: 'disabled_auto',
+                  rejectionReason: rejectionReason,
+                  autoRejected: true,
+                  moderationFlags: {
+                    hasNudity: moderationResult.hasNudity,
+                    hasAdultText: moderationResult.hasAdultText,
+                    imageDetails: moderationResult.imageDetails,
+                    textDetails: moderationResult.textDetails,
+                    checkedAt: new Date().toISOString()
+                  }
+                }
+              });
+              
+              await prisma.notification.create({
+                data: {
+                  userId: updatedAd.userId,
+                  title: 'Ad Disabled Again - Please Edit',
+                  message: `Your resubmitted ad "${updatedAd.title}" was disabled again. ${rejectionReason} Please review our content policy and edit your ad.`,
+                  type: 'ad_rejected', // Keep type for backward compatibility
+                  link: `/ads/${updatedAd.id}/edit`
+                }
+              });
+              
+              console.log(`❌ Resubmitted ad ${updatedAd.id} disabled again`);
+            } else {
+              // Safe now - approve (status = APPROVED, displayed as "Active")
+              await prisma.ad.update({
+                where: { id: updatedAd.id },
+                data: {
+                  status: 'APPROVED', // Status = APPROVED (displayed as "Active" in UI)
+                  moderationStatus: 'approved_auto',
+                  postedAt: new Date(),
+                  moderationFlags: {
+                    hasNudity: false,
+                    hasAdultText: false,
+                    imageDetails: moderationResult.imageDetails,
+                    textDetails: moderationResult.textDetails,
+                    checkedAt: new Date().toISOString()
+                  }
+                }
+              });
+              
+              await prisma.notification.create({
+                data: {
+                  userId: updatedAd.userId,
+                  title: 'Ad Approved After Edit - Now Active',
+                  message: `Your edited ad "${updatedAd.title}" has been approved and is now active!`,
+                  type: 'ad_approved',
+                  link: `/ads/${updatedAd.id}`
+                }
+              });
+              
+              // Index in search
+              try {
+                const { indexAd } = require('../services/meilisearch');
+                const finalAd = await prisma.ad.findUnique({
+                  where: { id: updatedAd.id },
+                  include: {
+                    category: true,
+                    subcategory: true,
+                    location: true,
+                    user: {
+                      select: {
+                        id: true,
+                        name: true,
+                        email: true,
+                        phone: true,
+                        avatar: true
+                      }
+                    }
+                  }
+                });
+                if (finalAd) {
+                  await indexAd(finalAd);
+                  console.log(`✅ Indexed approved resubmitted ad: ${updatedAd.id}`);
+                }
+              } catch (indexError) {
+                console.error('⚠️ Error indexing resubmitted ad:', indexError);
+              }
+              
+              console.log(`✅ Resubmitted ad ${updatedAd.id} approved`);
+            }
+          } catch (moderationError) {
+            console.error(`❌ Error moderating resubmitted ad ${updatedAd.id}:`, moderationError);
+            // Keep as PENDING for manual review
+            await prisma.ad.update({
+              where: { id: updatedAd.id },
+              data: {
+                moderationStatus: 'moderation_error'
+              }
+            });
+          }
+        })(); // Run asynchronously
+      }
 
       // Index/update in Meilisearch if ad is approved
       if (updatedAd.status === 'APPROVED') {
@@ -2770,8 +3524,30 @@ router.put('/:id',
 
       res.json({ success: true, ad: updatedAd });
     } catch (error) {
-      console.error('Update ad error:', error);
-      res.status(500).json({ success: false, message: 'Failed to update ad' });
+      console.error('❌ Update ad error:', error);
+      console.error('❌ Error details:', {
+        message: error.message,
+        code: error.code,
+        meta: error.meta,
+        stack: error.stack
+      });
+      
+      // Provide more detailed error message
+      let errorMessage = 'Failed to update ad';
+      if (error.code === 'P2002') {
+        errorMessage = 'A record with this information already exists';
+      } else if (error.code === 'P2003') {
+        const field = error.meta?.field_name || 'unknown';
+        errorMessage = `Invalid reference: ${field}. Please check category, subcategory, or location.`;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      res.status(500).json({ 
+        success: false, 
+        message: errorMessage,
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
     }
   }
 );
@@ -3392,6 +4168,123 @@ router.get('/:id/renewal-status', authenticate, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to check renewal status' });
   }
 });
+
+// ==================== Product-Level Specifications Management ====================
+
+// Get specifications for a specific ad (product)
+router.get('/:id/specifications', authenticate, async (req, res) => {
+  try {
+    const ad = await prisma.ad.findUnique({
+      where: { id: req.params.id }
+    });
+
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+
+    // Check authorization: user must own the ad or be admin
+    if (ad.userId !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    // Get product-specific specifications with their values
+    const specifications = await prisma.specification.findMany({
+      where: {
+        adId: req.params.id,
+        isActive: true
+      },
+      include: {
+        options: {
+          where: { isActive: true },
+          orderBy: { order: 'asc' }
+        },
+        values: {
+          where: { adId: req.params.id },
+          select: {
+            id: true,
+            value: true,
+            optionId: true,
+            isCustom: true
+          }
+        }
+      },
+      orderBy: { order: 'asc' }
+    });
+
+    // Get custom values for each specification (for select/multiselect)
+    const specificationsWithValues = await Promise.all(
+      specifications.map(async (spec) => {
+        if (spec.type === 'select' || spec.type === 'multiselect') {
+          try {
+            const customValues = await prisma.adSpecificationValue.findMany({
+              where: {
+                specificationId: spec.id,
+                isCustom: true,
+                usageCount: { gte: 1 }
+              },
+              select: {
+                value: true,
+                usageCount: true
+              },
+              distinct: ['value'],
+              orderBy: { usageCount: 'desc' },
+              take: 20
+            });
+            
+            return {
+              ...spec,
+              customValues: customValues.map(v => v.value),
+              currentValue: spec.values?.[0]?.value || null,
+              currentValues: spec.values?.map(v => v.value) || []
+            };
+          } catch (err) {
+            console.error('Error fetching custom values for spec:', spec.id, err);
+            return {
+              ...spec,
+              customValues: [],
+              currentValue: spec.values?.[0]?.value || null,
+              currentValues: spec.values?.map(v => v.value) || []
+            };
+          }
+        }
+        return {
+          ...spec,
+          currentValue: spec.values?.[0]?.value || null
+        };
+      })
+    );
+
+    // Also get category defaults as suggestions
+    const categoryDefaults = await prisma.specification.findMany({
+      where: {
+        adId: null, // Only category defaults
+        OR: [
+          { categoryId: ad.categoryId },
+          { subcategoryId: ad.subcategoryId }
+        ],
+        isActive: true
+      },
+      include: {
+        options: {
+          where: { isActive: true },
+          orderBy: { order: 'asc' }
+        }
+      },
+      orderBy: { order: 'asc' }
+    });
+
+    res.json({ 
+      success: true, 
+      specifications: specificationsWithValues, // Product-specific with values
+      categoryDefaults // Suggestions from category
+    });
+  } catch (error) {
+    console.error('Get ad specifications error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch specifications' });
+  }
+});
+
+// Product Specifications update endpoints removed - specifications are read-only
 
 module.exports = router;
 
