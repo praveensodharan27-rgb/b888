@@ -1,0 +1,372 @@
+{
+  "categories": [
+    {
+      "id": "electronics",
+      "name": "Electronics",
+      "slug": "electronics",
+      "subcategories": [
+        {
+          "id": "mobiles",
+          "name": "Mobile Phones",
+          "slug": "mobile-phones",
+          "brands": [
+            { "name": "Samsung", "models": ["Galaxy S24 Ultra", "Galaxy S24", "Galaxy S23 FE", "Galaxy S23", "Galaxy A55", "Galaxy A35", "Galaxy M55", "Galaxy M34", "Galaxy F54", "Galaxy Z Fold 5", "Galaxy Z Flip 5"] },
+            { "name": "Apple", "models": ["iPhone 15 Pro Max", "iPhone 15 Pro", "iPhone 15", "iPhone 14 Pro", "iPhone 14", "iPhone 13", "iPhone 12", "iPhone SE (2022)"] },
+            { "name": "Xiaomi / Redmi", "models": ["Redmi Note 13 Pro+", "Redmi Note 13 Pro", "Redmi Note 12", "Redmi 13C", "Mi 11X", "Poco X6 Pro", "Poco F5", "Poco M6 Pro"] },
+            { "name": "Realme", "models": ["Realme 12 Pro+", "Realme 12 Pro", "Realme Narzo 60", "Realme C55", "Realme GT Neo 3", "Realme GT 2", "Realme 11x"] },
+            { "name": "OnePlus", "models": ["OnePlus 12", "OnePlus 12R", "OnePlus 11R", "OnePlus Nord CE 3", "OnePlus Nord 2T", "OnePlus Nord CE 2 Lite"] },
+            { "name": "Vivo", "models": ["Vivo X100", "Vivo X90", "Vivo V29", "Vivo Y200", "Vivo T2", "Vivo Y36"] },
+            { "name": "Oppo", "models": ["Oppo Reno 11", "Oppo Reno 10", "Oppo A78", "Oppo F21 Pro", "Oppo Find X5"] },
+            { "name": "Motorola", "models": ["Moto Edge 50 Pro", "Moto Edge 40", "Moto G84", "Moto G54", "Moto E13"] },
+            { "name": "Nothing", "models": ["Nothing Phone (1)", "Nothing Phone (2)", "Nothing Phone (2a)"] },
+            { "name": "Google Pixel", "models": ["Pixel 8 Pro", "Pixel 8", "Pixel 7a", "Pixel 6a", "Pixel Fold"] },
+            { "name": "Infinix", "models": ["Infinix Zero 30", "Infinix Note 30", "Infinix Hot 40", "Infinix Smart 8"] },
+            { "name": "Tecno", "models": ["Tecno Phantom X2", "Tecno Spark 20", "Tecno Camon 20", "Tecno Pova 5"] },
+            { "name": "Lava", "models": ["Lava Agni 2", "Lava Blaze 2", "Lava Storm 5G", "Lava Yuva 3"] },
+            { "name": "Micromax", "models": ["Micromax In Note 2", "Micromax In 2b", "Micromax In 1"] },
+            { "name": "Asus", "models": ["ROG Phone 7", "ROG Phone 6", "Zenfone 10", "Zenfone 9"] },
+            { "name": "Sony", "models": ["Xperia 1 V", "Xperia 5 IV", "Xperia 10 IV"] }
+          ]
+        },
+        {
+          "id": "laptops",
+          "name": "Laptops",
+          "slug": "laptops",
+          "brands": [
+            { "name": "HP", "models": ["Pavilion 15", "Victus 16", "Envy 13", "Spectre x360"] },
+            { "name": "Dell", "models": ["Inspiron 14", "XPS 13", "Vostro 3510", "G15 Gaming"] },
+            { "name": "Lenovo", "models": ["ThinkPad E14", "IdeaPad Slim 5", "Legion 5", "Yoga Slim 7"] }
+          ]
+        },
+        {
+          "id": "tablets",
+          "name": "Tablets",
+          "slug": "tablets",
+          "brands": [
+            { "name": "Apple", "models": ["iPad 10th Gen", "iPad 9th Gen", "iPad Air", "iPad Pro"] },
+            { "name": "Samsung", "models": ["Galaxy Tab S9", "Galaxy Tab S8", "Galaxy Tab A8", "Galaxy Tab S6 Lite"] },
+            { "name": "Lenovo", "models": ["Tab P11 Pro", "Tab M10", "Yoga Tab 13"] }
+          ]
+        },
+        {
+          "id": "accessories",
+          "name": "Accessories",
+          "slug": "accessories",
+          "brands": [
+            { "name": "Boat", "models": ["Airdopes 141", "Rockers 255"] },
+            { "name": "JBL", "models": ["Tune 510", "Charge 5"] },
+            { "name": "Sony", "models": ["WH-1000XM5", "WF-1000XM4"] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "vehicles",
+      "name": "Vehicles",
+      "slug": "vehicles",
+      "subcategories": [
+        {
+          "id": "cars",
+          "name": "Cars",
+          "slug": "cars",
+          "brands": [
+            { "name": "Maruti", "models": ["Swift", "Baleno", "Brezza", "Ertiga"] },
+            { "name": "Hyundai", "models": ["i20", "Creta", "Venue", "Verna"] },
+            { "name": "Tata", "models": ["Nexon", "Punch", "Harrier", "Safari"] },
+            { "name": "Mahindra", "models": ["XUV700", "Thar", "Scorpio"] },
+            { "name": "Kia", "models": ["Seltos", "Sonet", "Carens"] }
+          ]
+        },
+        {
+          "id": "bikes",
+          "name": "Bikes",
+          "slug": "bikes",
+          "brands": [
+            { "name": "Royal Enfield", "models": ["Classic 350", "Meteor", "Hunter"] },
+            { "name": "Yamaha", "models": ["R15", "MT-15", "FZ"] },
+            { "name": "Bajaj", "models": ["Pulsar 150", "Dominar 400"] },
+            { "name": "KTM", "models": ["Duke 200", "RC 390"] }
+          ]
+        },
+        {
+          "id": "electric",
+          "name": "Electric Vehicles",
+          "slug": "electric-vehicles",
+          "brands": [
+            { "name": "Ola", "models": ["S1", "S1 Pro"] },
+            { "name": "Ather", "models": ["450X", "450 Plus"] },
+            { "name": "TVS", "models": ["iQube"] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fashion",
+      "name": "Fashion",
+      "slug": "fashion",
+      "subcategories": [
+        {
+          "id": "mens_wear",
+          "name": "Men's Wear",
+          "slug": "men",
+          "brands": [
+            { "name": "Nike", "models": ["T-Shirt", "Track Pant", "Jacket", "Hoodie"] },
+            { "name": "Adidas", "models": ["Sports Tee", "Joggers", "Sweatshirt", "Shorts"] },
+            { "name": "Puma", "models": ["Polo T-Shirt", "Training Pants", "Windcheater"] },
+            { "name": "Levis", "models": ["Slim Jeans", "Regular Jeans", "Denim Jacket"] },
+            { "name": "U.S. Polo", "models": ["Casual Shirt", "Formal Shirt", "Chinos"] }
+          ]
+        },
+        {
+          "id": "womens_wear",
+          "name": "Women's Wear",
+          "slug": "women",
+          "brands": [
+            { "name": "Zara", "models": ["Maxi Dress", "Crop Top", "Blazer", "Skirt"] },
+            { "name": "H&M", "models": ["Kurti", "Top", "Jeggings", "Cardigan"] },
+            { "name": "Biba", "models": ["Anarkali Kurta", "Salwar Set", "Palazzo Set"] },
+            { "name": "Forever 21", "models": ["Party Dress", "Bodycon Dress", "Jumpsuit"] },
+            { "name": "Libas", "models": ["Kurti Set", "Ethnic Wear", "Dupatta Set"] }
+          ]
+        },
+        {
+          "id": "kids_wear",
+          "name": "Kids Wear",
+          "slug": "kids",
+          "brands": [
+            { "name": "Hopscotch", "models": ["Frock", "Kids Shirt", "Shorts Set"] },
+            { "name": "FirstCry", "models": ["Baby Romper", "Night Suit", "Track Suit"] },
+            { "name": "Mini Klub", "models": ["T-Shirts", "Denim Shorts", "Jackets"] },
+            { "name": "Carter's", "models": ["Onesie", "Sleepwear Set", "Dungaree"] }
+          ]
+        },
+        {
+          "id": "footwear",
+          "name": "Footwear",
+          "slug": "footwear",
+          "brands": [
+            { "name": "Bata", "models": ["Formal Shoes", "Sandals", "Slippers"] },
+            { "name": "Puma", "models": ["Running Shoes", "Sneakers", "Slides"] },
+            { "name": "Nike", "models": ["Air Max", "Revolution", "Court Vision"] },
+            { "name": "Woodland", "models": ["Boots", "Casual Shoes", "Outdoor Sandals"] },
+            { "name": "Skechers", "models": ["GoWalk", "ArchFit", "D'Lites"] }
+          ]
+        },
+        {
+          "id": "watches",
+          "name": "Watches",
+          "slug": "watches",
+          "brands": [
+            { "name": "Fastrack", "models": ["Reflex Beat", "Reflex 3.0", "Analog Series"] },
+            { "name": "Titan", "models": ["Neo", "Octane", "Raga"] },
+            { "name": "Casio", "models": ["G-Shock", "Edifice", "Vintage"] },
+            { "name": "Fossil", "models": ["Gen 6", "Hybrid HR", "Defender"] }
+          ]
+        },
+        {
+          "id": "bags",
+          "name": "Bags & Accessories",
+          "slug": "bags",
+          "brands": [
+            { "name": "Wildcraft", "models": ["Backpack", "Laptop Bag", "Travel Duffel"] },
+            { "name": "Skybags", "models": ["College Bag", "Trolley Bag", "Sling Bag"] },
+            { "name": "American Tourister", "models": ["Spinner Luggage", "Cabin Bag", "Rucksack"] },
+            { "name": "Lavie", "models": ["Handbag", "Wallet", "Clutch"] }
+          ]
+        },
+        {
+          "id": "jewellery",
+          "name": "Jewellery",
+          "slug": "jewellery",
+          "brands": [
+            { "name": "Tanishq", "models": ["Gold Necklace", "Diamond Ring", "Bangles"] },
+            { "name": "Malabar Gold", "models": ["Bridal Set", "Chain", "Earrings"] },
+            { "name": "PC Jeweller", "models": ["Pendant Set", "Bracelet", "Studs"] },
+            { "name": "Voylla", "models": ["Oxidised Set", "Silver Jewellery", "Fashion Set"] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "appliances",
+      "name": "Appliances",
+      "slug": "appliances",
+      "subcategories": [
+        {
+          "id": "refrigerator",
+          "name": "Refrigerator",
+          "slug": "refrigerator",
+          "brands": [
+            { "name": "LG", "models": ["Double Door", "Smart Inverter"] },
+            { "name": "Samsung", "models": ["Digital Inverter", "Side by Side"] },
+            { "name": "Whirlpool", "models": ["Intellifresh", "Protton"] }
+          ]
+        },
+        {
+          "id": "washing_machine",
+          "name": "Washing Machine",
+          "slug": "washing-machine",
+          "brands": [
+            { "name": "IFB", "models": ["Front Load 7kg", "Top Load 6.5kg"] },
+            { "name": "Bosch", "models": ["Serie 6", "Serie 4"] }
+          ]
+        },
+        {
+          "id": "air_conditioner",
+          "name": "Air Conditioner",
+          "slug": "air-conditioner",
+          "brands": [
+            { "name": "Voltas", "models": ["1.5 Ton Split", "Window AC"] },
+            { "name": "Blue Star", "models": ["Inverter AC", "Smart AC"] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "books",
+      "name": "Books",
+      "slug": "books",
+      "subcategories": [
+        {
+          "id": "fiction",
+          "name": "Fiction",
+          "slug": "fiction",
+          "brands": [
+            { "name": "Penguin", "models": ["Classics", "Bestsellers"] }
+          ]
+        },
+        {
+          "id": "academic",
+          "name": "Academic",
+          "slug": "academic",
+          "brands": [
+            { "name": "Pearson", "models": ["Engineering", "Medical"] },
+            { "name": "McGrawHill", "models": ["MBA", "CA"] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sports",
+      "name": "Sports",
+      "slug": "sports",
+      "subcategories": [
+        {
+          "id": "fitness",
+          "name": "Fitness",
+          "slug": "fitness",
+          "brands": [
+            { "name": "Decathlon", "models": ["Treadmill T900", "Exercise Bike 500", "Yoga Mat Pro"] },
+            { "name": "Boldfit", "models": ["Dumbbell Set 20kg", "Resistance Bands", "Skipping Rope Pro"] },
+            { "name": "Kore", "models": ["PVC Dumbbells", "Ab Roller", "Push-up Bars"] }
+          ]
+        },
+        {
+          "id": "outdoor",
+          "name": "Outdoor",
+          "slug": "outdoor",
+          "brands": [
+            { "name": "Wildcraft", "models": ["Rucksack 55L", "Hiking Backpack 40L", "Rain Jacket Trek", "Trekking Shoes Pro"] },
+            { "name": "Quechua", "models": ["2-Person Tent", "3-Person Tent", "Sleeping Bag Arctic", "Camping Chair XL"] },
+            { "name": "Coleman", "models": ["Camping Stove Pro", "Portable Grill X1", "Lantern LED", "Cooler Box 30L"] },
+            { "name": "Forclaz", "models": ["Mountain Backpack 60L", "Trekking Poles", "Thermal Jacket Pro"] }
+          ]
+        },
+        {
+          "id": "water_sports",
+          "name": "Water Sports",
+          "slug": "water-sports",
+          "brands": [
+            { "name": "Speedo", "models": ["Fastskin Goggles", "Swim Cap Pro", "Training Fins", "Hydro Swim Shorts"] },
+            { "name": "Arena", "models": ["PowerSkin Suit", "Swim Goggles Pro", "Kickboard Elite", "Pull Buoy Pro"] },
+            { "name": "Intex", "models": ["Inflatable Kayak", "Snorkel Set X2", "Swim Ring Pro", "Pool Float XL"] },
+            { "name": "Bestway", "models": ["Inflatable Boat", "Family Pool", "Floating Mat", "Swim Vest Kids"] }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "real_estate",
+      "name": "Real Estate",
+      "slug": "real-estate",
+      "subcategories": [
+        {
+          "id": "sale",
+          "name": "For Sale",
+          "slug": "for-sale",
+          "brands": []
+        },
+        {
+          "id": "rent",
+          "name": "For Rent",
+          "slug": "for-rent",
+          "brands": []
+        },
+        {
+          "id": "commercial",
+          "name": "Commercial",
+          "slug": "commercial",
+          "brands": []
+        }
+      ]
+    },
+    {
+      "id": "home-furniture",
+      "name": "Home & Furniture",
+      "slug": "home-furniture",
+      "subcategories": [
+        {
+          "id": "sofa",
+          "name": "Sofa",
+          "slug": "sofa",
+          "brands": [
+            { "name": "Chayanam", "models": ["3 Seater", "L-Shaped", "Sofa Cum Bed", "Sectional", "Recliner"] },
+            { "name": "Godrej Interio", "models": ["Sofas", "L-Shaped", "Sofa Cum Bed", "Recliner"] },
+            { "name": "Nilkamal", "models": ["Plastic Sofa", "Outdoor Sofa", "Bean Bag"] },
+            { "name": "Wakefit", "models": ["Fabric Sofa", "L-Shaped", "3 Seater"] },
+            { "name": "IKEA", "models": ["KIVIK", "SÖDERHAMN", "LANDSKRONA", "EKTORP"] },
+            { "name": "HomeTown", "models": ["Fabric Sofa", "Leather Sofa", "L-Shaped"] },
+            { "name": "Durian", "models": ["Sofa Set", "L-Shaped", "Recliner"] }
+          ]
+        },
+        {
+          "id": "beds",
+          "name": "Beds",
+          "slug": "beds",
+          "brands": [
+            { "name": "Chayanam", "models": ["Single Bed", "Double Bed", "King Bed", "Bunk Bed", "Storage Bed"] },
+            { "name": "Godrej Interio", "models": ["Single", "Double", "King", "Storage Bed", "Bunk"] },
+            { "name": "Wakefit", "models": ["Ortho Mattress", "Dual Comfort", "Bed Frame"] },
+            { "name": "Nilkamal", "models": ["Plastic Bed", "Storage Bed", "Bunk Bed"] },
+            { "name": "IKEA", "models": ["MALM", "HEMNES", "Brimnes", "KLEPPSTAD"] },
+            { "name": "HomeTown", "models": ["Wooden Bed", "Storage Bed", "King Size"] }
+          ]
+        },
+        {
+          "id": "wardrobe",
+          "name": "Wardrobe",
+          "slug": "wardrobe",
+          "brands": [
+            { "name": "Chayanam", "models": ["2 Door", "3 Door", "4 Door", "Sliding", "Mirror"] },
+            { "name": "Godrej Interio", "models": ["Wardrobe", "Sliding", "Mirror Wardrobe"] },
+            { "name": "Nilkamal", "models": ["Plastic Wardrobe", "Storage Cabinet"] },
+            { "name": "IKEA", "models": ["PAX", "PLATSA", "MALM"] },
+            { "name": "HomeTown", "models": ["Wooden Wardrobe", "Sliding Wardrobe"] }
+          ]
+        },
+        {
+          "id": "tables",
+          "name": "Tables",
+          "slug": "tables",
+          "brands": [
+            { "name": "Chayanam", "models": ["Dining Table", "Study Table", "Coffee Table", "Office Table"] },
+            { "name": "Godrej Interio", "models": ["Dining", "Study", "Coffee Table", "Office"] },
+            { "name": "Nilkamal", "models": ["Plastic Table", "Study Table", "Dining Table"] },
+            { "name": "IKEA", "models": ["LACK", "MALM", "EKEDALEN", "INGO"] },
+            { "name": "HomeTown", "models": ["Dining Table", "Study Table", "Computer Table"] }
+          ]
+        }
+      ]
+    }
+  ]
+}

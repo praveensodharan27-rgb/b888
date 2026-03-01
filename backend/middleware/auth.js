@@ -1,7 +1,14 @@
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
+const { logger } = require('../src/config/logger');
 
 const prisma = new PrismaClient();
+
+function log(req, level, msg, data = {}) {
+  const l = (req && req.log) ? req.log : logger;
+  const ctx = req && req.id ? { requestId: req.id, ...data } : data;
+  l[level](ctx, msg);
+}
 
 const authenticate = async (req, res, next) => {
   try {
@@ -12,27 +19,27 @@ const authenticate = async (req, res, next) => {
     }
 
     if (!process.env.JWT_SECRET) {
-      console.error('❌ JWT_SECRET is not set in environment variables');
+      log(req, 'error', 'JWT_SECRET is not set in environment variables');
       return res.status(500).json({ success: false, message: 'Server configuration error' });
     }
 
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     } catch (jwtError) {
       if (jwtError.name === 'JsonWebTokenError') {
-        console.error('❌ Invalid JWT token:', jwtError.message);
+        log(req, 'warn', 'Invalid JWT token', { reason: jwtError.message });
         return res.status(401).json({ success: false, message: 'Invalid token' });
       }
       if (jwtError.name === 'TokenExpiredError') {
-        console.error('❌ Expired JWT token');
+        log(req, 'warn', 'Expired JWT token');
         return res.status(401).json({ success: false, message: 'Token expired' });
       }
       throw jwtError;
     }
 
     if (!decoded.userId) {
-      console.error('❌ Token missing userId:', decoded);
+      log(req, 'warn', 'Token missing userId');
       return res.status(401).json({ success: false, message: 'Invalid token format' });
     }
 
@@ -55,7 +62,7 @@ const authenticate = async (req, res, next) => {
     });
 
     if (!user) {
-      console.error('❌ User not found for userId:', decoded.userId);
+      log(req, 'warn', 'User not found for token', { userId: decoded.userId });
       return res.status(401).json({ success: false, message: 'User not found' });
     }
 
@@ -65,7 +72,7 @@ const authenticate = async (req, res, next) => {
       const invalidatedAt = Math.floor(new Date(user.tokenInvalidatedAt).getTime() / 1000);
       
       if (tokenIat < invalidatedAt) {
-        console.error('❌ Token was invalidated (logout all devices)');
+        log(req, 'warn', 'Token was invalidated (logout all devices)', { userId: user.id });
         return res.status(401).json({ success: false, message: 'Token has been invalidated. Please login again.' });
       }
     }
@@ -91,8 +98,9 @@ const authenticate = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
-    console.error('❌ Authentication error:', error);
-    res.status(500).json({ success: false, message: 'Authentication error', error: error.message });
+    log(req, 'error', 'Authentication error', { err: error.message });
+    const safeMessage = process.env.NODE_ENV === 'production' ? 'Authentication error' : (error.message || 'Authentication error');
+    res.status(500).json({ success: false, message: safeMessage });
   }
 };
 
@@ -127,7 +135,7 @@ const optionalAuthenticate = async (req, res, next) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     } catch (jwtError) {
       // Invalid or expired token - continue without setting req.user
       return next();

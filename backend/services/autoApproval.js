@@ -6,7 +6,7 @@ const prisma = new PrismaClient();
  * Process ads that have been pending moderation for the specified time
  * Approves clean ads, rejects inappropriate ones based on moderation flags
  */
-async function processPendingModeration(minutesThreshold = 5) {
+async function processPendingModeration(minutesThreshold = 3) {
   try {
     console.log(`🔍 Processing ads pending moderation for ${minutesThreshold}+ minutes...`);
     
@@ -69,7 +69,7 @@ async function processPendingModeration(minutesThreshold = 5) {
           });
 
           // Create notification for user
-          await prisma.notification.create({
+          const rejectNotif = await prisma.notification.create({
             data: {
               userId: ad.user.id,
               title: 'Ad Rejected',
@@ -78,27 +78,64 @@ async function processPendingModeration(minutesThreshold = 5) {
               link: `/ads/${ad.id}`
             }
           });
+          try {
+            const { emitNotification } = require('../socket/socket');
+            emitNotification(ad.user.id, {
+              id: rejectNotif.id,
+              title: rejectNotif.title,
+              message: rejectNotif.message,
+              type: rejectNotif.type,
+              link: rejectNotif.link,
+              isRead: false,
+              createdAt: rejectNotif.createdAt
+            });
+          } catch (e) {
+            console.warn('⚠️ Socket emit for reject notification failed:', e?.message);
+          }
+          try {
+            const { invalidateNotificationCache } = require('../utils/redis-helpers');
+            await invalidateNotificationCache(ad.user.id);
+          } catch (_) {}
 
           console.log(`❌ Rejected: ${ad.title} (ID: ${ad.id})`);
           rejected++;
 
         } else {
           // APPROVE ad - moderation passed
-          // Set postedAt when ad is approved (goes live)
           const now = new Date();
-          const updatedAd = await prisma.ad.update({
-            where: { id: ad.id },
-            data: {
-              status: 'APPROVED',
-              moderationStatus: 'approved_after_review',
-              postedAt: now // Set postedAt when ad goes live
-            },
-            include: {
-              category: { select: { id: true, name: true } },
-              subcategory: { select: { id: true, name: true } },
-              location: { select: { id: true, name: true } },
+          const updatePayload = {
+            status: 'APPROVED',
+            moderationStatus: 'approved_after_review',
+            postedAt: now
+          };
+          let updatedAd;
+          try {
+            updatedAd = await prisma.ad.update({
+              where: { id: ad.id },
+              data: updatePayload,
+              include: {
+                category: { select: { id: true, name: true } },
+                subcategory: { select: { id: true, name: true } },
+                location: { select: { id: true, name: true } },
+              }
+            });
+          } catch (updateErr) {
+            const msg = updateErr?.message || '';
+            if (msg.includes('postedAt') || msg.includes('Unknown arg')) {
+              delete updatePayload.postedAt;
+              updatedAd = await prisma.ad.update({
+                where: { id: ad.id },
+                data: updatePayload,
+                include: {
+                  category: { select: { id: true, name: true } },
+                  subcategory: { select: { id: true, name: true } },
+                  location: { select: { id: true, name: true } },
+                }
+              });
+            } else {
+              throw updateErr;
             }
-          });
+          }
 
           // Index approved ad in Meilisearch (sync with database)
           try {
@@ -109,66 +146,59 @@ async function processPendingModeration(minutesThreshold = 5) {
             console.error(`⚠️ Error indexing approved ad ${updatedAd.id} in Meilisearch:`, indexError);
           }
 
-        // Create notification for user
-        await prisma.notification.create({
-          data: {
-            userId: ad.user.id,
-            title: 'Ad Approved',
-            message: `Your ad "${ad.title}" has been approved and is now live!`,
-            type: 'ad_approved',
-            link: `/ads/${ad.id}`
-          }
-        });
-
-        // Emit socket event for new approved ad
-        try {
-          const { getIO } = require('../socket/socket');
-          const io = getIO();
-          if (io) {
-            const fullAd = await prisma.ad.findUnique({
-              where: { id: ad.id },
-              include: {
-                category: { select: { id: true, name: true, slug: true } },
-                subcategory: { select: { id: true, name: true, slug: true } },
-                location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true } },
-                user: { select: { id: true, name: true, avatar: true } }
-              }
-            });
-            
-            io.emit('ad_approved', fullAd);
-            io.emit('new_ad', fullAd);
-          }
-
-          // Index ad in Meilisearch
-          try {
-            const { indexAd } = require('../services/meilisearch');
-            const fullAd = await prisma.ad.findUnique({
-              where: { id: ad.id },
-              include: {
-                category: true,
-                subcategory: true,
-                location: true,
-                user: { select: { id: true, name: true } }
-              }
-            });
-            await indexAd(fullAd);
-          } catch (indexError) {
-            console.error('⚠️ Error indexing ad in Meilisearch:', indexError.message);
-          }
-        } catch (socketError) {
-          console.error('⚠️ Error emitting socket event:', socketError.message);
-        }
-
           // Create notification for user
-          await prisma.notification.create({
+          const approveNotif = await prisma.notification.create({
             data: {
               userId: ad.user.id,
               title: 'Ad Approved',
-              message: `Your ad "${ad.title}" has passed moderation and is now live!`,
+              message: `Your ad "${ad.title}" has been approved and is now live!`,
               type: 'ad_approved',
               link: `/ads/${ad.id}`
             }
           });
+
+          // Emit to user so notification bell updates and toast can show
+          try {
+            const { emitNotification } = require('../socket/socket');
+            emitNotification(ad.user.id, {
+              id: approveNotif.id,
+              title: approveNotif.title,
+              message: approveNotif.message,
+              type: approveNotif.type,
+              link: approveNotif.link,
+              isRead: false,
+              createdAt: approveNotif.createdAt
+            });
+          } catch (e) {
+            console.warn('⚠️ Socket emit for approve notification failed:', e?.message);
+          }
+          try {
+            const { invalidateNotificationCache } = require('../utils/redis-helpers');
+            await invalidateNotificationCache(ad.user.id);
+          } catch (_) {}
+
+          // Emit socket event for new approved ad (home feed / live listing)
+          try {
+            const { getIO } = require('../socket/socket');
+            const io = getIO();
+            if (io) {
+              const fullAd = await prisma.ad.findUnique({
+                where: { id: ad.id },
+                include: {
+                  category: { select: { id: true, name: true, slug: true } },
+                  subcategory: { select: { id: true, name: true, slug: true } },
+                  location: { select: { id: true, name: true, slug: true, latitude: true, longitude: true } },
+                  user: { select: { id: true, name: true, avatar: true } }
+                }
+              });
+              if (fullAd) {
+                io.emit('ad_approved', fullAd);
+                io.emit('new_ad', fullAd);
+              }
+            }
+          } catch (socketError) {
+            console.error('⚠️ Error emitting socket event:', socketError.message);
+          }
 
           console.log(`✅ Approved: ${ad.title} (ID: ${ad.id})`);
           approved++;

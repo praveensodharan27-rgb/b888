@@ -159,9 +159,9 @@ After seeding categories:
    npm run seed-locations
    ```
 
-2. **Add Dummy Data**:
+2. **Seed Database** (optional):
    ```powershell
-   npm run add-dummy-data
+   npm run seed-all-db
    ```
 
 3. **Start Server**:

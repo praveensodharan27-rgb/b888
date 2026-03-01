@@ -280,12 +280,8 @@ router.post('/order',
       });
     } catch (error) {
       console.error('❌ Create premium order error:', error);
-      console.error('Error stack:', error.stack);
-      res.status(500).json({ 
-        success: false, 
-        message: 'Failed to create order',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+      const { getSafeErrorPayload } = require('../utils/safeErrorResponse');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to create order'));
     }
   }
 );
@@ -823,13 +819,8 @@ router.post('/ad-posting/order',
       });
     } catch (error) {
       console.error('❌ Create ad posting order error:', error);
-      console.error('Error stack:', error.stack);
-      res.status(500).json({ 
-        success: false, 
-        message: 'Failed to create order',
-        error: error.message,
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      });
+      const { getSafeErrorPayload } = require('../utils/safeErrorResponse');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to create order'));
     }
   }
 );
@@ -1338,14 +1329,8 @@ router.post('/ad-posting/verify',
       }
       console.error('   Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
       
-      res.status(500).json({ 
-        success: false, 
-        message: 'Payment verification failed',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-        errorType: process.env.NODE_ENV === 'development' ? error.constructor.name : undefined,
-        code: process.env.NODE_ENV === 'development' ? error.code : undefined,
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      });
+      const { getSafeErrorPayload } = require('../utils/safeErrorResponse');
+      res.status(500).json(getSafeErrorPayload(error, 'Payment verification failed'));
     }
   }
 );

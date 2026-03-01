@@ -296,38 +296,35 @@ router.post('/detect-location', optionalAuthenticate, async (req, res) => {
       'authorization': req.headers['authorization'] ? 'Present' : 'Missing'
     });
     
-    // Determine appropriate status code
     let statusCode = 500;
-    let errorMessage = error.message || 'Failed to detect location';
-    
-    // Check if it's a validation error or API error
-    if (error.message && error.message.includes('required')) {
-      statusCode = 400;
-    } else if (error.message && error.message.includes('Invalid')) {
-      statusCode = 400;
-    }
-    
-    res.status(statusCode).json({
+    const isValidation = error.message && (error.message.includes('required') || error.message.includes('Invalid'));
+    if (isValidation) statusCode = 400;
+
+    const message = statusCode === 500 && process.env.NODE_ENV === 'production'
+      ? 'Failed to detect location'
+      : (error.message || 'Failed to detect location');
+    const payload = {
       success: false,
-      message: errorMessage,
-      error: error.message,
-      details: process.env.NODE_ENV === 'development' ? {
-        stack: error.stack,
-        type: error.constructor.name
-      } : undefined
-    });
+      message,
+      ...(process.env.NODE_ENV === 'development' && {
+        error: error.message,
+        details: { stack: error.stack, type: error.constructor.name }
+      })
+    };
+    res.status(statusCode).json(payload);
   }
 });
 
-// Geocode address string to coordinates
-router.post('/geocode-address', authenticate, async (req, res) => {
+// Geocode address string to coordinates - public (optional auth) for ad detail map, location detection
+router.post('/geocode-address', optionalAuthenticate, async (req, res) => {
   try {
-    const { address } = req.body;
+    const address = typeof req.body?.address === 'string' ? req.body.address.trim() : '';
 
     if (!address) {
       return res.status(400).json({
         success: false,
         message: 'Address is required',
+        code: 'ADDRESS_REQUIRED',
       });
     }
 
@@ -463,10 +460,39 @@ router.post('/geocode-address', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Geocoding error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Failed to geocode address',
+    const message = process.env.NODE_ENV === 'production' ? 'Failed to geocode address' : (error.message || 'Failed to geocode address');
+    res.status(500).json({ success: false, message });
+  }
+});
+
+// IP-based location detection (fallback when GPS/profile not available)
+router.get('/ip-location', optionalAuthenticate, async (req, res) => {
+  try {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || req.ip;
+    const clientIp = ip === '::1' || ip === '127.0.0.1' ? '' : ip;
+    if (!clientIp) {
+      return res.json({ success: false, message: 'Could not determine IP' });
+    }
+    const url = `http://ip-api.com/json/${clientIp}?fields=status,country,regionName,city,lat,lon`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.status !== 'success') {
+      return res.json({ success: false, message: 'IP geolocation failed' });
+    }
+    res.json({
+      success: true,
+      location: {
+        country: data.country || null,
+        state: data.regionName || null,
+        district: null,
+        city: data.city || null,
+        latitude: data.lat,
+        longitude: data.lon,
+      },
     });
+  } catch (error) {
+    console.error('IP location error:', error);
+    res.status(500).json({ success: false, message: 'Failed to detect location from IP' });
   }
 });
 

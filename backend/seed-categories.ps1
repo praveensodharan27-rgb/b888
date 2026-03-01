@@ -66,6 +66,6 @@ Write-Host "  ✅ Category Seeding Completed!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "📋 Next Steps:" -ForegroundColor White
-Write-Host "   - Add dummy data: npm run add-dummy-data" -ForegroundColor Yellow
+Write-Host "   - Seed database: npm run seed-all-db" -ForegroundColor Yellow
 Write-Host "   - Start server: npm run dev" -ForegroundColor Yellow
 Write-Host ""

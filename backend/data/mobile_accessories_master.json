@@ -1,0 +1,105 @@
+{
+  "category": "mobiles",
+  "subcategories": {
+    "accessories": {
+      "fields": [
+        "type",
+        "brand",
+        "model",
+        "compatible_with",
+        "color",
+        "warranty",
+        "condition"
+      ],
+      "types": [
+        "Charger",
+        "USB Cable",
+        "Power Bank",
+        "Earphones",
+        "Headphones",
+        "Bluetooth Speaker",
+        "Mobile Cover",
+        "Screen Protector",
+        "Memory Card",
+        "OTG Cable",
+        "Car Charger",
+        "Mobile Stand"
+      ],
+      "brands": {
+        "Samsung": [
+          "25W Fast Charger",
+          "15W Wireless Charger",
+          "Type-C Cable"
+        ],
+        "Apple": [
+          "20W Adapter",
+          "MagSafe Charger",
+          "Lightning Cable",
+          "EarPods"
+        ],
+        "Xiaomi": [
+          "33W Fast Charger",
+          "Power Bank 10000mAh",
+          "Type-C Cable"
+        ],
+        "OnePlus": [
+          "Warp Charger 65W",
+          "Type-C Cable",
+          "Buds Z"
+        ],
+        "Realme": [
+          "Dart Charger 30W",
+          "Buds Air",
+          "Power Bank"
+        ],
+        "boAt": [
+          "Airdopes 131",
+          "BassHeads 100",
+          "Stone 1200 Speaker"
+        ],
+        "JBL": [
+          "Tune 510BT",
+          "Flip 5 Speaker",
+          "C100SI Earphones"
+        ],
+        "Portronics": [
+          "Power Bank 20000mAh",
+          "Konnect Cable",
+          "Bluetooth Receiver"
+        ],
+        "Syska": [
+          "Charger 18W",
+          "Power Bank",
+          "Earphones"
+        ],
+        "Ambrane": [
+          "Power Bank 10000mAh",
+          "Fast Charger",
+          "Type-C Cable"
+        ]
+      },
+      "compatibility": {
+        "Android": [
+          "Samsung",
+          "Xiaomi",
+          "Realme",
+          "OnePlus",
+          "Vivo",
+          "Oppo"
+        ],
+        "iPhone": [
+          "iPhone 11",
+          "iPhone 12",
+          "iPhone 13",
+          "iPhone 14",
+          "iPhone 15"
+        ],
+        "Universal": [
+          "All Smartphones",
+          "Tablets",
+          "Bluetooth Devices"
+        ]
+      }
+    }
+  }
+}

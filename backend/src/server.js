@@ -3,7 +3,11 @@ const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
+const pinoHttp = require('pino-http');
 const env = require('./config/env');
+const { logger, logError } = require('./config/logger');
+const { requestId } = require('../middleware/requestId');
 
 // Import routes
 const authRoutes = require('./modules/auth/routes/authRoutes');
@@ -11,7 +15,22 @@ const authRoutes = require('./modules/auth/routes/authRoutes');
 // Import old routes (temporary - will be migrated to Clean Architecture)
 const oldAuthRoutes = require('../routes/auth'); // Old auth routes (register, login, etc.)
 const userRoutes = require('../routes/user');
-const adRoutes = require('../routes/ads');
+let adRoutes;
+try {
+  adRoutes = require('../routes/ads');
+} catch (error) {
+  const isMissingAdsRoute =
+    error?.code === 'MODULE_NOT_FOUND' &&
+    typeof error?.message === 'string' &&
+    (error.message.includes('../routes/ads') ||
+      error.message.includes('..\\routes\\ads'));
+
+  if (isMissingAdsRoute) {
+    logger.warn({ path: '../routes/ads' }, 'Ads routes not found. Skipping /api/ads.');
+  } else {
+    throw error;
+  }
+}
 const categoryRoutes = require('../routes/categories');
 const locationRoutes = require('../routes/locations');
 const premiumRoutes = require('../routes/premium');
@@ -23,6 +42,12 @@ const testEmailRoutes = require('../routes/test-email');
 const pushRoutes = require('../routes/push');
 const walletRoutes = require('../routes/wallet');
 const referralRoutes = require('../routes/referral');
+const filterConfigRoutes = require('../routes/filter-configurations');
+const filterValuesRoutes = require('../routes/filter-values');
+const brandsRoutes = require('../routes/brands');
+const businessPackageRoutes = require('../routes/business-package');
+const geocodingRoutes = require('../routes/geocoding');
+const followRoutes = require('../routes/follow');
 
 // Create Express app
 const app = express();
@@ -33,32 +58,31 @@ const corsOptions = {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    // In development, allow ALL localhost origins (very permissive)
-    if (env.NODE_ENV === 'development' || !env.NODE_ENV) {
-      if (origin.startsWith('http://localhost:') || 
-          origin.startsWith('http://127.0.0.1:') ||
-          origin.startsWith('http://0.0.0.0:')) {
-        return callback(null, true);
-      }
-    }
-    
-    // Check against configured frontend URL
+    // Explicit allowlist (no wildcard / allow-any in production or dev)
     const allowedOrigins = [
       env.FRONTEND_URL,
       'http://localhost:3000',
       'http://127.0.0.1:3000',
       'http://localhost:3001',
       'http://127.0.0.1:3001',
-    ].filter(Boolean); // Remove any null/undefined values
-    
+      'http://0.0.0.0:3000',
+      'http://0.0.0.0:3001',
+    ].filter(Boolean);
+
+    if (env.NODE_ENV === 'development' || !env.NODE_ENV) {
+      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:') || origin.startsWith('http://0.0.0.0:')) {
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        // In dev, allow same host with any port
+        try {
+          const u = new URL(origin);
+          if (['localhost', '127.0.0.1', '0.0.0.0'].includes(u.hostname)) return callback(null, true);
+        } catch (_) {}
+      }
+    }
+
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      // In development, be more lenient
-      if (env.NODE_ENV === 'development' || !env.NODE_ENV) {
-        console.warn(`CORS: Allowing origin in dev mode: ${origin}`);
-        return callback(null, true);
-      }
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -78,7 +102,17 @@ app.options('*', cors(corsOptions));
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
+      connectSrc: ["'self'", 'https:', 'wss:'],
+      frameAncestors: ["'self'"],
+    },
+  },
 }));
 
 app.use(compression());
@@ -87,11 +121,16 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Session configuration for OAuth (optional, using stateless JWT instead)
 const session = require('express-session');
+const sessionSecret = env.SESSION_SECRET || env.JWT_SECRET;
+if (env.NODE_ENV === 'production' && !sessionSecret) {
+  logger.error('SESSION_SECRET or JWT_SECRET must be set in production');
+  process.exit(1);
+}
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-secret-key-change-in-production',
+  secret: sessionSecret || 'dev-session',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: process.env.NODE_ENV === 'production' }
+  cookie: { secure: env.NODE_ENV === 'production', sameSite: 'lax' }
 }));
 
 // Initialize Passport
@@ -102,39 +141,123 @@ app.use(passport.session());
 // Serve uploaded files statically (for local development)
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Health check
+// Request ID and structured HTTP logging (for debugging: trace all requests by id)
+app.use(requestId);
+app.use(pinoHttp({
+  logger,
+  genReqId: (req) => req.id,
+  autoLogging: { ignore: (req) => req.path === '/health' },
+}));
+
+// Health check (no rate limit - for load balancers / monitoring)
 app.get('/health', (req, res) => {
+  let meilisearch = false;
+  let redis = false;
+  try {
+    const { getIsMeilisearchAvailable } = require('../services/meilisearch');
+    meilisearch = getIsMeilisearchAvailable();
+  } catch (_) {}
+  try {
+    const { isAvailable } = require('../config/redis');
+    redis = isAvailable();
+  } catch (_) {}
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     environment: env.NODE_ENV,
+    meilisearch,
+    redis,
   });
 });
+
+// ---------- Rate limiting (security: brute force, abuse, DDoS) ----------
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+// General API: 200 requests per 15 min per IP (skip health, uploads, and read-only notifications polling)
+const generalLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: env.NODE_ENV === 'production' ? 200 : 500,
+  message: { success: false, message: 'Too many requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) =>
+    req.path === '/health' ||
+    req.path.startsWith('/uploads') ||
+    req.path.startsWith('/admin') ||
+    (req.method === 'GET' && req.path === '/user/notifications') ||
+    (req.method === 'GET' && (req.path?.includes('interstitial-ads') || req.originalUrl?.includes('interstitial-ads'))),
+});
+app.use('/api', generalLimiter);
+
+// Auth routes: stricter (prevents OTP bombing, brute force login)
+const authLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: env.NODE_ENV === 'production' ? 15 : 30,
+  message: { success: false, message: 'Too many auth attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/auth', authLimiter);
+
+// Stricter limit for login and OTP (brute-force / OTP bombing prevention)
+const authStrictLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: env.NODE_ENV === 'production' ? 5 : 15,
+  message: { success: false, message: 'Too many attempts. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/auth/login', authStrictLimiter);
+app.use('/api/auth/send-otp', authStrictLimiter);
 
 // API Routes
 // OAuth routes (must be before other auth routes)
 app.use('/api/auth', require('../routes/oauth'));
-// New Clean Architecture auth routes (send-otp, verify-otp)
-app.use('/api/auth', authRoutes);
-// Old auth routes (register, login, etc.) - mounted after new routes so they take precedence
+// Old auth routes (register, login, send-otp, verify-otp) - MUST be before authRoutes
+// because old verify-otp returns JWT token; Clean Architecture verify-otp does not
 app.use('/api/auth', oldAuthRoutes);
+// Clean Architecture auth routes (fallback - only if old routes don't match)
+app.use('/api/auth', authRoutes);
 
 // Legacy routes (from old server - will be migrated to Clean Architecture)
 app.use('/api/user', userRoutes);
-app.use('/api/ads', adRoutes);
+if (adRoutes) {
+  app.use('/api/ads', adRoutes);
+}
 app.use('/api/categories', categoryRoutes);
 app.use('/api/locations', locationRoutes);
 app.use('/api/premium', premiumRoutes);
+app.use('/api/business-package', businessPackageRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/banners', bannerRoutes);
 app.use('/api/interstitial-ads', interstitialAdRoutes);
+app.use('/api/sponsored-ads', require('../routes/sponsored-ads'));
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/premium', require('../routes/admin-premium'));
 app.use('/api/ai', require('../routes/ai'));
 app.use('/api/push', pushRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/referral', referralRoutes);
-app.use('/api/test', testEmailRoutes);
+app.use('/api/filter-configurations', filterConfigRoutes);
+app.use('/api/filter-values', filterValuesRoutes);
+app.use('/api/brands', brandsRoutes);
+app.use('/api/geocoding', geocodingRoutes);
+app.use('/api/free-posting-promos', require('../routes/free-posting-promos'));
+app.use('/api/follow', followRoutes);
+app.use('/api/business', require('../routes/business'));
+app.use('/api/directory', require('../routes/directory'));
+app.use('/api/contact-request', require('../routes/contact-request'));
+app.use('/api/reports', require('../routes/reports'));
+app.use('/api/moderation', require('../routes/moderation'));
+app.use('/api/credits', require('../routes/credits'));
+app.use('/api/redis', require('../routes/redis-health'));
+app.use('/api/search', require('../routes/search'));
+app.use('/api/home-feed', require('../routes/home-feed'));
+
+// Test/debug routes — only in non-production to prevent abuse and info disclosure
+if (env.NODE_ENV !== 'production') {
+  app.use('/api/test', testEmailRoutes);
+}
 
 // 404 handler
 app.use((req, res) => {
@@ -144,12 +267,16 @@ app.use((req, res) => {
   });
 });
 
-// Error handling middleware
+// Error handling middleware (structured so bugs are easy to trace)
 app.use((err, req, res, next) => {
-  console.error('Error:', err.stack);
-  res.status(err.status || 500).json({
+  const status = err.status || 500;
+  const ctx = { requestId: req.id, path: req.path, method: req.method, status };
+  if (req.log) req.log.error({ err, ...ctx }, err.message || 'Request error');
+  else logError(err, ctx);
+  const message = env.NODE_ENV === 'production' ? 'Internal server error' : (err.message || 'Internal server error');
+  res.status(status).json({
     success: false,
-    message: err.message || 'Internal server error',
+    message,
     ...(env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 });
@@ -183,6 +310,12 @@ setupSocketIO(io);
 
 // Start server
 const PORT = env.PORT;
+
+// Meilisearch: start background health check (non-blocking; reconnects when down)
+try {
+  const { startBackgroundHealthCheck } = require('../services/meilisearch');
+  setImmediate(() => startBackgroundHealthCheck());
+} catch (_) {}
 
 // Scheduled task to mark expired ads (runs every hour)
 async function markExpiredAds() {
@@ -241,51 +374,60 @@ async function markExpiredAds() {
       });
     }
 
-    console.log(`⏰ Marked ${expiredAds.length} expired ad(s) as EXPIRED and sent notifications`);
+    logger.info({ count: expiredAds.length }, 'Marked expired ads as EXPIRED and sent notifications');
   } catch (error) {
-    console.error('❌ Error marking expired ads:', error);
+    logger.error({ err: error }, 'Error marking expired ads');
   }
 }
 
-// Run immediately on startup, then every hour
-markExpiredAds();
+// Run expired-ads and cron after server is listening (non-blocking startup)
 setInterval(markExpiredAds, 60 * 60 * 1000); // Every hour
 
-// Setup cron jobs for scheduled tasks
+// Setup cron jobs for scheduled tasks (schedules only; heavy work runs on timer)
 if (process.env.NODE_ENV !== 'test') {
   try {
     const { setupCronJobs } = require('../utils/cron');
     setupCronJobs();
   } catch (error) {
-    console.warn('⚠️  Could not setup cron jobs (node-cron may not be installed):', error.message);
+    logger.warn({ err: error.message }, 'Could not setup cron jobs (node-cron may not be installed)');
   }
 }
 
+// Global error handlers
+process.on('uncaughtException', (error) => {
+  logger.error({ err: error }, 'Uncaught Exception');
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error({ reason, promise }, 'Unhandled Rejection');
+});
+
+// Server error handler
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    logger.error({ port: PORT }, `Port ${PORT} is already in use. Kill the process and restart.`);
+    process.exit(1);
+  } else {
+    logger.error({ err: error }, 'Server error');
+    process.exit(1);
+  }
+});
+
 server.listen(PORT, () => {
-  console.log(`\n🚀 Server running on port ${PORT}`);
-  console.log(`📡 Environment: ${env.NODE_ENV}`);
-  console.log(`🌐 Frontend URL: ${env.FRONTEND_URL}`);
-  console.log(`💬 Socket.IO initialized for real-time chat`);
-  console.log(`⏰ Ad expiration checker running (every hour)`);
-  console.log(`\n✅ Clean Architecture Routes:`);
-  console.log(`   POST /api/auth/send-otp`);
-  console.log(`   POST /api/auth/verify-otp`);
-  console.log(`\n📦 Auth Routes (from old server):`);
-  console.log(`   POST /api/auth/register`);
-  console.log(`   POST /api/auth/login`);
-  console.log(`   POST /api/auth/login-otp`);
-  console.log(`\n📦 Other Legacy Routes (migrated from old server):`);
-  console.log(`   /api/user/*`);
-  console.log(`   /api/ads/*`);
-  console.log(`   /api/categories/*`);
-  console.log(`   /api/locations/*`);
-  console.log(`   /api/premium/*`);
-  console.log(`   /api/chat/*`);
-  console.log(`   /api/banners/*`);
-  console.log(`   /api/admin/*`);
-  console.log(`   /api/test/*`);
-  console.log(`\n   GET  /health\n`);
+  logger.info({
+    event: 'server_start',
+    port: PORT,
+    env: env.NODE_ENV,
+    frontendUrl: env.FRONTEND_URL,
+    rateLimit: { api: env.NODE_ENV === 'production' ? 200 : 500, auth: env.NODE_ENV === 'production' ? 15 : 30 },
+  }, 'Server running');
+  logger.info('Socket.IO ready | Ad expiration every 1h | GET /health');
+
+  // Defer heavy startup jobs so listen completes fast (~2s → minimal blocking)
+  setImmediate(() => {
+    markExpiredAds().catch((err) => logger.error({ err: err.message }, 'markExpiredAds failed'));
+  });
 });
 
 module.exports = app;
-

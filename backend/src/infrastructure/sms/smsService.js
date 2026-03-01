@@ -76,6 +76,51 @@ class SMSService {
       return false;
     }
   }
+
+  /**
+   * Send general SMS message
+   * @param {string} phone - Recipient phone number
+   * @param {string} message - Message content
+   * @returns {Promise<boolean>} - Success status
+   */
+  async sendMessage(phone, message) {
+    // Always log message in development
+    if (env.NODE_ENV === 'development') {
+      console.log('\n╔════════════════════════════════════════════════════╗');
+      console.log(`║   SMS MESSAGE REQUEST                              ║`);
+      console.log('╠════════════════════════════════════════════════════╣');
+      console.log(`║   Phone: ${phone.padEnd(40)} ║`);
+      console.log(`║   Message: ${message.substring(0, 40).padEnd(37)} ║`);
+      console.log('╚════════════════════════════════════════════════════╝\n');
+    }
+
+    // If not configured, return true in development mode
+    if (!this.isConfigured) {
+      if (env.NODE_ENV === 'development') {
+        console.log('   ✅ Continuing in development mode (SMS logged above)');
+        return true;
+      }
+      return false;
+    }
+
+    try {
+      await this.client.messages.create({
+        body: message,
+        from: env.TWILIO_PHONE_NUMBER,
+        to: phone,
+      });
+
+      console.log(`✅ SMS sent to ${phone}`);
+      return true;
+    } catch (error) {
+      console.error('❌ SMS error:', error.message);
+      if (env.NODE_ENV === 'development') {
+        console.log('   Continuing in development mode...');
+        return true;
+      }
+      return false;
+    }
+  }
 }
 
 // Export singleton instance

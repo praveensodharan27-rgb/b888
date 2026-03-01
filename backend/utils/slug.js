@@ -1,76 +1,39 @@
 /**
- * Generate a URL-friendly slug from a string
- * @param {string} text - The text to convert to a slug
- * @returns {string} - The generated slug
+ * SEO-friendly slug: lowercase, hyphens, no special chars.
+ * Used for directory URLs: state, city, category, business name.
+ * - Remove symbols (&, %, $, etc.)
+ * - Replace spaces with hyphens, trim extra hyphens
+ * - Limit to maxLength (default 70)
  */
-function generateSlug(text) {
-  if (!text) return '';
-  
-  return text
-    .toString()
-    .toLowerCase()
+function slugify(text, maxLength = 70) {
+  if (!text || typeof text !== 'string') return '';
+  const raw = text
     .trim()
-    // Replace spaces and underscores with hyphens
+    .toLowerCase()
+    .replace(/[&\-%$#@!*()+=[\]{}|;:'",.<>?/\\]/g, '')
     .replace(/\s+/g, '-')
-    .replace(/_/g, '-')
-    // Remove special characters except hyphens
-    .replace(/[^\w\-]+/g, '')
-    // Replace multiple hyphens with single hyphen
     .replace(/\-\-+/g, '-')
-    // Remove leading/trailing hyphens
     .replace(/^-+/, '')
     .replace(/-+$/, '');
+  const trimmed = raw.slice(0, maxLength);
+  return trimmed.replace(/-+$/, '');
 }
 
 /**
- * Generate a unique slug for an ad
- * @param {string} title - The ad title
- * @param {string} adId - The ad ID (to ensure uniqueness)
- * @param {PrismaClient} prisma - Prisma client instance
- * @param {string} categoryId - Category ID
- * @param {string} subcategoryId - Subcategory ID (optional)
- * @returns {Promise<string>} - The unique slug
+ * If a slug already exists (e.g. same city+category), append city name or a short unique suffix.
+ * Caller should pass existingSlugs array and optionally citySlug; returns slug that is unique.
  */
-async function generateUniqueAdSlug(title, adId, prisma, categoryId, subcategoryId = null) {
-  const baseSlug = generateSlug(title);
-  
-  // If slug is empty, use a fallback
-  if (!baseSlug) {
-    return `ad-${adId}`;
+function slugifyUnique(businessName, existingSlugs = [], citySlug = '', maxLength = 70) {
+  let base = slugify(businessName, maxLength - 10);
+  if (!base) return 'business';
+  let candidate = base;
+  let n = 0;
+  while (existingSlugs.includes(candidate)) {
+    n += 1;
+    const suffix = citySlug ? `-${citySlug}` : `-${n}`;
+    candidate = `${base.slice(0, maxLength - suffix.length)}${suffix}`;
   }
-  
-  // Try base slug first
-  let slug = baseSlug;
-  let counter = 1;
-  
-  // Check if slug already exists for this category/subcategory combination
-  while (true) {
-    const existingAd = await prisma.ad.findFirst({
-      where: {
-        slug: slug,
-        categoryId: categoryId,
-        ...(subcategoryId && { subcategoryId: subcategoryId }),
-        ...(adId && { id: { not: adId } }) // Exclude current ad if updating
-      }
-    });
-    
-    if (!existingAd) {
-      return slug;
-    }
-    
-    // If slug exists, append counter
-    slug = `${baseSlug}-${counter}`;
-    counter++;
-    
-    // Safety limit to prevent infinite loops
-    if (counter > 1000) {
-      return `${baseSlug}-${Date.now()}`;
-    }
-  }
+  return candidate;
 }
 
-module.exports = {
-  generateSlug,
-  generateUniqueAdSlug
-};
-
+module.exports = { slugify, slugifyUnique };

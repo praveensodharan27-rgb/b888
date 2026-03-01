@@ -1,16 +1,26 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
+const { generateSalesReply } = require('../services/salesAssistantService');
+const { PrismaClient } = require('@prisma/client');
 require('dotenv').config();
 
-// OpenAI API configuration
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const prisma = new PrismaClient();
+
+// OpenAI API configuration (use single OPENAI_API_KEY in .env, no space around =)
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+
+// Optional: check if AI chatbot is configured (for support/debug)
+router.get('/status', (req, res) => {
+  const configured = !!OPENAI_API_KEY && OPENAI_API_KEY.startsWith('sk-');
+  res.json({ ok: configured, message: configured ? 'AI chatbot configured' : 'Set OPENAI_API_KEY in .env for AI suggest reply and auto-reply' });
+});
 
 // Generate product description using OpenAI
 router.post('/generate-description', authenticate, async (req, res) => {
   try {
-    const { title, price, condition, category, subcategory, location } = req.body;
+    const { title, price, condition, category, subcategory, location, attributes } = req.body;
 
     if (!title) {
       return res.status(400).json({
@@ -19,59 +29,40 @@ router.post('/generate-description', authenticate, async (req, res) => {
       });
     }
 
-    // Build context for the AI with template structure
+    // Build context for the AI
     let productDetails = `Product Title: ${title}\n`;
-    
-    if (price) {
-      productDetails += `Price: ₹${price}\n`;
-    }
-    
-    if (condition) {
-      productDetails += `Condition: ${condition}\n`;
-    }
-    
-    if (category) {
-      productDetails += `Category: ${category}\n`;
-    }
-    
-    if (subcategory) {
-      productDetails += `Subcategory: ${subcategory}\n`;
-    }
-    
-    if (location) {
-      productDetails += `Location: ${location}\n`;
+
+    if (attributes && typeof attributes === 'object' && Object.keys(attributes).length > 0) {
+      productDetails += '\nSpecifications/Attributes from form:\n';
+      Object.entries(attributes).forEach(([key, val]) => {
+        if (val != null && String(val).trim() !== '') {
+          const label = key.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          productDetails += `- ${label}: ${val}\n`;
+        }
+      });
     }
 
-    // Professional template for description generation with bullet points
-    const prompt = `You are a professional copywriter specializing in premium classified ad descriptions. Create a polished, professional product description using bullet points that maximizes buyer interest and trust.
+    if (price) productDetails += `\nPrice: ₹${price}\n`;
+    if (condition) productDetails += `Condition: ${condition}\n`;
+    if (category) productDetails += `Category: ${category}\n`;
+    if (subcategory) productDetails += `Subcategory: ${subcategory}\n`;
+    if (location) productDetails += `Location: ${location}\n`;
+
+    const prompt = `You are a product listing expert. Generate ONLY a bullet-point list of specifications for a marketplace ad. Output ONLY specifications - no intro, no closing, no marketing text.
 
 Product Information:
 ${productDetails}
 
-Professional Description Structure (Use Bullet Points):
+Rules:
+- Output ONLY specifications in bullet format (•)
+- Use the attributes/specs from the form above - format each as a clean bullet
+- Add only 1-2 relevant inferred specs if obvious from title/category (e.g. "Original box included" for phones)
+- Keep each bullet short and factual (e.g. "• Brand: Apple", "• RAM: 8 GB", "• Storage: 256 GB")
+- Do NOT add intro, conclusion, or promotional text
+- Total: 5-15 bullets max
+- Format: Plain bullet list only
 
-• Introduction & Value Proposition: Start with a compelling bullet that immediately communicates the product's value and appeal. Use professional language that establishes credibility.
-
-• Key Features & Specifications: List the most important features, specifications, and benefits in separate bullets. Highlight what makes this product stand out. Use precise, professional terminology.
-
-• Condition & Authenticity: Provide clear, honest bullets about the product's condition, age, usage history, and any relevant details. Build trust through transparency. Mention original packaging, accessories, or documentation if applicable.
-
-• Value & Benefits: Explain why this is an excellent purchase opportunity in bullet format. Emphasize value, quality, and unique advantages. Use persuasive but professional language.
-
-• Professional Closing: End with a courteous, professional call-to-action bullet that encourages interested buyers to reach out. Maintain a professional, approachable tone.
-
-Writing Guidelines:
-- Total length: 180-280 words
-- Format: Use bullet points (•) for each section
-- Tone: Professional, trustworthy, and engaging
-- Language: Clear, concise, and polished
-- Style: Business-appropriate with warmth
-- Keywords: Naturally integrated for SEO
-- Honesty: Accurate representation of product condition
-- Structure: Well-organized bullets with clear sections
-- Avoid: Overly casual language, excessive exclamation marks, or pushy sales tactics
-
-Generate a professional, polished product description using bullet points now:`;
+Generate the specification bullets now:`;
 
     if (!OPENAI_API_KEY) {
       console.error('OpenAI API key is missing from environment variables');
@@ -102,14 +93,14 @@ Generate a professional, polished product description using bullet points now:`;
         messages: [
           {
             role: 'system',
-            content: 'You are a professional copywriter with expertise in creating premium, polished product descriptions for high-quality classified advertisements. Your writing style is professional, trustworthy, and engaging. You excel at highlighting product value while maintaining honesty and transparency. Always follow the provided template structure precisely and create descriptions that build trust and encourage genuine buyer interest.'
+            content: 'You output only bullet-point specifications for product listings. No intro, no conclusion, no marketing text. Plain spec list only.'
           },
           {
             role: 'user',
             content: prompt
           }
         ],
-        max_tokens: 500,
+        max_tokens: 400,
         temperature: 0.7,
       })
     });
@@ -165,6 +156,91 @@ Generate a professional, polished product description using bullet points now:`;
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to generate description',
+    });
+  }
+});
+
+// Improve existing description using OpenAI
+router.post('/improve-description', authenticate, async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: 'Text is required to improve',
+      });
+    }
+
+    const trimmedText = text.trim();
+    if (trimmedText.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide at least 10 characters to improve',
+      });
+    }
+
+    if (!OPENAI_API_KEY || !OPENAI_API_KEY.startsWith('sk-')) {
+      return res.status(500).json({
+        success: false,
+        message: 'OpenAI API key is not configured.',
+      });
+    }
+
+    const prompt = `You are a professional copywriter. Improve the following product/ad description. Make it more professional, engaging, and effective for a marketplace listing. Fix grammar and spelling. Use bullet points where appropriate. Keep the same information and tone but polish the writing. Do not add fictitious details. Output only the improved text, no explanations.
+
+Original description:
+${trimmedText}
+
+Improved description:`;
+
+    const response = await fetch(OPENAI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You improve product descriptions for marketplace ads. Output only the improved text, nothing else.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 1000,
+        temperature: 0.5,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      if (response.status === 429) {
+        throw new Error('AI rate limit exceeded. Please try again later.');
+      }
+      throw new Error(errorData.error?.message || `API request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const improvedText = data.choices?.[0]?.message?.content?.trim();
+
+    if (!improvedText) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to improve description',
+      });
+    }
+
+    res.json({
+      success: true,
+      description: improvedText,
+    });
+  } catch (error) {
+    console.error('Improve description error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to improve description',
     });
   }
 });
@@ -303,6 +379,46 @@ router.post('/ad-price-suggestion', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get price suggestion'
+    });
+  }
+});
+
+// Sales assistant reply (Business Package sellers only) – Manglish, intent-aware
+router.post('/sales-reply', authenticate, async (req, res) => {
+  try {
+    const { roomId } = req.body;
+    if (!roomId) {
+      return res.status(400).json({
+        success: false,
+        message: 'roomId is required',
+      });
+    }
+    if (!OPENAI_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        message: 'OpenAI API key is not configured. Please add OPENAI_API_KEY to your .env file.',
+      });
+    }
+    const result = await generateSalesReply(
+      String(roomId),
+      req.user.id,
+      OPENAI_API_KEY
+    );
+    if (result.error) {
+      return res.status(400).json({
+        success: false,
+        message: result.error,
+      });
+    }
+    return res.json({
+      success: true,
+      reply: result.reply,
+    });
+  } catch (error) {
+    console.error('Sales reply error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to generate sales reply',
     });
   }
 });

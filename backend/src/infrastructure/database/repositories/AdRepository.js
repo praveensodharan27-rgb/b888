@@ -7,15 +7,56 @@ const prisma = new PrismaClient();
  */
 class AdRepository {
   async findById(id, include = {}) {
+    // Build include object based on what's requested
+    const includeOptions = {
+      user: include.user !== false ? {
+        select: {
+          id: true,
+          name: true,
+          avatar: true,
+          isVerified: true,
+          showPhone: true,
+          email: include.user === true ? true : false, // Only include email if explicitly requested
+          phone: include.user === true ? true : false,
+          createdAt: include.user === true ? true : false,
+          updatedAt: include.user === true ? true : false,
+        }
+      } : false,
+      category: include.category !== false ? {
+        select: {
+          id: true,
+          name: true,
+          slug: true
+        }
+      } : false,
+      subcategory: include.subcategory !== false ? {
+        select: {
+          id: true,
+          name: true,
+          slug: true
+        }
+      } : false,
+      location: include.location !== false ? {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          city: true,
+          state: true
+        }
+      } : false,
+    };
+
+    // Remove false values from include
+    Object.keys(includeOptions).forEach(key => {
+      if (includeOptions[key] === false) {
+        delete includeOptions[key];
+      }
+    });
+
     return await prisma.ad.findUnique({
       where: { id },
-      include: {
-        user: include.user || false,
-        category: include.category || false,
-        subcategory: include.subcategory || false,
-        location: include.location || false,
-        ...include
-      }
+      include: includeOptions
     });
   }
 
@@ -93,7 +134,9 @@ class AdRepository {
             select: {
               id: true,
               name: true,
-              slug: true
+              slug: true,
+              city: true,
+              state: true
             }
           }
         }
@@ -110,13 +153,44 @@ class AdRepository {
     };
   }
 
+  /**
+   * Fetch up to `take` ads for ranking (no skip). Used by ranking flow.
+   */
+  async findManyRaw(where, take = 300, options = {}) {
+    const ads = await prisma.ad.findMany({
+      where,
+      take,
+      orderBy: { createdAt: 'desc' },
+      include: options.include || {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            avatar: true,
+            isVerified: true
+          }
+        },
+        category: { select: { id: true, name: true, slug: true } },
+        subcategory: { select: { id: true, name: true, slug: true } },
+        location: { select: { id: true, name: true, slug: true, city: true, state: true } }
+      }
+    });
+    return { ads };
+  }
+
   async create(data) {
+    // Prisma expects images as String[] (URLs only); upload middleware returns { url, altText }[]
+    const imageUrls = (data.images || []).map((img) =>
+      typeof img === 'string' ? img : (img?.url || img)
+    ).filter(Boolean);
+
     return await prisma.ad.create({
       data: {
         title: data.title,
         description: data.description,
         price: parseFloat(data.price),
-        originalPrice: data.originalPrice ? parseFloat(data.originalPrice) : null,
+        originalPrice: data.originalPrice != null && data.originalPrice !== '' ? parseFloat(data.originalPrice) : null,
+        discount: data.discount != null && data.discount !== '' ? parseFloat(data.discount) : null,
         condition: data.condition || 'USED',
         status: data.status || 'PENDING',
         userId: data.userId,
@@ -127,12 +201,13 @@ class AdRepository {
         city: data.city || null,
         neighbourhood: data.neighbourhood || null,
         exactLocation: data.exactLocation || null,
-        images: data.images || [],
-        attributes: data.attributes || {},
+        images: imageUrls,
+        attributes: data.attributes && typeof data.attributes === 'object' ? data.attributes : (data.attributes || {}),
         premiumType: data.premiumType || null,
         isUrgent: data.isUrgent || false,
         expiresAt: data.expiresAt,
-        premiumExpiresAt: data.premiumExpiresAt || null
+        premiumExpiresAt: data.premiumExpiresAt || null,
+        packageType: data.packageType || 'NORMAL'
       },
       include: {
         user: {
@@ -151,24 +226,45 @@ class AdRepository {
   }
 
   async update(id, data) {
+    // Prisma expects images as String[] (URLs only); convert if objects
+    const imageUrls = data.images
+      ? (data.images || []).map((img) =>
+          typeof img === 'string' ? img : (img?.url || img)
+        ).filter(Boolean)
+      : undefined;
+
     return await prisma.ad.update({
       where: { id },
       data: {
         ...(data.title && { title: data.title }),
         ...(data.description && { description: data.description }),
         ...(data.price !== undefined && { price: parseFloat(data.price) }),
-        ...(data.originalPrice !== undefined && { originalPrice: data.originalPrice ? parseFloat(data.originalPrice) : null }),
+        ...(data.originalPrice !== undefined && { originalPrice: data.originalPrice != null && data.originalPrice !== '' ? parseFloat(data.originalPrice) : null }),
+        ...(data.discount !== undefined && { discount: data.discount != null && data.discount !== '' ? parseFloat(data.discount) : null }),
         ...(data.condition && { condition: data.condition }),
         ...(data.status && { status: data.status }),
         ...(data.categoryId && { categoryId: data.categoryId }),
         ...(data.subcategoryId !== undefined && { subcategoryId: data.subcategoryId || null }),
         ...(data.locationId !== undefined && { locationId: data.locationId || null }),
-        ...(data.images && { images: data.images }),
-        ...(data.attributes && { attributes: data.attributes }),
+        ...(data.state !== undefined && { state: data.state || null }),
+        ...(data.city !== undefined && { city: data.city || null }),
+        ...(data.neighbourhood !== undefined && { neighbourhood: data.neighbourhood || null }),
+        ...(data.exactLocation !== undefined && { exactLocation: data.exactLocation || null }),
+        ...(imageUrls !== undefined && { images: imageUrls }),
+        ...(data.attributes !== undefined && { attributes: typeof data.attributes === 'object' ? data.attributes : {} }),
         ...(data.premiumType !== undefined && { premiumType: data.premiumType }),
         ...(data.isUrgent !== undefined && { isUrgent: data.isUrgent }),
         ...(data.expiresAt && { expiresAt: data.expiresAt }),
         ...(data.premiumExpiresAt !== undefined && { premiumExpiresAt: data.premiumExpiresAt }),
+        ...(data.slug !== undefined && { slug: data.slug || null }),
+        ...(data.stateSlug !== undefined && { stateSlug: data.stateSlug || null }),
+        ...(data.citySlug !== undefined && { citySlug: data.citySlug || null }),
+        ...(data.categorySlug !== undefined && { categorySlug: data.categorySlug || null }),
+        ...(data.moderationFlags !== undefined && { moderationFlags: data.moderationFlags }),
+        ...(data.moderationStatus !== undefined && { moderationStatus: data.moderationStatus }),
+        ...(data.rejectionReason !== undefined && { rejectionReason: data.rejectionReason }),
+        ...(data.autoRejected !== undefined && { autoRejected: !!data.autoRejected }),
+        ...(data.postedAt !== undefined && { postedAt: data.postedAt }),
         updatedAt: new Date()
       },
       include: {

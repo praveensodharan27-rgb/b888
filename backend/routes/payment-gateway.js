@@ -462,16 +462,15 @@ router.get('/test-user/:userId', authenticate, async (req, res) => {
  * @access  Public
  */
 router.get('/status', (req, res) => {
+  const isProd = process.env.NODE_ENV === 'production';
   res.json({
     success: true,
-    devMode: paymentGatewayService.DEV_MODE,
+    ...(!isProd && { devMode: paymentGatewayService.DEV_MODE }),
     razorpayConfigured: paymentGatewayService.razorpayInitialized(),
-    razorpayKeyId: process.env.RAZORPAY_KEY_ID ? process.env.RAZORPAY_KEY_ID.substring(0, 10) + '...' : null,
-    message: paymentGatewayService.DEV_MODE
-      ? 'Payment gateway running in development mode (mock payments)'
-      : paymentGatewayService.razorpayInitialized()
-      ? 'Payment gateway running in production mode with Razorpay'
-      : 'Payment gateway running but Razorpay not configured'
+    ...(!isProd && process.env.RAZORPAY_KEY_ID && { razorpayKeyId: process.env.RAZORPAY_KEY_ID.substring(0, 10) + '...' }),
+    message: paymentGatewayService.razorpayInitialized()
+      ? 'Payment gateway configured'
+      : 'Payment gateway not configured'
   });
 });
 

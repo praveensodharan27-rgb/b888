@@ -222,11 +222,9 @@ const activateBusinessPackage = async (packageId, userId, paymentId) => {
     const duration = package.duration || 30; // days
     const expiresAt = new Date(Date.now() + duration * 24 * 60 * 60 * 1000);
 
-    // Update package - set all activation fields including status and payment ID
+    // Update package - set activation fields (BusinessPackage schema: status, startDate, expiresAt, razorpayPaymentId only)
     const updateData = {
       status: 'paid',
-      isActive: true,
-      activatedAt: new Date(),
       expiresAt: expiresAt,
       startDate: new Date()
     };

@@ -1,21 +1,35 @@
 require('dotenv').config();
 
+const isProduction = process.env.NODE_ENV === 'production';
+const isTest = process.env.NODE_ENV === 'test';
+const isDev = !isProduction && !isTest;
+
 /**
  * Environment Configuration
- * Centralized environment variable management
+ * Production: DATABASE_URL and JWT_SECRET have NO defaults (empty if unset → app exits).
+ * Development: optional dev fallbacks so local runs without .env still start (use .env for real DB).
  */
 const env = {
   // Server
   NODE_ENV: process.env.NODE_ENV || 'development',
   PORT: parseInt(process.env.PORT || '5000', 10),
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3000',
+  isDev,
+  isTest,
+  isProduction,
 
-  // Database - MongoDB
-  DATABASE_URL: process.env.DATABASE_URL || process.env.MONGO_URI || 'mongodb+srv://b888:NQEbkx2JWyBNJz7Z@cluster0.cj9oi8t.mongodb.net/olx_app?retryWrites=true&w=majority&appName=Cluster0',
-  MONGO_URI: process.env.MONGO_URI || process.env.DATABASE_URL || 'mongodb+srv://b888:NQEbkx2JWyBNJz7Z@cluster0.cj9oi8t.mongodb.net/olx_app?retryWrites=true&w=majority&appName=Cluster0',
+  // Database - MongoDB (production: no default = empty → validateEnv exits)
+  DATABASE_URL: isProduction
+    ? (process.env.DATABASE_URL || process.env.MONGO_URI || '')
+    : (process.env.DATABASE_URL || process.env.MONGO_URI || ''),
+  MONGO_URI: isProduction
+    ? (process.env.MONGO_URI || process.env.DATABASE_URL || '')
+    : (process.env.MONGO_URI || process.env.DATABASE_URL || ''),
 
-  // JWT
-  JWT_SECRET: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+  // JWT (production: no default = empty → validateEnv exits)
+  JWT_SECRET: isProduction
+    ? (process.env.JWT_SECRET || '')
+    : (process.env.JWT_SECRET || 'dev-secret-do-not-use-in-production'),
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
 
   // Email (SMTP)
@@ -64,23 +78,27 @@ const env = {
   FACEBOOK_APP_ID: process.env.FACEBOOK_APP_ID,
   FACEBOOK_APP_SECRET: process.env.FACEBOOK_APP_SECRET,
 
-  // Session (for OAuth)
-  SESSION_SECRET: process.env.SESSION_SECRET || process.env.JWT_SECRET,
+  // Session (for OAuth) – production: no fallback to JWT_SECRET if empty
+  SESSION_SECRET: isProduction
+    ? (process.env.SESSION_SECRET || process.env.JWT_SECRET || '')
+    : (process.env.SESSION_SECRET || process.env.JWT_SECRET || 'dev-session'),
   BACKEND_URL: process.env.BACKEND_URL || `http://localhost:${process.env.PORT || '5000'}`,
 };
 
 /**
- * Validate required environment variables
+ * Validate required environment variables.
+ * Production: DATABASE_URL, JWT_SECRET, and SESSION_SECRET must be set (non-empty) or process exits.
  */
 const validateEnv = () => {
-  const required = ['DATABASE_URL', 'JWT_SECRET'];
-  const missing = required.filter(key => !env[key]);
+  const required = isProduction ? ['DATABASE_URL', 'JWT_SECRET', 'SESSION_SECRET'] : ['DATABASE_URL', 'JWT_SECRET'];
+  const missing = required.filter(key => !env[key] || String(env[key]).trim() === '');
 
   if (missing.length > 0) {
-    console.error('❌ Missing required environment variables:', missing.join(', '));
-    if (env.NODE_ENV === 'production') {
+    console.error('❌ Missing or empty required environment variables:', missing.join(', '));
+    if (isProduction) {
       process.exit(1);
     }
+    console.warn('⚠️ Development mode: set DATABASE_URL and JWT_SECRET in .env for real DB and auth.');
   }
 };
 

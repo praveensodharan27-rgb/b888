@@ -1,0 +1,388 @@
+[
+  {
+    "category": "mobiles",
+    "subcategories": {
+      "mobile-phones": {
+        "fields": ["brand", "model", "ram", "storage", "camera", "battery", "os", "condition"],
+        "brands": {
+          "Samsung": ["Galaxy S21", "Galaxy A52", "Galaxy M32"],
+          "Apple": ["iPhone 11", "iPhone 12", "iPhone 13", "iPhone 14"],
+          "Xiaomi": ["Redmi Note 10", "Redmi 12", "Mi 11X"],
+          "Realme": ["Narzo 50", "C55", "GT Neo"],
+          "OnePlus": ["Nord", "9R", "10 Pro"]
+        }
+      },
+      "tablets": {
+        "fields": ["brand", "model", "ram", "storage", "screen_size", "battery", "os", "condition"],
+        "brands": {
+          "Apple": ["iPad 9th Gen", "iPad Air", "iPad Pro"],
+          "Samsung": ["Galaxy Tab S7", "Tab A8"],
+          "Lenovo": ["Tab M10", "Tab P11"]
+        }
+      },
+      "smart-watches": {
+        "fields": ["brand", "model", "display", "battery", "connectivity", "condition"],
+        "brands": {
+          "Apple": ["Watch SE", "Series 7", "Series 8", "Ultra"],
+          "Samsung": ["Watch 4", "Watch 5", "Watch 6"],
+          "Noise": ["ColorFit Pro", "Evolve 3"],
+          "Boat": ["Wave Pro", "Xtend"]
+        }
+      },
+      "accessories": {
+        "fields": ["type", "brand", "model", "compatible_with", "color", "warranty", "condition"],
+        "types": ["Charger", "USB Cable", "Power Bank", "Earphones", "Headphones", "Bluetooth Speaker", "Mobile Cover", "Screen Protector", "Memory Card", "OTG Cable", "Car Charger", "Mobile Stand"],
+        "brands": {
+          "Samsung": ["25W Fast Charger", "15W Wireless Charger", "Type-C Cable"],
+          "Apple": ["20W Adapter", "MagSafe Charger", "Lightning Cable", "EarPods"],
+          "Xiaomi": ["33W Fast Charger", "Power Bank 10000mAh", "Type-C Cable"],
+          "OnePlus": ["Warp Charger 65W", "Type-C Cable", "Buds Z"],
+          "Realme": ["Dart Charger 30W", "Buds Air", "Power Bank"],
+          "boAt": ["Airdopes 131", "BassHeads 100", "Stone 1200 Speaker"],
+          "JBL": ["Tune 510BT", "Flip 5 Speaker", "C100SI Earphones"],
+          "Portronics": ["Power Bank 20000mAh", "Konnect Cable", "Bluetooth Receiver"],
+          "Syska": ["Charger 18W", "Power Bank", "Earphones"],
+          "Ambrane": ["Power Bank 10000mAh", "Fast Charger", "Type-C Cable"]
+        },
+        "compatibility": {
+          "Android": ["Samsung", "Xiaomi", "Realme", "OnePlus", "Vivo", "Oppo"],
+          "iPhone": ["iPhone 11", "iPhone 12", "iPhone 13", "iPhone 14", "iPhone 15"],
+          "Universal": ["All Smartphones", "Tablets", "Bluetooth Devices"]
+        }
+      }
+    }
+  },
+  {
+    "category": "electronics-appliances",
+    "subcategories": {
+      "laptops": {
+        "fields": ["brand", "model", "processor", "ram", "storage", "graphics", "condition"],
+        "brands": {
+          "HP": ["Pavilion", "Victus", "Envy"],
+          "Dell": ["Inspiron", "XPS", "Latitude"],
+          "Lenovo": ["IdeaPad", "ThinkPad", "Legion"],
+          "Asus": ["VivoBook", "ROG", "TUF"],
+          "Apple": ["MacBook Air", "MacBook Pro"]
+        }
+      },
+      "tvs": {
+        "fields": ["brand", "model", "screen_size", "resolution", "smart_tv", "condition"],
+        "brands": {
+          "Sony": ["Bravia X75", "Bravia A80"],
+          "Samsung": ["Crystal UHD", "QLED Q60"],
+          "LG": ["OLED C2", "NanoCell"]
+        }
+      },
+      "cameras": {
+        "fields": ["brand", "model", "megapixel", "lens_type", "condition"],
+        "brands": {
+          "Canon": ["EOS 1500D", "EOS 200D"],
+          "Nikon": ["D3500", "D5600"],
+          "Sony": ["A6400", "A7 III"]
+        }
+      },
+      "home-appliances": {
+        "fields": ["brand", "model", "power", "capacity", "type", "condition"],
+        "brands": {
+          "LG": ["FHM1207", "P8035", "Washing Machine", "Refrigerator"],
+          "Samsung": ["WA70", "WA65", "Washing Machine", "Refrigerator"],
+          "Whirlpool": ["360 Bloomwash", "FreshCare", "Washing Machine"]
+        },
+        "types": ["Washing Machine", "Refrigerator", "AC", "Water Purifier", "Other"]
+      },
+      "kitchen-appliances": {
+        "fields": ["brand", "model", "power", "capacity", "type", "condition"],
+        "brands": {
+          "Prestige": ["Atlas Mixer", "Deluxe Cooker", "Iris Plus"],
+          "Philips": ["HL7756", "Daily Collection", "Air Fryer"],
+          "Bajaj": ["Rex Mixer", "Majesty Oven", "Toaster"]
+        },
+        "types": ["Mixer Grinder", "Cooker", "Oven", "Toaster", "Air Fryer", "Other"]
+      },
+      "gaming-consoles": {
+        "fields": ["brand", "model", "storage", "controllers", "condition"],
+        "brands": {
+          "Sony": ["PS4", "PS5"],
+          "Microsoft": ["Xbox One", "Xbox Series X"],
+          "Nintendo": ["Switch", "Switch OLED"]
+        }
+      }
+    }
+  },
+  {
+    "category": "vehicles",
+    "subcategories": {
+      "cars": {
+        "fields": ["brand", "model", "year", "fuel", "km_driven", "transmission", "owners", "color"],
+        "brands": {
+          "Maruti": ["Swift", "Baleno", "Alto", "WagonR", "Brezza"],
+          "Hyundai": ["i10", "i20", "Creta", "Verna"],
+          "Tata": ["Nexon", "Punch", "Altroz", "Harrier"],
+          "Mahindra": ["XUV300", "XUV700", "Scorpio"],
+          "Honda": ["City", "Amaze", "Jazz"]
+        }
+      },
+      "motorcycles": {
+        "fields": ["brand", "model", "year", "engine_cc", "km_driven", "fuel", "color"],
+        "brands": {
+          "Hero": ["Splendor", "HF Deluxe", "Xpulse"],
+          "Bajaj": ["Pulsar 150", "NS200", "Dominar"],
+          "TVS": ["Apache RTR", "Raider", "Jupiter"],
+          "RoyalEnfield": ["Classic 350", "Bullet", "Meteor"]
+        }
+      },
+      "scooters": {
+        "fields": ["brand", "model", "year", "engine_cc", "km_driven", "fuel"],
+        "brands": {
+          "Honda": ["Activa", "Dio"],
+          "TVS": ["Jupiter", "Ntorq"],
+          "Suzuki": ["Access", "Burgman"]
+        }
+      },
+      "bicycles": {
+        "fields": ["brand", "model", "gear", "type", "condition"]
+      },
+      "commercial-vehicles": {
+        "fields": ["brand", "model", "year", "capacity", "fuel", "km_driven"]
+      },
+      "spare-parts": {
+        "fields": ["part_name", "brand", "vehicle_type", "compatible_model", "condition"]
+      }
+    }
+  },
+  {
+    "category": "properties",
+    "subcategories": {
+      "apartments": { "fields": ["type", "bedrooms", "bathrooms", "area_sqft", "furnishing", "price"] },
+      "houses": { "fields": ["type", "bedrooms", "bathrooms", "area_sqft", "furnishing", "price"] },
+      "plots": { "fields": ["area_sqft", "facing", "approved", "price"] },
+      "commercial-space": { "fields": ["type", "area_sqft", "parking", "price"] },
+      "pg-hostel": { "fields": ["sharing", "meals", "rent", "deposit"] }
+    }
+  },
+  {
+    "category": "home-furniture",
+    "subcategories": {
+      "sofa": {
+        "fields": ["brand", "model", "material", "seater", "color", "condition"],
+        "brands": {
+          "Chayanam": ["3 Seater", "L-Shaped", "Sofa Cum Bed", "Sectional", "Recliner"],
+          "Godrej Interio": ["Sofas", "L-Shaped", "Sofa Cum Bed", "Recliner"],
+          "Nilkamal": ["Plastic Sofa", "Outdoor Sofa", "Bean Bag"],
+          "Wakefit": ["Fabric Sofa", "L-Shaped", "3 Seater"],
+          "IKEA": ["KIVIK", "SÖDERHAMN", "LANDSKRONA", "EKTORP"],
+          "HomeTown": ["Fabric Sofa", "Leather Sofa", "L-Shaped"],
+          "Durian": ["Sofa Set", "L-Shaped", "Recliner"],
+          "Spacewood": ["Office Sofa", "Reception Sofa", "L-Shaped"],
+          "Evok": ["Fabric", "Leather", "L-Shaped"],
+          "Other": ["Other"]
+        }
+      },
+      "beds": {
+        "fields": ["brand", "model", "size", "material", "storage", "condition"],
+        "brands": {
+          "Chayanam": ["Single Bed", "Double Bed", "King Bed", "Bunk Bed", "Storage Bed"],
+          "Godrej Interio": ["Single", "Double", "King", "Storage Bed", "Bunk"],
+          "Wakefit": ["Ortho Mattress", "Dual Comfort", "Bed Frame"],
+          "Nilkamal": ["Plastic Bed", "Storage Bed", "Bunk Bed"],
+          "IKEA": ["MALM", "HEMNES", "Brimnes", "KLEPPSTAD"],
+          "HomeTown": ["Wooden Bed", "Storage Bed", "King Size"],
+          "Durian": ["Bed with Storage", "King Bed", "Queen Bed"],
+          "Sleepwell": ["Mattress", "Beds"],
+          "Kurl-on": ["Mattress", "Beds"],
+          "Other": ["Other"]
+        }
+      },
+      "wardrobe": {
+        "fields": ["brand", "model", "doors", "material", "condition"],
+        "brands": {
+          "Chayanam": ["2 Door", "3 Door", "4 Door", "Sliding", "Mirror"],
+          "Godrej Interio": ["Wardrobe", "Sliding", "Mirror Wardrobe"],
+          "Nilkamal": ["Plastic Wardrobe", "Storage Cabinet"],
+          "IKEA": ["PAX", "PLATSA", "MALM"],
+          "HomeTown": ["Wooden Wardrobe", "Sliding Wardrobe"],
+          "Durian": ["Wardrobe", "Sliding", "Mirror"],
+          "Spacewood": ["Office Wardrobe", "Modular Wardrobe"],
+          "Other": ["Other"]
+        }
+      },
+      "tables": {
+        "fields": ["brand", "model", "type", "material", "condition"],
+        "brands": {
+          "Chayanam": ["Dining Table", "Study Table", "Coffee Table", "Office Table"],
+          "Godrej Interio": ["Dining", "Study", "Coffee Table", "Office"],
+          "Nilkamal": ["Plastic Table", "Study Table", "Dining Table"],
+          "IKEA": ["LACK", "MALM", "EKEDALEN", "INGO"],
+          "HomeTown": ["Dining Table", "Study Table", "Computer Table"],
+          "Durian": ["Dining", "Study", "Coffee Table"],
+          "Spacewood": ["Office Desk", "Conference Table", "Study Table"],
+          "Other": ["Other"]
+        }
+      },
+      "home-decor": { "fields": ["type", "material", "condition"] },
+      "lighting": { "fields": ["type", "wattage", "color", "condition"] }
+    }
+  },
+  {
+    "category": "fashion",
+    "subcategories": {
+      "men": {
+        "fields": ["brand", "size", "type", "material", "color", "condition"],
+        "types": ["Shirt", "T-Shirt", "Jeans", "Trousers", "Jacket", "Suit", "Kurta", "Other"]
+      },
+      "women": {
+        "fields": ["brand", "size", "type", "material", "color", "condition"],
+        "types": ["Saree", "Salwar", "Dress", "Top", "Jeans", "Jacket", "Kurti", "Other"]
+      },
+      "kids": {
+        "fields": ["brand", "size", "age_group", "type", "condition"],
+        "types": ["Clothing", "Footwear", "Accessories", "Other"]
+      },
+      "watches": {
+        "fields": ["brand", "model", "type", "condition"],
+        "brands": {
+          "Casio": ["G-Shock", "Edifice", "Vintage"],
+          "Fossil": ["Gen 5", "Hybrid HR"],
+          "Titan": ["Edge", "Neo", "Raga"]
+        }
+      },
+      "jewellery": {
+        "fields": ["material", "weight", "type", "condition"],
+        "types": ["Necklace", "Earrings", "Ring", "Bracelet", "Bangle", "Other"]
+      },
+      "footwear": {
+        "fields": ["brand", "size", "type", "condition"],
+        "brands": {
+          "Nike": ["Air Max", "Revolution", "Downshifter"],
+          "Adidas": ["Ultraboost", "Runfalcon", "Superstar"],
+          "Puma": ["Smash", "Future Rider", "RS-X"]
+        },
+        "types": ["Sneakers", "Formal", "Casual", "Sports", "Sandals", "Other"]
+      },
+      "bags": {
+        "fields": ["brand", "type", "capacity", "condition"],
+        "types": ["Backpack", "Handbag", "Laptop Bag", "Wallet", "Travel Bag", "Other"]
+      }
+    }
+  },
+  {
+    "category": "books-sports-hobbies",
+    "subcategories": {
+      "books": {
+        "fields": ["title", "author", "publisher", "edition", "language", "condition"],
+        "types": ["Fiction", "Non-Fiction", "Academic", "Children", "Comics", "Magazine", "Other"]
+      },
+      "musical-instruments": {
+        "fields": ["brand", "model", "type", "condition"],
+        "brands": {
+          "Yamaha": ["Piano", "Guitar", "Keyboard"],
+          "Fender": ["Stratocaster", "Telecaster", "Bass"],
+          "Casio": ["Keyboard", "Digital Piano"]
+        }
+      },
+      "sports-gear": {
+        "fields": ["brand", "sport", "type", "condition"],
+        "brands": {
+          "Nike": ["Football", "Running Shoes", "Cricket"],
+          "Adidas": ["Football", "Running", "Cricket"],
+          "Puma": ["Football", "Running", "Cricket"],
+          "Decathlon": ["Cycling", "Fitness", "Tennis", "Badminton"]
+        },
+        "types": ["Footwear", "Apparel", "Equipment", "Accessories", "Other"]
+      },
+      "art-craft": { "fields": ["type", "material", "condition"] },
+      "toys": { "fields": ["brand", "age_group", "type", "condition"] },
+      "collectibles": { "fields": ["name", "year", "rarity", "condition"] }
+    }
+  },
+  {
+    "category": "pets",
+    "subcategories": {
+      "dogs": { "fields": ["breed", "age", "gender", "vaccinated"] },
+      "cats": { "fields": ["breed", "age", "gender", "vaccinated"] },
+      "birds": { "fields": ["breed", "age", "gender"] },
+      "fish": { "fields": ["type", "size", "quantity"] },
+      "pet-accessories": { "fields": ["type", "brand", "condition"] }
+    }
+  },
+  {
+    "category": "services",
+    "subcategories": {
+      "repair-services": { "fields": ["service_type", "experience", "location"] },
+      "cleaning": { "fields": ["service_type", "area", "price"] },
+      "beauty-spa": { "fields": ["service_type", "gender", "price"] },
+      "education": { "fields": ["subject", "mode", "experience"] },
+      "events": { "fields": ["event_type", "capacity", "price"] },
+      "business-services": { "fields": ["service_type", "experience"] }
+    }
+  },
+  {
+    "category": "jobs",
+    "subcategories": {
+      "full-time": { "fields": ["role", "experience", "salary", "location"] },
+      "part-time": { "fields": ["role", "hours", "salary", "location"] },
+      "freelance": { "fields": ["role", "project_type", "payment"] },
+      "internship": { "fields": ["role", "duration", "stipend"] },
+      "contract": { "fields": ["role", "duration", "salary"] }
+    }
+  },
+  {
+    "category": "commercial-industrial",
+    "subcategories": {
+      "industrial-machines": { "fields": ["brand", "model", "capacity", "condition"] },
+      "tools": { "fields": ["brand", "type", "condition"] },
+      "medical-equipment": { "fields": ["brand", "model", "certified", "condition"] },
+      "packaging-machines": { "fields": ["brand", "model", "capacity", "condition"] }
+    }
+  },
+  {
+    "category": "free-stuff",
+    "subcategories": {
+      "free-furniture": { "fields": ["type", "condition"] },
+      "free-electronics": { "fields": ["type", "condition"] },
+      "misc-free": { "fields": ["type", "condition"] }
+    }
+  },
+  {
+    "category": "baby-kids",
+    "subcategories": {
+      "clothes": { "fields": ["brand", "size", "age_group", "condition"] },
+      "toys": { "fields": ["brand", "age_group", "type", "condition"] },
+      "strollers": { "fields": ["brand", "model", "condition"] },
+      "cribs": { "fields": ["brand", "size", "condition"] },
+      "kids-furniture": { "fields": ["brand", "type", "condition"] }
+    }
+  },
+  {
+    "category": "beauty-health",
+    "subcategories": {
+      "cosmetics": {
+        "fields": ["brand", "type", "expiry", "condition"],
+        "brands": {
+          "Lakme": ["9to5", "Cushion Matte"],
+          "Maybelline": ["Fit Me", "SuperStay"],
+          "LOréal": ["Infallible", "True Match"]
+        }
+      },
+      "skincare": { "fields": ["brand", "type", "expiry", "condition"] },
+      "medical-devices": {
+        "fields": ["brand", "model", "certified", "condition"],
+        "brands": {
+          "Omron": ["BP Monitor HEM7120", "HEM8712"],
+          "DrMorepen": ["BG03", "BP09"],
+          "AccuChek": ["Active", "Instant"]
+        }
+      },
+      "supplements": { "fields": ["brand", "type", "expiry", "condition"] }
+    }
+  },
+  {
+    "category": "other-misc",
+    "subcategories": {
+      "agriculture": { "fields": ["type", "area", "condition"] },
+      "office-supplies": { "fields": ["brand", "type", "condition"] },
+      "antiques": { "fields": ["name", "year", "origin", "condition"] },
+      "miscellaneous": { "fields": ["type", "details", "condition"] }
+    }
+  }
+]

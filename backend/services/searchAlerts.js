@@ -4,6 +4,33 @@ const nodemailer = require('nodemailer');
 const prisma = new PrismaClient();
 
 /**
+ * Helper function to detect database connection errors
+ */
+function isDatabaseConnectionError(error) {
+  if (!error) return false;
+  
+  // Prisma error codes for connection issues
+  const connectionErrorCodes = ['P2010', 'P1001', 'P1002', 'P1008'];
+  if (connectionErrorCodes.includes(error.code)) return true;
+  
+  // Check error message for connection-related keywords
+  const errorMessage = error.message || error.meta?.message || '';
+  const connectionKeywords = [
+    'server selection timeout',
+    'no available servers',
+    'connection',
+    'network',
+    'econnrefused',
+    'etimedout',
+    'fatal alert',
+    'internalerror'
+  ];
+  
+  const messageLower = errorMessage.toLowerCase();
+  return connectionKeywords.some(keyword => messageLower.includes(keyword));
+}
+
+/**
  * Get search alert settings
  */
 async function getSettings() {
@@ -24,7 +51,15 @@ async function getSettings() {
     
     return settings;
   } catch (error) {
-    console.error('Error fetching search alert settings:', error);
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching search alert settings - using defaults');
+    } else {
+      console.error('❌ Error fetching search alert settings:', {
+        code: error.code,
+        message: error.message || error.meta?.message,
+      });
+    }
     // Return defaults on error
     return {
       enabled: true,
@@ -246,7 +281,15 @@ async function findMatchingProducts(queryText, filters = {}) {
     
     return products;
   } catch (error) {
-    console.error('Error finding matching products:', error);
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error finding matching products');
+    } else {
+      console.error('Error finding matching products:', {
+        code: error.code,
+        message: error.message || error.meta?.message,
+      });
+    }
     return [];
   }
 }
@@ -268,20 +311,31 @@ async function processSearchAlerts() {
     
     // Get unprocessed search queries from the last check interval
     const checkIntervalMs = settings.checkIntervalHours * 60 * 60 * 1000;
-    const queries = await prisma.searchQuery.findMany({
-      where: {
-        processed: false,
-        createdAt: {
-          gte: new Date(Date.now() - checkIntervalMs)
+    
+    let queries;
+    try {
+      queries = await prisma.searchQuery.findMany({
+        where: {
+          processed: false,
+          createdAt: {
+            gte: new Date(Date.now() - checkIntervalMs)
+          },
+          userEmail: {
+            not: null
+          }
         },
-        userEmail: {
-          not: null
+        orderBy: {
+          createdAt: 'asc'
         }
-      },
-      orderBy: {
-        createdAt: 'asc'
+      });
+    } catch (error) {
+      // Handle database connection errors gracefully
+      if (isDatabaseConnectionError(error)) {
+        console.warn('⚠️ Database connection error - skipping search alerts processing');
+        return;
       }
-    });
+      throw error; // Re-throw other errors
+    }
     
     console.log(`📊 Found ${queries.length} unprocessed search queries`);
     
@@ -321,31 +375,65 @@ async function processSearchAlerts() {
           }
           
           // Mark query as processed
-          await prisma.searchQuery.update({
-            where: { id: query.id },
-            data: { processed: true }
-          });
+          try {
+            await prisma.searchQuery.update({
+              where: { id: query.id },
+              data: { processed: true }
+            });
+          } catch (updateError) {
+            // Handle database connection errors gracefully
+            if (isDatabaseConnectionError(updateError)) {
+              console.warn(`⚠️ Database connection error - could not mark query ${query.id} as processed`);
+            } else {
+              console.error(`Error updating query ${query.id}:`, updateError);
+            }
+            // Continue processing other queries
+            continue;
+          }
           
           totalProcessed++;
         } catch (error) {
-          console.error(`Error processing query ${query.id}:`, error);
+          // Handle database connection errors gracefully
+          if (isDatabaseConnectionError(error)) {
+            console.warn(`⚠️ Database connection error processing query ${query.id}`);
+          } else {
+            console.error(`Error processing query ${query.id}:`, error);
+          }
         }
       }
       
       // Mark remaining queries as processed (exceeded limit)
       const remainingQueries = userQueries.slice(settings.maxEmailsPerUser);
       for (const query of remainingQueries) {
-        await prisma.searchQuery.update({
-          where: { id: query.id },
-          data: { processed: true }
-        });
-        totalProcessed++;
+        try {
+          await prisma.searchQuery.update({
+            where: { id: query.id },
+            data: { processed: true }
+          });
+          totalProcessed++;
+        } catch (updateError) {
+          // Handle database connection errors gracefully
+          if (isDatabaseConnectionError(updateError)) {
+            console.warn(`⚠️ Database connection error - could not mark query ${query.id} as processed`);
+            break; // Stop trying to update if database is unavailable
+          } else {
+            console.error(`Error updating query ${query.id}:`, updateError);
+          }
+        }
       }
     }
     
     console.log(`✅ Search alerts processing complete: ${emailsSent} emails sent, ${totalProcessed} queries processed`);
   } catch (error) {
-    console.error('❌ Error in search alerts processing:', error);
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error in search alerts processing - will retry on next run');
+    } else {
+      console.error('❌ Error in search alerts processing:', {
+        code: error.code,
+        message: error.message || error.meta?.message,
+      });
+    }
   }
 }
 
@@ -366,7 +454,15 @@ async function saveSearchQuery(query, userId, userEmail, category, location, fil
     });
     console.log('💾 Search query saved for alerts:', query);
   } catch (error) {
-    console.error('Error saving search query:', error);
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error - could not save search query for alerts');
+    } else {
+      console.error('Error saving search query:', {
+        code: error.code,
+        message: error.message || error.meta?.message,
+      });
+    }
   }
 }
 

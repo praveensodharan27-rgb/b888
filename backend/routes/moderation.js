@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
 const { authenticate, authorize } = require('../middleware/auth');
-const { moderateAd, getModerationStatus } = require('../services/contentModeration');
+const { moderateAd } = require('../services/contentModeration');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -24,14 +24,22 @@ router.get('/statistics', async (req, res) => {
       flaggedAds
     ] = await Promise.all([
       prisma.ad.count(),
-      prisma.ad.count({ where: { moderationStatus: 'approved', autoRejected: false } }),
-      prisma.ad.count({ where: { autoRejected: true } }),
-      prisma.ad.count({ where: { status: 'PENDING', moderationStatus: 'pending' } }),
       prisma.ad.count({
         where: {
+          status: 'APPROVED',
+          autoRejected: false,
+          moderationStatus: { in: ['approved', 'approved_after_review', 'manually_approved'] }
+        }
+      }),
+      prisma.ad.count({ where: { autoRejected: true } }),
+      prisma.ad.count({ where: { status: 'PENDING' } }),
+      prisma.ad.count({
+        where: {
+          status: 'REJECTED',
           OR: [
             { moderationStatus: 'flagged' },
-            { moderationStatus: 'rejected' }
+            { moderationStatus: 'rejected' },
+            { moderationStatus: 'rejected_after_review' }
           ]
         }
       })
@@ -175,19 +183,29 @@ router.post('/ads/:id/remoderate', async (req, res) => {
     }
 
     // Run moderation again
-    const moderationResult = await moderateAd(ad.title, ad.description, ad.images);
-    const moderationStatus = getModerationStatus(moderationResult);
+    const moderationResult = await moderateAd(ad.title, ad.description, ad.images || []);
+    const flags = moderationResult.moderationFlags || {};
+    const imageDetails = flags.imageDetails || [];
+    const moderationFlags = {
+      textModeration: { flagged: !!flags.hasAdultText },
+      imageModeration: imageDetails.map((d) => ({ safe: d.isSafe !== false }))
+    };
 
-    // Update ad with new moderation results
+    const newStatus = moderationResult.shouldReject ? 'REJECTED' : 'APPROVED';
+    const updateData = {
+      status: newStatus,
+      moderationStatus: moderationResult.shouldReject ? 'rejected' : 'approved_after_review',
+      autoRejected: !!moderationResult.shouldReject,
+      moderationFlags,
+      rejectionReason: moderationResult.rejectionReason || null
+    };
+    if (newStatus === 'APPROVED') {
+      updateData.postedAt = new Date();
+    }
+
     const updatedAd = await prisma.ad.update({
       where: { id: req.params.id },
-      data: {
-        status: moderationStatus.status,
-        moderationStatus: moderationStatus.moderationStatus,
-        autoRejected: moderationStatus.autoRejected,
-        moderationFlags: moderationResult.moderationFlags,
-        rejectionReason: moderationResult.rejectionReason || null
-      },
+      data: updateData,
       include: {
         user: {
           select: {
@@ -204,15 +222,14 @@ router.post('/ads/:id/remoderate', async (req, res) => {
       }
     });
 
-    // Create notification for user
     await prisma.notification.create({
       data: {
         userId: ad.userId,
-        title: moderationStatus.status === 'APPROVED' ? 'Ad Approved' : 'Ad Rejected',
-        message: moderationStatus.status === 'APPROVED'
+        title: newStatus === 'APPROVED' ? 'Ad Approved' : 'Ad Rejected',
+        message: newStatus === 'APPROVED'
           ? `Your ad "${ad.title}" has been approved and is now live!`
           : `Your ad "${ad.title}" has been rejected. Reason: ${moderationResult.rejectionReason || 'Content policy violation'}`,
-        type: moderationStatus.status === 'APPROVED' ? 'ad_approved' : 'ad_rejected',
+        type: newStatus === 'APPROVED' ? 'ad_approved' : 'ad_rejected',
         link: `/ads/${ad.id}`
       }
     });
@@ -220,7 +237,7 @@ router.post('/ads/:id/remoderate', async (req, res) => {
     res.json({
       success: true,
       ad: updatedAd,
-      moderationResult
+      moderationResult: { shouldReject: moderationResult.shouldReject, rejectionReason: moderationResult.rejectionReason }
     });
   } catch (error) {
     console.error('Error re-moderating ad:', error);

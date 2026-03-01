@@ -40,7 +40,7 @@ model User {
   deactivatedAt     DateTime?
   tokenInvalidatedAt DateTime?
   locationId        String?            @db.ObjectId
-  location          Location?          @relation(fields: [locationId], references: [id])
+  location          Location?          @relation(fields: [locationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   ads               Ad[]
   adPostingOrders   AdPostingOrder[]
   receivedMessages  ChatMessage[]      @relation("ReceiverMessages")
@@ -53,7 +53,7 @@ model User {
   premiumOrders     PremiumOrder[]
   pushSubscriptions PushSubscription[]
   referrals         Referral[]         @relation("Referrer")
-  referredByUser    User?              @relation("ReferredBy", fields: [referredBy], references: [id])
+  referredByUser    User?              @relation("ReferredBy", fields: [referredBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
   referredUsers     User[]             @relation("ReferredBy")
   wallet            Wallet?
   businessPackages  BusinessPackage[]
@@ -70,6 +70,17 @@ model User {
   refreshTokens     RefreshToken[]
   paymentOrders     PaymentOrder[]
   paymentRecords    PaymentRecord[]
+  creditTransactions CreditTransaction[]
+
+  // Promotion credits: balance (current), lifetime used for reporting
+  creditsBalance    Int                 @default(0)
+  creditsUsed       Int                 @default(0)
+
+  // AI Sales Assistant (Business Package): reply when seller is offline / not viewing chat
+  aiChatEnabled     Boolean             @default(false)
+
+  // My Business (one business per user for now)
+  business         Business?
 
   @@index([email])
   @@index([phone])
@@ -78,6 +89,41 @@ model User {
   @@index([referralCode])
   @@index([referredBy])
   @@map("users")
+}
+
+// My Business – user's own business profile (one per user for now; scalable for multiple later)
+model Business {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String    @unique @db.ObjectId
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessName  String
+  slug          String    @unique
+  category      String
+  description   String?
+  phone         String
+  whatsapp      String?
+  email         String?
+  website       String?
+  address       String?
+  state         String?
+  city          String
+  pincode       String?
+  mapLocation   Json?     // { lat, lng }
+  logo          String?
+  coverImage    String?
+  gallery       String[]  @default([])
+  services      Json?     // array of { name, price, description, image }
+  workingHours  Json?     // { monday: { open, close }, ... }
+  socialLinks   Json?     // { facebook, instagram, youtube }
+  isActive      Boolean   @default(true)
+  isVerified    Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([city])
+  @@index([category])
+  @@index([isActive])
+  @@map("businesses")
 }
 
 model OTP {
@@ -89,7 +135,7 @@ model OTP {
   used      Boolean  @default(false)
   createdAt DateTime @default(now())
   userId    String?  @db.ObjectId
-  user      User?    @relation(fields: [userId], references: [id])
+  user      User?    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([email, code])
   @@index([phone, code])
@@ -113,7 +159,6 @@ model Category {
   subcategories  Subcategory[]
 
   @@unique([slug])
-  @@index([slug])
   @@map("categories")
 }
 
@@ -152,7 +197,6 @@ model Location {
   users         User[]
 
   @@unique([slug])
-  @@index([slug])
   @@index([state, city])
   @@map("locations")
 }
@@ -174,6 +218,7 @@ model Ad {
   featuredAt       DateTime?
   bumpedAt         DateTime?
   expiresAt        DateTime?
+  postedAt         DateTime?        // When ad went live (approved)
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
   userId           String           @db.ObjectId
@@ -184,6 +229,10 @@ model Ad {
   attributes       Json?
   state            String?
   city             String?
+  slug             String?   // SEO: /{stateSlug}/{citySlug}/{categorySlug}/{slug}
+  stateSlug        String?   // slugify(state) for path lookup
+  citySlug         String?   // slugify(city) for path lookup
+  categorySlug     String?   // category.slug for path lookup
   neighbourhood    String?
   exactLocation    String?
   moderationStatus String?          @default("pending")
@@ -194,10 +243,25 @@ model Ad {
   // NORMAL = free ads, MAX_VISIBILITY = Basic, SELLER_PLUS = Pro, SELLER_PRIME = Enterprise
   packageType      BusinessPackageType @default(NORMAL)
   lastShownAt      DateTime?        // For rotation fairness
+  // Promotion (credit-based): TOP = top section, FEATURED = pin 7 days, BUMP_UP = move to top every 24h
+  promotionType    PremiumType?     // TOP | FEATURED | BUMP_UP (when isPremium true)
+  promotionStartAt DateTime?        // When current promotion started
+  lastBumpedAt     DateTime?        // Last bump time (for 24h reset)
+  boostCount       Int              @default(0) // Number of bumps used (lifetime or current period)
+  // Ranking system fields
+  rankingScore     Int              @default(10) // Precomputed ranking score for optimal sorting
+  planType         String?          @default("FREE") // FREE | STARTER | PROFESSIONAL | ENTERPRISE
+  planPriority     Int              @default(10) // Plan base score
+  isTopAdActive    Boolean          @default(false) // Top ad promotion active
+  isFeaturedActive Boolean          @default(false) // Featured ad promotion active
+  isBumpActive     Boolean          @default(false) // Bump promotion active
+  latitude         Float?           // Geo-location latitude
+  longitude        Float?           // Geo-location longitude
+  adExpiryDate     DateTime?        // Ad expiry timestamp
   category         Category         @relation(fields: [categoryId], references: [id])
   location         Location?        @relation(fields: [locationId], references: [id])
   subcategory      Subcategory?     @relation(fields: [subcategoryId], references: [id])
-  user             User             @relation(fields: [userId], references: [id])
+  user             User             @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   adPostingOrders  AdPostingOrder[]
   chatRooms        ChatRoom[]
   favorites        Favorite[]
@@ -225,6 +289,17 @@ model Ad {
   @@index([city])
   @@index([state, city])
   @@index([state])
+  @@index([slug])
+  @@index([stateSlug])
+  @@index([citySlug])
+  @@index([categorySlug])
+  @@index([stateSlug, citySlug, categorySlug, slug])
+  @@index([rankingScore])
+  @@index([planPriority])
+  @@index([isTopAdActive])
+  @@index([isFeaturedActive])
+  @@index([adExpiryDate])
+  @@index([rankingScore, createdAt])
   @@map("ads")
 }
 
@@ -233,8 +308,8 @@ model Favorite {
   createdAt DateTime @default(now())
   userId    String   @db.ObjectId
   adId      String   @db.ObjectId
-  ad        Ad       @relation(fields: [adId], references: [id])
-  user      User     @relation(fields: [userId], references: [id])
+  ad        Ad       @relation(fields: [adId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([userId, adId])
   @@index([userId])
@@ -253,8 +328,8 @@ model PremiumOrder {
   updatedAt         DateTime    @updatedAt
   userId            String      @db.ObjectId
   adId              String      @db.ObjectId
-  ad                Ad          @relation(fields: [adId], references: [id])
-  user              User        @relation(fields: [userId], references: [id])
+  ad                Ad          @relation(fields: [adId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user              User        @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([userId])
   @@index([razorpayOrderId])
@@ -273,8 +348,8 @@ model AdPostingOrder {
   updatedAt         DateTime @updatedAt
   userId            String   @db.ObjectId
   adId              String?  @db.ObjectId
-  ad                Ad?      @relation(fields: [adId], references: [id])
-  user              User     @relation(fields: [userId], references: [id])
+  ad                Ad?      @relation(fields: [adId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user              User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([razorpayOrderId])
   @@index([userId])
@@ -336,16 +411,17 @@ model PaymentRecord {
 }
 
 model ChatRoom {
-  id        String        @id @default(auto()) @map("_id") @db.ObjectId
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
-  user1Id   String        @db.ObjectId
-  user2Id   String        @db.ObjectId
-  adId      String        @db.ObjectId
-  messages  ChatMessage[]
-  ad        Ad            @relation(fields: [adId], references: [id])
-  user1     User          @relation("User1Rooms", fields: [user1Id], references: [id])
-  user2     User          @relation("User2Rooms", fields: [user2Id], references: [id])
+  id                   String        @id @default(auto()) @map("_id") @db.ObjectId
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  user1Id              String        @db.ObjectId
+  user2Id              String        @db.ObjectId
+  adId                 String        @db.ObjectId
+  lastSellerMessageAt  DateTime?     // Human override: no AI reply for 30 min after this
+  messages             ChatMessage[]
+  ad                   Ad            @relation(fields: [adId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user1                User          @relation("User1Rooms", fields: [user1Id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user2                User          @relation("User2Rooms", fields: [user2Id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([user1Id, user2Id, adId])
   @@index([user1Id])
@@ -360,13 +436,14 @@ model ChatMessage {
   type       ChatMessageType @default(TEXT)
   imageUrl   String?
   isRead     Boolean         @default(false)
+  isAI       Boolean         @default(false)
   createdAt  DateTime        @default(now())
   senderId   String          @db.ObjectId
   receiverId String          @db.ObjectId
   roomId     String          @db.ObjectId
-  receiver   User            @relation("ReceiverMessages", fields: [receiverId], references: [id])
-  room       ChatRoom        @relation(fields: [roomId], references: [id])
-  sender     User            @relation("SenderMessages", fields: [senderId], references: [id])
+  receiver   User            @relation("ReceiverMessages", fields: [receiverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  room       ChatRoom        @relation(fields: [roomId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sender     User            @relation("SenderMessages", fields: [senderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([roomId])
   @@index([senderId])
@@ -383,8 +460,26 @@ model PremiumSettings {
   updatedBy String?
 
   @@unique([key])
-  @@index([key])
   @@map("premium_settings")
+}
+
+// Audit log for ad ranking/rotation (optional; for analytics and fairness)
+model AdRankLog {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  adId         String   @db.ObjectId
+  context      String   // home, category, search, etc.
+  contextId    String?  // categoryId, locationId, etc.
+  planTier     String   // SELLER_PRIME, SELLER_PLUS, MAX_VISIBILITY, NORMAL
+  position     Int      // 1-based position in result
+  featured     Boolean  @default(false)
+  bumped       Boolean  @default(false)
+  lastShownAt  DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([adId])
+  @@index([context, contextId])
+  @@index([createdAt])
+  @@map("ad_rank_logs")
 }
 
 model Banner {
@@ -411,6 +506,28 @@ model Banner {
   @@map("banners")
 }
 
+// Free Posting Ads Card - backend-controlled, location-targeted, shown below Description on ad detail
+model FreePostingPromo {
+  id                  String    @id @default(auto()) @map("_id") @db.ObjectId
+  image               String?
+  title               String
+  description         String?
+  ctaText             String    @default("Post Free Ad")
+  ctaLink             String    @default("/post-ad")
+  priority            Int       @default(0)
+  startDate           DateTime?
+  endDate             DateTime?
+  isActive            Boolean   @default(true)
+  showForAllLocations Boolean   @default(false)
+  targetLocations     Json?     // [{ country?, state?, city?, district? }] - empty or null = use showForAllLocations
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([isActive])
+  @@index([startDate, endDate])
+  @@map("free_posting_promos")
+}
+
 model Notification {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   title     String
@@ -420,10 +537,12 @@ model Notification {
   link      String?
   createdAt DateTime @default(now())
   userId    String   @db.ObjectId
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([userId])
   @@index([isRead])
+  @@index([userId, createdAt])
+  @@index([userId, isRead])
   @@map("notifications")
 }
 
@@ -451,6 +570,38 @@ model InterstitialAd {
   @@map("interstitial_ads")
 }
 
+// Sponsored ads - location-targeted, admin-managed, shown in ad detail sidebar
+model SponsoredAd {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  title        String
+  bannerImage  String?
+  bannerVideo  String?
+  description  String?
+  ctaType      String   @default("website") // call, whatsapp, website
+  ctaLabel     String?
+  redirectUrl  String?
+  targetLocations String[] @default([]) // Location slugs: ["kottayam", "pala", "changanassery"]
+  categorySlug String?  // Car, Job, Property etc. - optional filter
+  adSize       String   @default("medium") // small, medium, large
+  startDate    DateTime?
+  endDate      DateTime?
+  budget       Float    @default(0)
+  priority     Int      @default(0) // Higher = more visibility
+  status       String   @default("active") // active, paused, expired
+  impressions  Int      @default(0)
+  clicks       Int      @default(0)
+  lastShownAt DateTime? // For rotation fairness
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status])
+  @@index([adSize])
+  @@index([priority])
+  @@index([startDate, endDate])
+  @@index([lastShownAt])
+  @@map("sponsored_ads")
+}
+
 model PushSubscription {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   endpoint  String
@@ -459,11 +610,10 @@ model PushSubscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   userId    String   @db.ObjectId
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([endpoint])
   @@index([userId])
-  @@index([endpoint])
   @@map("push_subscriptions")
 }
 
@@ -473,11 +623,10 @@ model Wallet {
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
   userId       String              @db.ObjectId
-  user         User                @relation(fields: [userId], references: [id])
+  user         User                @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   transactions WalletTransaction[]
 
   @@unique([userId])
-  @@index([userId])
   @@map("wallets")
 }
 
@@ -491,13 +640,42 @@ model WalletTransaction {
   metadata    String?
   createdAt   DateTime                @default(now())
   walletId    String                  @db.ObjectId
-  wallet      Wallet                  @relation(fields: [walletId], references: [id])
+  wallet      Wallet                  @relation(fields: [walletId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([walletId])
   @@index([type])
   @@index([status])
   @@index([createdAt])
   @@map("wallet_transactions")
+}
+
+// Promotion credits: purchase + spend (TOP Ad, Featured, Bump Up)
+model CreditTransaction {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  amount      Int      // Positive = credit, negative = debit
+  balanceAfter Int?    // Balance after this transaction (for audit)
+  type        CreditTransactionType
+  referenceId String?  // adId or orderId
+  description String?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([referenceId])
+  @@map("credit_transactions")
+}
+
+enum CreditTransactionType {
+  PURCHASE      // Bought credits
+  TOP_AD        // Spent on TOP promotion
+  FEATURED_AD   // Spent on Featured promotion
+  BUMP_UP       // Spent on Bump Up
+  REFUND        // Refunded
+  ADMIN_CREDIT  // Admin granted
+  ADMIN_DEBIT   // Admin deducted
 }
 
 model Referral {
@@ -509,7 +687,7 @@ model Referral {
   createdAt      DateTime  @default(now())
   completedAt    DateTime?
   referrerId     String    @db.ObjectId
-  referrer       User      @relation("Referrer", fields: [referrerId], references: [id])
+  referrer       User      @relation("Referrer", fields: [referrerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([referredUserId])
   @@index([referrerId])
@@ -536,7 +714,7 @@ model BusinessPackage {
   expiresAt         DateTime?
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
-  user              User                @relation(fields: [userId], references: [id])
+  user              User                @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([userId])
   @@index([packageType])
@@ -585,7 +763,7 @@ model ExtraAdSlot {
   expiresAt         DateTime?
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
-  user              User                @relation(fields: [userId], references: [id])
+  user              User                @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([userId])
   @@index([razorpayOrderId])
@@ -605,6 +783,8 @@ enum AdStatus {
   REJECTED
   SOLD
   EXPIRED
+  INACTIVE
+  DISABLED
 }
 
 enum PremiumType {
@@ -692,8 +872,8 @@ model Follow {
   followingId String   @db.ObjectId
   createdAt   DateTime @default(now())
 
-  follower    User     @relation("Follower", fields: [followerId], references: [id])
-  following   User     @relation("Following", fields: [followingId], references: [id])
+  follower    User     @relation("Follower", fields: [followerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  following   User     @relation("Following", fields: [followingId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([followerId, followingId])
   @@index([followerId])
@@ -714,9 +894,9 @@ model ContactRequest {
   approvedAt   DateTime?
   rejectedAt   DateTime?
 
-  requester    User     @relation("ContactRequester", fields: [requesterId], references: [id])
-  seller       User     @relation("ContactSeller", fields: [sellerId], references: [id])
-  ad           Ad?      @relation(fields: [adId], references: [id])
+  requester    User     @relation("ContactRequester", fields: [requesterId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  seller       User     @relation("ContactSeller", fields: [sellerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ad           Ad?      @relation(fields: [adId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([requesterId, sellerId, adId])
   @@index([requesterId])
@@ -739,8 +919,8 @@ model Block {
   reason     String?
   createdAt  DateTime @default(now())
 
-  blocker    User     @relation("Blocker", fields: [blockerId], references: [id])
-  blocked    User     @relation("Blocked", fields: [blockedId], references: [id])
+  blocker    User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  blocked    User     @relation("Blocked", fields: [blockedId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([blockerId, blockedId])
   @@index([blockerId])
@@ -757,8 +937,8 @@ model AuditLog {
   metadata  Json?
   createdAt DateTime @default(now())
 
-  actor     User     @relation("AuditActor", fields: [actorId], references: [id])
-  target    User?    @relation("AuditTarget", fields: [targetId], references: [id])
+  actor     User     @relation("AuditActor", fields: [actorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  target    User?    @relation("AuditTarget", fields: [targetId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([actorId])
   @@index([targetId])
@@ -776,12 +956,146 @@ model RefreshToken {
   revokedAt DateTime?
   createdAt DateTime @default(now())
 
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([token])
   @@index([userId])
-  @@index([token])
   @@index([userId, token])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+// ---------- India Business Directory (SEO) ----------
+model DirectoryState {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  slug      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cities    DirectoryCity[]
+  businesses DirectoryBusiness[]
+
+  @@map("directory_states")
+}
+
+model DirectoryCity {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  slug      String
+  stateId   String   @db.ObjectId
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  state     DirectoryState   @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  businesses DirectoryBusiness[]
+
+  @@unique([stateId, slug])
+  @@index([stateId])
+  @@index([slug])
+  @@map("directory_cities")
+}
+
+model DirectoryCategory {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  slug        String   @unique
+  description String?
+  metaTitle   String?
+  metaDescription String?
+  order       Int     @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  businesses  DirectoryBusiness[]
+
+  @@map("directory_categories")
+}
+
+model DirectoryBusiness {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  name          String
+  slug          String
+  description   String?
+  phone         String?
+  email         String?
+  website       String?
+  address       String?
+  latitude      Float?
+  longitude     Float?
+  openingHours  Json?
+  categoryId    String   @db.ObjectId
+  cityId        String   @db.ObjectId
+  stateId       String   @db.ObjectId
+  userId        String?  @db.ObjectId
+  isVerified    Boolean  @default(false)
+  isFeatured    Boolean  @default(false)
+  images        String[] @default([])
+  whatsapp      String?
+  rating        Float    @default(0)
+  reviewCount   Int      @default(0)
+  viewCount     Int       @default(0)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  category      DirectoryCategory @relation(fields: [categoryId], references: [id])
+  city          DirectoryCity      @relation(fields: [cityId], references: [id])
+  state         DirectoryState    @relation(fields: [stateId], references: [id])
+  reviews       DirectoryReview[]
+
+  @@unique([stateId, cityId, categoryId, slug])
+  @@index([categoryId])
+  @@index([cityId])
+  @@index([stateId])
+  @@index([slug])
+  @@index([isFeatured])
+  @@index([rating])
+  @@map("directory_businesses")
+}
+
+model DirectoryReview {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  businessId  String   @db.ObjectId
+  userId      String?  @db.ObjectId
+  authorName  String
+  rating      Int
+  content     String?
+  isVerified  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  business    DirectoryBusiness @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([createdAt])
+  @@map("directory_reviews")
+}
+
+model DirectoryBlogPost {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  title       String
+  slug        String   @unique
+  excerpt     String?
+  content     String
+  metaTitle   String?
+  metaDescription String?
+  author      String?
+  image       String?
+  tags        String[] @default([])
+  publishedAt DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([publishedAt])
+  @@map("directory_blog_posts")
+}
+
+// 301 redirects when slug is updated (e.g. business renamed). fromPath = old URL path, toPath = new URL path.
+model DirectorySlugRedirect {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  fromPath  String   @unique  // e.g. /kerala/ernakulam/spa/old-business-slug
+  toPath    String   // e.g. /kerala/ernakulam/spa/new-business-slug
+  createdAt DateTime @default(now())
+
+  @@map("directory_slug_redirects")
 }

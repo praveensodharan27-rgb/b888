@@ -6,7 +6,7 @@ const { autoApprovePendingAds } = require('../services/autoApproval');
  */
 async function run() {
   const args = process.argv.slice(2);
-  const minutes = parseInt(args[0]) || 5;
+  const minutes = parseInt(args[0]) || 3;
 
   console.log(`\n${'='.repeat(60)}`);
   console.log(`  Auto-Approving Ads Pending for ${minutes}+ Minutes`);
@@ -17,7 +17,7 @@ async function run() {
     
     console.log(`\n${'='.repeat(60)}`);
     console.log(`  Result: ${result.message}`);
-    console.log(`  Approved: ${result.count} ads`);
+    console.log(`  Approved: ${result.approved ?? 0}, Rejected: ${result.rejected ?? 0}`);
     if (result.errors > 0) {
       console.log(`  Errors: ${result.errors}`);
     }

@@ -90,6 +90,15 @@ router.get('/public/:userId', async (req, res) => {
     // Respect phone visibility setting
     const phoneNumber = user.showPhone ? user.phone : null;
 
+    // Get user's business (public info only) – show business page on profile
+    const business = await prisma.business.findUnique({
+      where: { userId },
+      select: { slug: true, businessName: true, category: true, city: true, logo: true, isActive: true }
+    });
+    const businessPublic = business && business.isActive
+      ? { slug: business.slug, businessName: business.businessName, category: business.category, city: business.city, logo: business.logo }
+      : null;
+
     // Remove showPhone from public response (privacy)
     const { showPhone, ...userWithoutPrivacy } = user;
 
@@ -101,21 +110,14 @@ router.get('/public/:userId', async (req, res) => {
         location: userLocation,
         tags: [], // Tags field removed as it doesn't exist in User model
         followersCount,
-        followingCount
+        followingCount,
+        business: businessPublic
       }
     });
   } catch (error) {
     console.error('Get public user profile error:', error);
-    console.error('Error details:', {
-      userId: req.params.userId,
-      errorMessage: error.message,
-      errorStack: error.stack
-    });
-    res.status(500).json({ 
-      success: false, 
-      message: error.message || 'Failed to fetch user profile',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    const { getSafeErrorPayload } = require('../utils/safeErrorResponse');
+    res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch user profile'));
   }
 });
 
@@ -137,6 +139,7 @@ router.get('/profile', authenticate, async (req, res) => {
         bio: true,
         showPhone: true,
         isVerified: true,
+        aiChatEnabled: true,
         provider: true,
         providerId: true,
         freeAdsUsed: true,
@@ -566,9 +569,7 @@ router.get('/stats', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get profile stats error:', error);
     res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch profile statistics',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      ...require('../utils/safeErrorResponse').getSafeErrorPayload(error, 'Failed to fetch profile statistics')
     });
   }
 });
@@ -735,9 +736,7 @@ router.put('/profile',
     } catch (error) {
       console.error('Update profile error:', error);
       res.status(500).json({ 
-        success: false, 
-        message: error.message || 'Failed to update profile',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        ...require('../utils/safeErrorResponse').getSafeErrorPayload(error, 'Failed to update profile')
       });
     }
   }
@@ -905,39 +904,123 @@ router.get('/favorites', authenticate, async (req, res) => {
   }
 });
 
-// Get notifications
+// Get notifications (optimized: ETag 304, Redis cache, indexed queries)
+const crypto = require('crypto');
+const {
+  getNotificationEtag,
+  setNotificationEtag,
+  getNotificationListCache,
+  setNotificationListCache,
+  invalidateNotificationCache,
+} = require('../utils/redis-helpers');
+const { isAvailable: isRedisAvailable } = require('../config/redis');
+
+function computeNotificationsEtag(total, unreadCount, firstId) {
+  return crypto.createHash('md5').update(`${total}:${unreadCount}:${firstId || ''}`).digest('hex');
+}
+
 router.get('/notifications', authenticate, async (req, res) => {
   try {
-    const { page = 1, limit = 20, unreadOnly } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+    const unreadOnly = req.query.unreadOnly === 'true';
+    const skip = (page - 1) * limit;
+    const userId = req.user.id;
 
-    const where = { userId: req.user.id };
-    if (unreadOnly === 'true') {
-      where.isRead = false;
+    // Auto-cleanup: keep only recent notifications for this user
+    // Strategy:
+    // - Remove notifications older than 7 days
+    // - Ensure only latest 50 notifications are kept per user
+    try {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+      // Find all notifications beyond the latest 50 (ordered by createdAt DESC)
+      const extraNotifications = await prisma.notification.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        skip: 50,
+        select: { id: true, createdAt: true },
+      });
+
+      const extraIds = extraNotifications.map((n) => n.id);
+
+      await prisma.notification.deleteMany({
+        where: {
+          userId,
+          OR: [
+            { createdAt: { lt: sevenDaysAgo } },
+            extraIds.length > 0 ? { id: { in: extraIds } } : undefined,
+          ].filter(Boolean),
+        },
+      });
+    } catch (cleanupError) {
+      console.warn('Notification cleanup failed:', cleanupError?.message || cleanupError);
     }
+
+    const clientEtag = (req.headers['if-none-match'] || '').replace(/^"|"$/g, '').trim();
+
+    if (clientEtag && isRedisAvailable()) {
+      const cachedEtag = await getNotificationEtag(userId);
+      if (cachedEtag && cachedEtag === clientEtag) {
+        res.status(304).end();
+        return;
+      }
+    }
+
+    if (isRedisAvailable()) {
+      const cached = await getNotificationListCache(userId, page, limit, unreadOnly);
+      if (cached) {
+        const etag = await getNotificationEtag(userId) || computeNotificationsEtag(
+          cached.pagination?.total ?? 0,
+          cached.unreadCount ?? 0,
+          cached.notifications?.[0]?.id
+        );
+        res.setHeader('ETag', `"${etag}"`);
+        res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+        return res.json(cached);
+      }
+    }
+
+    const where = { userId };
+    if (unreadOnly) where.isRead = false;
 
     const [notifications, total, unreadCount] = await Promise.all([
       prisma.notification.findMany({
         where,
+        select: { id: true, title: true, message: true, type: true, isRead: true, link: true, createdAt: true, userId: true },
         orderBy: { createdAt: 'desc' },
         skip,
-        take: parseInt(limit)
+        take: limit,
       }),
       prisma.notification.count({ where }),
-      prisma.notification.count({ where: { userId: req.user.id, isRead: false } })
+      unreadOnly ? Promise.resolve(null) : prisma.notification.count({ where: { userId, isRead: false } }),
     ]);
 
-    res.json({
+    const unread = unreadOnly ? total : (unreadCount ?? 0);
+    const payload = {
       success: true,
       notifications,
-      unreadCount,
+      unreadCount: unread,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page,
+        limit,
         total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
-    });
+        pages: Math.ceil(total / limit),
+      },
+    };
+
+    const etag = computeNotificationsEtag(total, unread, notifications[0]?.id);
+    res.setHeader('ETag', `"${etag}"`);
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+
+    if (isRedisAvailable()) {
+      await Promise.all([
+        setNotificationEtag(userId, etag),
+        setNotificationListCache(userId, page, limit, unreadOnly, payload),
+      ]).catch(() => {});
+    }
+
+    res.json(payload);
   } catch (error) {
     console.error('Get notifications error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch notifications' });
@@ -961,6 +1044,7 @@ router.post('/notifications/read', authenticate, async (req, res) => {
       data: { isRead: true }
     });
 
+    invalidateNotificationCache(req.user.id).catch(() => {});
     res.json({ success: true, message: 'Notification marked as read' });
   } catch (error) {
     console.error('Mark notification read error:', error);
@@ -979,6 +1063,7 @@ router.put('/notifications/:id/read', authenticate, async (req, res) => {
       data: { isRead: true }
     });
 
+    invalidateNotificationCache(req.user.id).catch(() => {});
     res.json({ success: true, message: 'Notification marked as read' });
   } catch (error) {
     console.error('Mark notification read error:', error);
@@ -997,6 +1082,7 @@ router.put('/notifications/read-all', authenticate, async (req, res) => {
       data: { isRead: true }
     });
 
+    invalidateNotificationCache(req.user.id).catch(() => {});
     res.json({ success: true, message: 'All notifications marked as read' });
   } catch (error) {
     console.error('Mark all notifications read error:', error);
@@ -1022,7 +1108,14 @@ router.get('/orders', authenticate, async (req, res) => {
               id: true,
               title: true,
               images: true,
-              status: true
+              status: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true
+                }
+              }
             }
           }
         },
@@ -1039,7 +1132,14 @@ router.get('/orders', authenticate, async (req, res) => {
               title: true,
               images: true,
               status: true,
-              expiresAt: true
+              expiresAt: true,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true
+                }
+              }
             }
           }
         },
@@ -1696,6 +1796,35 @@ router.get('/activity-log', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get activity log error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch activity log' });
+  }
+});
+
+// Get/update AI Chat setting (Business Package: allow AI to reply when seller is offline)
+// Safe when aiChatEnabled is not yet in DB/schema — returns false and no-op update
+router.get('/ai-chat', authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { aiChatEnabled: true }
+    });
+    res.json({ success: true, aiChatEnabled: !!user?.aiChatEnabled });
+  } catch (error) {
+    console.error('Get AI chat setting error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get AI chat setting' });
+  }
+});
+
+router.put('/ai-chat', authenticate, async (req, res) => {
+  try {
+    const enabled = req.body.enabled === true;
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { aiChatEnabled: enabled }
+    });
+    res.json({ success: true, aiChatEnabled: enabled });
+  } catch (error) {
+    console.error('Update AI chat setting error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update AI chat setting' });
   }
 });
 

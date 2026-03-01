@@ -9,14 +9,16 @@ const cloudinary = require('cloudinary').v2;
 const crypto = require('crypto');
 const Jimp = require('jimp');
 const { PrismaClient } = require('@prisma/client');
+const { logger } = require('../src/config/logger');
 const prisma = new PrismaClient();
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../uploads');
 const adsUploadsDir = path.join(uploadsDir, 'ads');
 const avatarsUploadsDir = path.join(uploadsDir, 'avatars');
+const businessUploadsDir = path.join(uploadsDir, 'business');
 
-[uploadsDir, adsUploadsDir, avatarsUploadsDir].forEach(dir => {
+[uploadsDir, adsUploadsDir, avatarsUploadsDir, businessUploadsDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -45,19 +47,64 @@ if (process.env.USE_CLOUDINARY !== 'true' && process.env.AWS_ACCESS_KEY_ID) {
 // Memory storage for processing
 const memoryStorage = multer.memoryStorage();
 
+// Enhanced image format validation
+const validateImageFormat = (file) => {
+  const errors = [];
+  
+  // 1. Check file extension
+  const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
+  const fileExt = path.extname(file.originalname).toLowerCase();
+  if (!allowedExtensions.includes(fileExt)) {
+    errors.push(`Invalid file extension. Allowed: ${allowedExtensions.join(', ')}`);
+  }
+  
+  // 2. Check MIME type
+  const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  if (!allowedMimeTypes.includes(file.mimetype)) {
+    errors.push(`Invalid MIME type: ${file.mimetype}. Allowed: ${allowedMimeTypes.join(', ')}`);
+  }
+  
+  // 3. Check file size (5MB max)
+  const maxSize = 5 * 1024 * 1024; // 5MB
+  if (file.size > maxSize) {
+    errors.push(`File size exceeds 5MB limit. Current size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+  }
+  
+  // 4. Validate file content (magic bytes) to ensure it's actually an image
+  if (file.buffer && file.buffer.length > 0) {
+    const buffer = file.buffer;
+    const isValidImage = 
+      // JPEG: FF D8 FF
+      (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) ||
+      // PNG: 89 50 4E 47
+      (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) ||
+      // WebP: RIFF...WEBP
+      (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+       buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50);
+    
+    if (!isValidImage) {
+      errors.push('File content does not match image format. File may be corrupted or not a valid image.');
+    }
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors: errors
+  };
+};
+
 const WATERMARK_TEXT = 'B888';
 // Apply watermark to an image buffer (bottom-right, semi-transparent) using Jimp
 const applyWatermark = async (buffer) => {
   const image = await Jimp.read(buffer);
   const width = image.getWidth();
   const height = image.getHeight();
-  // Choose a font size based on image size (use built-in fonts)
+  // Choose a (larger) font size based on image size (use built-in fonts)
+  const minSide = Math.min(width, height);
   const font =
-    Math.min(width, height) > 1200
+    minSide > 800
       ? await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE)
-      : Math.min(width, height) > 800
-      ? await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE)
-      : await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE);
+      : await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
 
   const textWidth = Jimp.measureText(font, WATERMARK_TEXT);
   const textHeight = Jimp.measureTextHeight(font, WATERMARK_TEXT, textWidth);
@@ -121,7 +168,7 @@ const getCategoryInfo = async (categoryId, subcategoryId) => {
       subcategory: subcategory ? { name: subcategory.name, slug: subcategory.slug } : null
     };
   } catch (error) {
-    console.error('Error fetching category info:', error);
+    logger.warn({ err: error.message }, 'Error fetching category info');
     return { category: null, subcategory: null };
   }
 };
@@ -133,14 +180,11 @@ const s3Upload = s3Client ? multer({
     fileSize: 5 * 1024 * 1024 // 5MB
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|webp/;
-    const extname = allowedTypes.test(file.originalname.toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-
-    if (extname && mimetype) {
+    const validation = validateImageFormat(file);
+    if (validation.isValid) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed (jpeg, jpg, png, webp)'));
+      cb(new Error(validation.errors.join('. ')));
     }
   }
 }) : null;
@@ -152,14 +196,11 @@ const cloudinaryUpload = multer({
     fileSize: 5 * 1024 * 1024 // 5MB
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|webp/;
-    const extname = allowedTypes.test(file.originalname.toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-
-    if (extname && mimetype) {
+    const validation = validateImageFormat(file);
+    if (validation.isValid) {
       cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed (jpeg, jpg, png, webp)'));
+      cb(new Error(validation.errors.join('. ')));
     }
   }
 });
@@ -184,13 +225,11 @@ const uploadImages = (req, res, next) => {
       storage: memoryStorage,
       limits: { fileSize: 5 * 1024 * 1024 },
       fileFilter: (req, file, cb) => {
-        const allowedTypes = /jpeg|jpg|png|webp/;
-        const extname = allowedTypes.test(file.originalname.toLowerCase());
-        const mimetype = allowedTypes.test(file.mimetype);
-        if (extname && mimetype) {
+        const validation = validateImageFormat(file);
+        if (validation.isValid) {
           cb(null, true);
         } else {
-          cb(new Error('Only image files are allowed'));
+          cb(new Error(validation.errors.join('. ')));
         }
       }
     });
@@ -212,6 +251,18 @@ const uploadImages = (req, res, next) => {
           const savedFiles = [];
           for (let i = 0; i < req.files.length; i++) {
             const file = req.files[i];
+            
+            // Validate image format before processing
+            const validation = validateImageFormat(file);
+            if (!validation.isValid) {
+              throw new Error(`Image ${i + 1}: ${validation.errors.join('. ')}`);
+            }
+            
+            // Validate buffer before processing
+            if (!file.buffer || file.buffer.length === 0) {
+              throw new Error(`Image ${i + 1}: File buffer is empty or corrupted`);
+            }
+            
             const ext = file.originalname.split('.').pop();
             
             // Generate category-based filename
@@ -249,16 +300,15 @@ const uploadImages = (req, res, next) => {
             });
           }
           req.uploadedImages = savedFiles;
-          console.log('📸 Uploaded images (local storage with watermark):', req.uploadedImages.length, 'images');
+          (req.log || logger).info({ requestId: req.id, count: req.uploadedImages.length }, 'Uploaded images (local storage with watermark)');
         } catch (e) {
-          console.error('❌ Image processing error (local storage):', e);
-          console.error('Error details:', {
-            message: e.message,
-            stack: e.stack,
+          (req.log || logger).error({
+            requestId: req.id,
+            err: e.message,
             filesCount: req.files?.length || 0,
             categoryId: req.body?.categoryId,
             subcategoryId: req.body?.subcategoryId
-          });
+          }, 'Image processing error (local storage)');
           return res.status(500).json({ 
             success: false, 
             message: 'Image processing failed. Please try again or contact support if payment was made.',
@@ -298,6 +348,18 @@ const uploadImages = (req, res, next) => {
     // If using Cloudinary, upload files
     if (process.env.USE_CLOUDINARY === 'true' && req.files) {
       try {
+        // Validate all files before processing
+        for (let i = 0; i < req.files.length; i++) {
+          const file = req.files[i];
+          const validation = validateImageFormat(file);
+          if (!validation.isValid) {
+            throw new Error(`Image ${i + 1}: ${validation.errors.join('. ')}`);
+          }
+          if (!file.buffer || file.buffer.length === 0) {
+            throw new Error(`Image ${i + 1}: File buffer is empty or corrupted`);
+          }
+        }
+        
         const uploadPromises = req.files.map((file, index) => {
           return new Promise((resolve, reject) => {
             applyWatermark(file.buffer)
@@ -347,17 +409,16 @@ const uploadImages = (req, res, next) => {
         });
 
         req.uploadedImages = await Promise.all(uploadPromises);
-        console.log('📸 Uploaded images (Cloudinary):', req.uploadedImages.length, 'images');
+        (req.log || logger).info({ requestId: req.id, count: req.uploadedImages.length }, 'Uploaded images (Cloudinary)');
       } catch (error) {
-        console.error('❌ Cloudinary upload error:', error);
-        console.error('Error details:', {
-          message: error.message,
-          stack: error.stack,
+        (req.log || logger).error({
+          requestId: req.id,
+          err: error.message,
           filesCount: req.files?.length || 0,
           categoryId: req.body?.categoryId,
           subcategoryId: req.body?.subcategoryId,
           paymentOrderId: req.body?.paymentOrderId
-        });
+        }, 'Cloudinary upload error');
         return res.status(500).json({ 
           success: false, 
           message: 'Image upload failed. Please try again or contact support if payment was made.',
@@ -411,17 +472,16 @@ const uploadImages = (req, res, next) => {
           };
         });
         req.uploadedImages = await Promise.all(uploadPromises);
-        console.log('📸 Uploaded images (S3):', req.uploadedImages.length, 'images');
+        (req.log || logger).info({ requestId: req.id, count: req.uploadedImages.length }, 'Uploaded images (S3)');
       } catch (error) {
-        console.error('❌ S3 upload error:', error);
-        console.error('Error details:', {
-          message: error.message,
-          stack: error.stack,
+        (req.log || logger).error({
+          requestId: req.id,
+          err: error.message,
           filesCount: req.files?.length || 0,
           categoryId: req.body?.categoryId,
           subcategoryId: req.body?.subcategoryId,
           paymentOrderId: req.body?.paymentOrderId
-        });
+        }, 'S3 upload error');
         return res.status(500).json({ 
           success: false, 
           message: 'Image upload failed. Please try again or contact support if payment was made.',
@@ -437,13 +497,21 @@ const uploadImages = (req, res, next) => {
   });
 };
 
+// Sanitize extension for safe filename (allow only image extensions, no path traversal)
+const ALLOWED_AVATAR_EXT = ['jpg', 'jpeg', 'png', 'webp'];
+function sanitizeAvatarExtension(originalname) {
+  const raw = (originalname || '').split('.').pop();
+  const ext = (typeof raw === 'string' ? raw : '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return ALLOWED_AVATAR_EXT.includes(ext) ? ext : 'jpg';
+}
+
 // Local storage for avatars
 const avatarLocalStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, avatarsUploadsDir);
   },
   filename: (req, file, cb) => {
-    const ext = file.originalname.split('.').pop();
+    const ext = sanitizeAvatarExtension(file.originalname);
     const filename = `${crypto.randomBytes(16).toString('hex')}.${ext}`;
     cb(null, filename);
   }
@@ -472,7 +540,7 @@ const uploadAvatar = (req, res, next) => {
       if (req.file) {
         const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
         req.uploadedAvatar = `${baseUrl}/uploads/avatars/${req.file.filename}`;
-        console.log('📸 Uploaded avatar (local storage):', req.uploadedAvatar);
+        (req.log || logger).info({ requestId: req.id }, 'Uploaded avatar (local storage)');
       }
       next();
     });
@@ -514,5 +582,44 @@ const uploadAvatar = (req, res, next) => {
   });
 };
 
-module.exports = { uploadImages, uploadAvatar };
+// Business images: logo, cover, gallery (single file per request)
+const businessLocalStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, businessUploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = sanitizeAvatarExtension(file.originalname);
+    const filename = `${crypto.randomBytes(16).toString('hex')}.${ext}`;
+    cb(null, filename);
+  }
+});
+
+const uploadBusinessImage = (req, res, next) => {
+  const localUpload = multer({
+    storage: businessLocalStorage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      const allowedTypes = /jpeg|jpg|png|webp/;
+      const extname = allowedTypes.test(file.originalname.toLowerCase());
+      const mimetype = allowedTypes.test(file.mimetype);
+      if (extname && mimetype) {
+        cb(null, true);
+      } else {
+        cb(new Error('Only image files (JPEG, PNG, WebP) are allowed'));
+      }
+    }
+  });
+  return localUpload.single('image')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ success: false, message: err.message || 'Invalid image' });
+    }
+    if (req.file) {
+      const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
+      req.uploadedBusinessImage = `${baseUrl}/uploads/business/${req.file.filename}`;
+    }
+    next();
+  });
+};
+
+module.exports = { uploadImages, uploadAvatar, uploadBusinessImage };
 

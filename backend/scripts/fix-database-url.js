@@ -83,7 +83,7 @@ if (newUrl.startsWith('mongodb://') || newUrl.startsWith('mongodb+srv://')) {
   console.log('\n📋 Next Steps:');
   console.log('   1. Test connection: npm run test-mongodb');
   console.log('   2. Regenerate Prisma Client: npm run prisma:generate');
-  console.log('   3. Add dummy data: npm run add-dummy-data\n');
+  console.log('   3. Seed database: npm run seed-all-db\n');
 } else {
   console.log('❌ DATABASE_URL is still incorrect');
   console.log('   Please check your .env file manually\n');

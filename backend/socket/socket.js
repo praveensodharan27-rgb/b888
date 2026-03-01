@@ -88,18 +88,18 @@ const setupSocketIO = (io) => {
       io.emit('user_online', { userId: socket.userId });
     }
 
-    // Handle joining chat room
+    // Handle joining chat room (also tracks which room user is viewing for AI sales assistant)
     socket.on('join_room', (roomId) => {
-      // CRITICAL: Convert roomId to STRING to avoid type mismatch
       const roomIdString = String(roomId);
+      socket.viewingRoomId = roomIdString;
       socket.join(`room:${roomIdString}`);
       console.log(`User ${socket.userId} joined room ${roomIdString}`);
     });
 
     // Handle leaving chat room
     socket.on('leave_room', (roomId) => {
-      // CRITICAL: Convert roomId to STRING to avoid type mismatch
       const roomIdString = String(roomId);
+      if (socket.viewingRoomId === roomIdString) socket.viewingRoomId = null;
       socket.leave(`room:${roomIdString}`);
       console.log(`User ${socket.userId} left room ${roomIdString}`);
     });
@@ -112,12 +112,13 @@ const setupSocketIO = (io) => {
         // CRITICAL: Convert roomId to STRING to avoid type mismatch
         const roomIdString = String(roomId);
 
-        // Verify room access
+        // Verify room access and get ad owner for lastSellerMessageAt
         const room = await prisma.chatRoom.findUnique({
           where: { id: roomIdString },
           include: {
             user1: true,
-            user2: true
+            user2: true,
+            ad: { select: { userId: true } }
           }
         });
 
@@ -132,6 +133,7 @@ const setupSocketIO = (io) => {
         }
 
         const receiverId = room.user1Id === socket.userId ? room.user2Id : room.user1Id;
+        const sellerId = room.ad?.userId;
 
         // Save message to database
         const message = await prisma.chatMessage.create({
@@ -154,10 +156,14 @@ const setupSocketIO = (io) => {
           }
         });
 
-        // Update room's updatedAt
+        // Update room's updatedAt; if sender is seller, set lastSellerMessageAt (human override - AI stays silent 30 min)
+        const now = new Date();
         await prisma.chatRoom.update({
           where: { id: roomIdString },
-          data: { updatedAt: new Date() }
+          data: {
+            updatedAt: now,
+            ...(sellerId && socket.userId === sellerId ? { lastSellerMessageAt: now } : {})
+          }
         });
 
         // ROOT FIX: Use io.to() to broadcast to ALL users in room (not just sender)
@@ -232,6 +238,17 @@ const setupSocketIO = (io) => {
         } else {
           // Receiver is online - WebSocket will handle it
           console.log(`✅ Receiver ${receiverId} is online, message delivered via WebSocket`);
+        }
+
+        // Auto AI reply: if sender is buyer (not seller), trigger AI reply in background if seller eligible
+        if (sellerId && socket.userId !== sellerId) {
+          const openAiKey = process.env.OPENAI_API_KEY;
+          setImmediate(() => {
+            const { triggerAiReplyIfEligible } = require('../services/salesAssistantService');
+            triggerAiReplyIfEligible(roomIdString, sellerId, openAiKey).catch((err) =>
+              console.error('AI auto-reply:', err.message)
+            );
+          });
         }
       } catch (error) {
         console.error('Send message error:', error);
@@ -437,9 +454,9 @@ const setupSocketIO = (io) => {
       }
     });
 
-    // Handle disconnect
     socket.on('disconnect', () => {
       console.log(`User disconnected: ${socket.userId}`);
+      socket.viewingRoomId = null;
 
       // Remove socket from userSockets
       const sockets = userSockets.get(socket.userId);
@@ -458,5 +475,29 @@ const setupSocketIO = (io) => {
   });
 };
 
-module.exports = { setupSocketIO, emitNotification, emitAdQuotaUpdate, getIO };
+/** Whether the user has any connected socket (online). */
+function isUserOnline(userId) {
+  if (!userId) return false;
+  const sockets = userSockets.get(userId);
+  return !!sockets && sockets.length > 0;
+}
+
+/** Room ID the user is currently viewing (any of their sockets). Null if not viewing a chat. */
+function getViewingRoomId(userId) {
+  if (!userId) return null;
+  const sockets = userSockets.get(userId);
+  if (!sockets || sockets.length === 0) return null;
+  const s = sockets.find((sock) => sock.viewingRoomId);
+  return s ? s.viewingRoomId : null;
+}
+
+module.exports = {
+  setupSocketIO,
+  emitNotification,
+  emitAdQuotaUpdate,
+  getIO,
+  isUserOnline,
+  getViewingRoomId,
+  userSockets,
+};
 

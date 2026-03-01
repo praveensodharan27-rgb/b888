@@ -22,6 +22,7 @@ class Ad {
     this.isUrgent = data.isUrgent || false;
     this.expiresAt = data.expiresAt;
     this.premiumExpiresAt = data.premiumExpiresAt || null;
+    this.packageType = data.packageType || 'NORMAL';
     this.createdAt = data.createdAt || new Date();
     this.updatedAt = data.updatedAt || new Date();
   }
@@ -100,6 +101,7 @@ class Ad {
       isUrgent: this.isUrgent,
       expiresAt: this.expiresAt,
       premiumExpiresAt: this.premiumExpiresAt,
+      packageType: this.packageType,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt
     };

@@ -1,46 +1,52 @@
-# Kill Process on Port 5000
-Write-Host "Finding and killing process on port 5000..." -ForegroundColor Cyan
+#!/usr/bin/env pwsh
+# Kill all processes using port 5000
+# Run this before starting the backend if you get EADDRINUSE error
 
-# Method 1: Find by port
-$connections = Get-NetTCPConnection -LocalPort 5000 -ErrorAction SilentlyContinue
-if ($connections) {
-    foreach ($conn in $connections) {
-        $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
-        if ($proc) {
-            Write-Host "Found process on port 5000:" -ForegroundColor Yellow
-            Write-Host "  PID: $($proc.Id)" -ForegroundColor White
-            Write-Host "  Name: $($proc.ProcessName)" -ForegroundColor White
-            Write-Host "  Path: $($proc.Path)" -ForegroundColor White
-            
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            Write-Host "  ✅ Killed process $($proc.Id)" -ForegroundColor Green
+Write-Host "`n🔍 Checking for processes on port 5000..." -ForegroundColor Cyan
+
+$processes = netstat -ano | Select-String ":5000" | Select-String "LISTENING"
+
+if ($processes) {
+    Write-Host "⚠️  Found process(es) using port 5000" -ForegroundColor Yellow
+    
+    $processIds = @()
+    $processes | ForEach-Object {
+        $line = $_ -replace '\s+', ' '
+        $pid = ($line -split ' ')[-1]
+        if ($pid -and $pid -match '^\d+$' -and $pid -notin $processIds) {
+            $processIds += $pid
         }
     }
-} else {
-    Write-Host "No process found on port 5000" -ForegroundColor Yellow
-}
-
-# Method 2: Kill all Node.js processes
-Write-Host "`nKilling all Node.js processes..." -ForegroundColor Cyan
-$nodeProcesses = Get-Process node -ErrorAction SilentlyContinue
-if ($nodeProcesses) {
-    foreach ($proc in $nodeProcesses) {
-        Write-Host "  Killing PID: $($proc.Id)" -ForegroundColor Gray
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    
+    Write-Host "📋 PIDs: $($processIds -join ', ')" -ForegroundColor Yellow
+    Write-Host "🔪 Killing process(es)...`n" -ForegroundColor Yellow
+    
+    foreach ($pid in $processIds) {
+        try {
+            Stop-Process -Id $pid -Force -ErrorAction Stop
+            Write-Host "   ✅ Killed process $pid" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "   ⚠️  Could not kill process $pid" -ForegroundColor Red
+        }
     }
-    Write-Host "✅ Killed $($nodeProcesses.Count) Node.js process(es)" -ForegroundColor Green
-} else {
-    Write-Host "No Node.js processes found" -ForegroundColor Yellow
+    
+    # Wait a moment for ports to be released
+    Start-Sleep -Seconds 1
+    
+    # Verify port is free
+    $check = netstat -ano | Select-String ":5000" | Select-String "LISTENING"
+    if ($check) {
+        Write-Host "`n⚠️  Port 5000 still in use. Try again or restart your computer." -ForegroundColor Red
+    }
+    else {
+        Write-Host "`n✅ Port 5000 is now free!" -ForegroundColor Green
+        Write-Host "You can now run: npm start" -ForegroundColor Cyan
+    }
+}
+else {
+    Write-Host "✅ Port 5000 is already free" -ForegroundColor Green
+    Write-Host "You can run: npm start" -ForegroundColor Cyan
 }
 
-# Verify port is free
-Start-Sleep -Seconds 1
-$stillInUse = Get-NetTCPConnection -LocalPort 5000 -ErrorAction SilentlyContinue
-if ($stillInUse) {
-    Write-Host "`n⚠️  Port 5000 is still in use. You may need to:" -ForegroundColor Yellow
-    Write-Host "  1. Restart your computer" -ForegroundColor White
-    Write-Host "  2. Check for other applications using port 5000" -ForegroundColor White
-} else {
-    Write-Host "`n✅ Port 5000 is now free!" -ForegroundColor Green
-    Write-Host "You can now start your server with: npm run dev" -ForegroundColor Cyan
-}
+Write-Host ""

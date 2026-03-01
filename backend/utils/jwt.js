@@ -4,13 +4,13 @@ const generateToken = (userId) => {
   return jwt.sign(
     { userId, iat: Math.floor(Date.now() / 1000) },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    { algorithm: 'HS256', expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
 };
 
 const verifyToken = (token) => {
   try {
-    return jwt.verify(token, process.env.JWT_SECRET);
+    return jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
   } catch (error) {
     throw new Error('Invalid token');
   }

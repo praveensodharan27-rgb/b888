@@ -5,9 +5,36 @@ const { cacheMiddleware } = require('../middleware/cache');
 const router = express.Router();
 const prisma = new PrismaClient();
 
+/**
+ * Helper function to detect database connection errors
+ */
+function isDatabaseConnectionError(error) {
+  if (!error) return false;
+  
+  // Prisma error codes for connection issues
+  const connectionErrorCodes = ['P2010', 'P1001', 'P1002', 'P1008'];
+  if (connectionErrorCodes.includes(error.code)) return true;
+  
+  // Check error message for connection-related keywords
+  const errorMessage = error.message || error.meta?.message || '';
+  const connectionKeywords = [
+    'server selection timeout',
+    'no available servers',
+    'connection',
+    'network',
+    'econnrefused',
+    'etimedout',
+    'fatal alert',
+    'internalerror'
+  ];
+  
+  const messageLower = errorMessage.toLowerCase();
+  return connectionKeywords.some(keyword => messageLower.includes(keyword));
+}
+
 // Get all locations with details
 router.get('/',
-  cacheMiddleware(10 * 60 * 1000), // Cache for 10 minutes (locations don't change often)
+  cacheMiddleware(10 * 60), // Cache for 10 minutes (locations don't change often)
   async (req, res) => {
   try {
     const { state, city, type, detailed } = req.query;
@@ -98,6 +125,15 @@ router.get('/',
     res.json({ success: true, locations });
     }
   } catch (error) {
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching locations');
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
     console.error('Get locations error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch locations' });
   }
@@ -178,6 +214,15 @@ router.get('/list',
       }
     });
   } catch (error) {
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching locations list');
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
     console.error('Get locations list error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch locations list' });
   }
@@ -214,6 +259,15 @@ router.get('/states',
 
     res.json({ success: true, states });
   } catch (error) {
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching states');
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
     console.error('Get states error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch states' });
   }
@@ -373,18 +427,18 @@ router.get('/states/:state/cities',
 
     res.json({ success: true, cities, indexed });
   } catch (error) {
-    console.error('❌ Get cities error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      state: req.params?.state,
-      query: req.query?.q
-    });
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch cities',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching cities');
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
+    console.error('❌ Get cities error:', error.message);
+    const { getSafeErrorPayload } = require('../utils/safeErrorResponse');
+    res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch cities'));
   }
 });
 
@@ -421,6 +475,15 @@ router.get('/cities/:city/areas',
 
     res.json({ success: true, areas: locations });
   } catch (error) {
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching areas');
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
     console.error('Get areas error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch areas' });
   }
@@ -492,6 +555,15 @@ router.get('/mobile/nearby', async (req, res) => {
       radius: radiusKm
     });
   } catch (error) {
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching nearby locations');
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
     console.error('Get nearby locations error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch nearby locations' });
   }
@@ -503,7 +575,7 @@ router.get('/mobile/nearby', async (req, res) => {
 
 // Get neighborhoods by state and/or city
 router.get('/neighborhoods',
-  cacheMiddleware(5 * 60 * 1000), // Cache for 5 minutes
+  cacheMiddleware(5 * 60), // Cache for 5 minutes
   async (req, res) => {
   try {
     const { state, city, q, limit = 50 } = req.query;
@@ -554,6 +626,15 @@ router.get('/neighborhoods',
 
     res.json({ success: true, neighborhoods });
   } catch (error) {
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching neighborhoods');
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
     console.error('Get neighborhoods error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch neighborhoods' });
   }
@@ -674,18 +755,19 @@ router.get('/mobile/search', async (req, res) => {
       query: searchQuery
     });
   } catch (error) {
-    console.error('❌ Search locations error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      query: req.query
-    });
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error searching locations');
+      // Return empty results instead of error to prevent frontend crashes
+      return res.json({ 
+        success: true, 
+        locations: [],
+        query: req.query.q || ''
+      });
+    }
+    console.error('❌ Search locations error:', error.message);
     // Return empty results instead of error to prevent frontend crashes
-    res.json({ 
-      success: true, 
-      locations: [],
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    res.json({ success: true, locations: [], query: req.query.q || '' });
   }
 });
 
@@ -713,7 +795,38 @@ router.get('/:slug', async (req, res) => {
 
     res.json({ success: true, location });
   } catch (error) {
-    console.error('Get location error:', error);
+    // Handle database connection errors gracefully
+    if (isDatabaseConnectionError(error)) {
+      console.warn('⚠️ Database connection error fetching location:', {
+        code: error?.code,
+        message: error?.message || error?.meta?.message,
+        slug: req.params.slug
+      });
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database temporarily unavailable. Please try again later.',
+        error: 'DATABASE_UNAVAILABLE'
+      });
+    }
+    
+    // Handle other Prisma errors
+    if (error?.code?.startsWith('P')) {
+      console.error('❌ Prisma error fetching location:', {
+        code: error?.code,
+        message: error?.message,
+        meta: error?.meta
+      });
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Database query failed. Please try again later.',
+        error: 'DATABASE_ERROR'
+      });
+    }
+    
+    console.error('❌ Get location error:', {
+      message: error?.message || 'Unknown error',
+      slug: req.params.slug
+    });
     res.status(500).json({ success: false, message: 'Failed to fetch location' });
   }
 });

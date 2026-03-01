@@ -77,4 +77,4 @@ if (updated) {
   console.log('\n✅ DATABASE_URL already has correct protocol');
 }
 
-console.log('\n📋 Next: npm run prisma:generate && npm run add-dummy-data\n');
+console.log('\n📋 Next: npm run prisma:generate && npm run seed-all-db\n');

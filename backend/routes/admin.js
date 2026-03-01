@@ -343,7 +343,8 @@ router.put('/ads/:id/status',
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, errors: errors.array() });
+        const msg = errors.array().map(e => e.msg).join('; ') || 'Validation failed';
+        return res.status(400).json({ success: false, message: msg, errors: errors.array() });
       }
 
       const { status, reason } = req.body;
@@ -397,7 +398,7 @@ router.put('/ads/:id/status',
       }
 
       // Create notification
-      await prisma.notification.create({
+      const notif = await prisma.notification.create({
         data: {
           userId: ad.userId,
           title: status === 'APPROVED' ? 'Ad Approved' : 'Ad Rejected',
@@ -408,6 +409,24 @@ router.put('/ads/:id/status',
           link: `/ads/${ad.id}`
         }
       });
+      try {
+        const { emitNotification } = require('../socket/socket');
+        emitNotification(ad.userId, {
+          id: notif.id,
+          title: notif.title,
+          message: notif.message,
+          type: notif.type,
+          link: notif.link,
+          isRead: false,
+          createdAt: notif.createdAt
+        });
+      } catch (e) {
+        console.warn('⚠️ Socket emit for admin status notification failed:', e?.message);
+      }
+      try {
+        const { invalidateNotificationCache } = require('../utils/redis-helpers');
+        await invalidateNotificationCache(ad.userId);
+      } catch (_) {}
 
       // Send email and SMS notifications when ad is approved
       if (status === 'APPROVED') {
@@ -973,6 +992,111 @@ router.delete('/banners/:id', async (req, res) => {
   }
 });
 
+// -------- Free Posting Promo Cards --------
+router.get('/free-posting-promos', async (req, res) => {
+  try {
+    const promos = await prisma.freePostingPromo.findMany({
+      orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+    });
+    res.json({ success: true, promos });
+  } catch (error) {
+    console.error('Get free-posting-promos error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch promo cards' });
+  }
+});
+
+router.post('/free-posting-promos',
+  uploadImages,
+  [],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+      const {
+        title, description, ctaText, ctaLink, priority,
+        startDate, endDate, isActive, showForAllLocations
+      } = req.body;
+      let targetLocations = req.body.targetLocations;
+      if (typeof targetLocations === 'string') {
+        try { targetLocations = JSON.parse(targetLocations); } catch { targetLocations = []; }
+      }
+      const imageUrl = req.uploadedImages?.length
+        ? (typeof req.uploadedImages[0] === 'string' ? req.uploadedImages[0] : (req.uploadedImages[0]?.url || req.uploadedImages[0]))
+        : null;
+      if (!imageUrl && !(title || '').trim()) {
+        return res.status(400).json({ success: false, message: 'Image or title is required' });
+      }
+      const promo = await prisma.freePostingPromo.create({
+        data: {
+          image: imageUrl,
+          title: title || '',
+          description: description || null,
+          ctaText: ctaText || 'Post Free Ad',
+          ctaLink: ctaLink || '/post-ad',
+          priority: priority ? parseInt(priority) : 0,
+          startDate: startDate ? new Date(startDate) : null,
+          endDate: endDate ? new Date(endDate) : null,
+          isActive: isActive === false || isActive === 'false' ? false : true,
+          showForAllLocations: showForAllLocations === true || showForAllLocations === 'true',
+          targetLocations: Array.isArray(targetLocations) ? targetLocations : [],
+        },
+      });
+      res.status(201).json({ success: true, promo });
+    } catch (error) {
+      console.error('Create free-posting-promo error:', error);
+      res.status(500).json({ success: false, message: 'Failed to create promo card' });
+    }
+  }
+);
+
+router.put('/free-posting-promos/:id',
+  uploadImages,
+  async (req, res) => {
+    try {
+      const updateData = {};
+      if (req.body.title !== undefined) updateData.title = req.body.title;
+      if (req.body.description !== undefined) updateData.description = req.body.description;
+      if (req.body.ctaText !== undefined) updateData.ctaText = req.body.ctaText;
+      if (req.body.ctaLink !== undefined) updateData.ctaLink = req.body.ctaLink;
+      if (req.body.priority !== undefined) updateData.priority = parseInt(req.body.priority);
+      if (req.body.startDate !== undefined) updateData.startDate = req.body.startDate ? new Date(req.body.startDate) : null;
+      if (req.body.endDate !== undefined) updateData.endDate = req.body.endDate ? new Date(req.body.endDate) : null;
+      if (req.body.isActive !== undefined) updateData.isActive = req.body.isActive === true || req.body.isActive === 'true';
+      if (req.body.showForAllLocations !== undefined) updateData.showForAllLocations = req.body.showForAllLocations === true || req.body.showForAllLocations === 'true';
+      if (req.body.targetLocations !== undefined) {
+        let tl = req.body.targetLocations;
+        if (typeof tl === 'string') { try { tl = JSON.parse(tl); } catch { tl = []; } }
+        updateData.targetLocations = Array.isArray(tl) ? tl : [];
+      }
+      if (req.uploadedImages?.length) {
+        updateData.image = typeof req.uploadedImages[0] === 'string' ? req.uploadedImages[0] : (req.uploadedImages[0]?.url || req.uploadedImages[0]);
+      }
+      const promo = await prisma.freePostingPromo.update({
+        where: { id: req.params.id },
+        data: updateData,
+      });
+      res.json({ success: true, promo });
+    } catch (error) {
+      console.error('Update free-posting-promo error:', error);
+      res.status(500).json({ success: false, message: 'Failed to update promo card' });
+    }
+  }
+);
+
+router.delete('/free-posting-promos/:id', async (req, res) => {
+  try {
+    await prisma.freePostingPromo.delete({
+      where: { id: req.params.id },
+    });
+    res.json({ success: true, message: 'Promo card deleted' });
+  } catch (error) {
+    console.error('Delete free-posting-promo error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete promo card' });
+  }
+});
+
 // Interstitial Ad management - Public endpoint (no auth required for GET)
 router.get('/interstitial-ads', async (req, res) => {
   try {
@@ -1119,6 +1243,164 @@ router.delete('/interstitial-ads/:id', async (req, res) => {
   } catch (error) {
     console.error('Delete interstitial ad error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete interstitial ad' });
+  }
+});
+
+// ==================== Sponsored Ads Management ====================
+const sponsoredAdsService = require('../services/sponsoredAdsService');
+const { normalizeLocationSlug } = require('../utils/locationSlug');
+
+// Get all sponsored ads (admin)
+router.get('/sponsored-ads', async (req, res) => {
+  try {
+    const ads = await sponsoredAdsService.findMany({
+      orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+      take: 200
+    });
+    res.json({ success: true, ads });
+  } catch (error) {
+    console.error('Get sponsored ads error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch sponsored ads' });
+  }
+});
+
+// Create sponsored ad
+router.post('/sponsored-ads',
+  uploadImages,
+  [
+    body('title').notEmpty().withMessage('Title is required'),
+    body('adSize').optional().isIn(['auto', 'all', 'small', 'medium', 'large']),
+    body('ctaType').optional().isIn(['call', 'whatsapp', 'website']),
+    body('status').optional().isIn(['active', 'paused', 'expired'])
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const {
+        title, bannerImage, bannerVideo, description,
+        ctaType, ctaLabel, redirectUrl,
+        targetLocations, categorySlug, adSize,
+        startDate, endDate, budget, priority, status
+      } = req.body;
+
+      const imageUrl = req.uploadedImages?.[0]
+        ? (typeof req.uploadedImages[0] === 'string' ? req.uploadedImages[0] : req.uploadedImages[0]?.url)
+        : bannerImage || null;
+      const locations = Array.isArray(targetLocations) ? targetLocations : (targetLocations ? JSON.parse(targetLocations || '[]') : []);
+
+      const ad = await sponsoredAdsService.create({
+        title: title.trim(),
+        bannerImage: imageUrl || bannerImage,
+        bannerVideo: bannerVideo || null,
+        description: description?.trim() || null,
+        ctaType: ctaType || 'website',
+        ctaLabel: ctaLabel?.trim() || null,
+        redirectUrl: redirectUrl?.trim() || null,
+        targetLocations: locations.map((l) => normalizeLocationSlug(String(l))).filter(Boolean),
+        categorySlug: categorySlug?.trim().toLowerCase() || null,
+        adSize: adSize || 'auto',
+        startDate: startDate ? new Date(startDate) : null,
+        endDate: endDate ? new Date(endDate) : null,
+        budget: parseFloat(budget) || 0,
+        priority: parseInt(priority) || 0,
+        status: status || 'active'
+      });
+
+      res.status(201).json({ success: true, ad });
+    } catch (error) {
+      console.error('Create sponsored ad error:', error);
+      res.status(500).json({ success: false, message: 'Failed to create sponsored ad' });
+    }
+  }
+);
+
+// Update sponsored ad
+router.put('/sponsored-ads/:id',
+  uploadImages,
+  async (req, res) => {
+    try {
+      const {
+        title, bannerImage, bannerVideo, description,
+        ctaType, ctaLabel, redirectUrl,
+        targetLocations, categorySlug, adSize,
+        startDate, endDate, budget, priority, status
+      } = req.body;
+
+      const updateData = {};
+      if (title !== undefined) updateData.title = title.trim();
+      if (bannerImage !== undefined) updateData.bannerImage = bannerImage;
+      if (bannerVideo !== undefined) updateData.bannerVideo = bannerVideo;
+      if (description !== undefined) updateData.description = description?.trim() || null;
+      if (ctaType !== undefined) updateData.ctaType = ctaType;
+      if (ctaLabel !== undefined) updateData.ctaLabel = ctaLabel?.trim() || null;
+      if (redirectUrl !== undefined) updateData.redirectUrl = redirectUrl?.trim() || null;
+      if (targetLocations !== undefined) {
+        const locations = Array.isArray(targetLocations) ? targetLocations : (targetLocations ? JSON.parse(targetLocations || '[]') : []);
+        updateData.targetLocations = locations.map((l) => normalizeLocationSlug(String(l))).filter(Boolean);
+      }
+      if (categorySlug !== undefined) updateData.categorySlug = categorySlug?.trim().toLowerCase() || null;
+      if (adSize !== undefined) updateData.adSize = adSize;
+      if (startDate !== undefined) updateData.startDate = startDate ? new Date(startDate) : null;
+      if (endDate !== undefined) updateData.endDate = endDate ? new Date(endDate) : null;
+      if (budget !== undefined) updateData.budget = parseFloat(budget) || 0;
+      if (priority !== undefined) updateData.priority = parseInt(priority) || 0;
+      if (status !== undefined) updateData.status = status;
+
+      if (req.uploadedImages?.[0]) {
+        updateData.bannerImage = typeof req.uploadedImages[0] === 'string' ? req.uploadedImages[0] : req.uploadedImages[0]?.url;
+      }
+
+      const ad = await sponsoredAdsService.update(req.params.id, updateData);
+
+      res.json({ success: true, ad });
+    } catch (error) {
+      console.error('Update sponsored ad error:', error);
+      res.status(500).json({ success: false, message: 'Failed to update sponsored ad' });
+    }
+  }
+);
+
+// Delete sponsored ad
+router.delete('/sponsored-ads/:id', async (req, res) => {
+  try {
+    await sponsoredAdsService.deleteOne(req.params.id);
+    res.json({ success: true, message: 'Sponsored ad deleted' });
+  } catch (error) {
+    console.error('Delete sponsored ad error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete sponsored ad' });
+  }
+});
+
+// Sponsored ads analytics
+router.get('/sponsored-ads/analytics', async (req, res) => {
+  try {
+    const ads = await sponsoredAdsService.findMany({
+      take: 500
+    });
+
+    const totalImpressions = ads.reduce((s, a) => s + (a.impressions || 0), 0);
+    const totalClicks = ads.reduce((s, a) => s + (a.clicks || 0), 0);
+    const ctr = totalImpressions > 0 ? ((totalClicks / totalImpressions) * 100).toFixed(2) : 0;
+
+    res.json({
+      success: true,
+      analytics: {
+        totalImpressions,
+        totalClicks,
+        ctr: parseFloat(ctr),
+        ads: ads.map((a) => ({
+          ...a,
+          ctr: (a.impressions || 0) > 0 ? (((a.clicks || 0) / (a.impressions || 1)) * 100).toFixed(2) : 0
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Sponsored ads analytics error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch analytics' });
   }
 });
 
@@ -2825,19 +3107,25 @@ router.get('/feature-flags/:flagName/stats', authenticate, requireAdmin, async (
 router.post('/cache/clear', async (req, res) => {
   try {
     const { clearCache } = require('../middleware/cache');
-    const { pattern } = req.body;
+    const { clearAdsCache } = require('../utils/redis-helpers');
+    const { pattern } = req.body || {};
     
-    if (pattern) {
-      clearCache(pattern);
+    let result;
+    if (pattern && pattern !== '*' && pattern !== 'all') {
+      result = await clearCache(pattern);
       res.json({
         success: true,
-        message: `Cache cleared for pattern: ${pattern}`
+        message: `Cache cleared for pattern: ${pattern}`,
+        keysDeleted: result
       });
     } else {
-      clearCache(); // Clear all cache
+      result = await clearCache('all');
+      // Also clear in-memory ad rank cache if any
+      try { await clearAdsCache(); } catch (_) {}
       res.json({
         success: true,
-        message: 'All server cache cleared successfully'
+        message: 'All server cache cleared successfully',
+        keysDeleted: result
       });
     }
   } catch (error) {
@@ -2854,15 +3142,19 @@ router.post('/cache/clear', async (req, res) => {
 router.get('/cache/stats', async (req, res) => {
   try {
     const { getCacheSize, getCacheKeys } = require('../middleware/cache');
-    const size = getCacheSize();
-    const keys = getCacheKeys();
+    const { isAvailable } = require('../config/redis');
+    
+    const size = await getCacheSize();
+    const keys = await getCacheKeys('*');
+    const keysList = Array.isArray(keys) ? keys : [];
     
     res.json({
       success: true,
+      redisAvailable: isAvailable(),
       stats: {
         size,
-        keys: keys.slice(0, 50), // Return first 50 keys to avoid huge response
-        totalKeys: keys.length
+        totalKeys: keysList.length,
+        keys: keysList.slice(0, 50)
       }
     });
   } catch (error) {
@@ -2871,6 +3163,61 @@ router.get('/cache/stats', async (req, res) => {
       success: false, 
       message: 'Failed to get cache stats' 
     });
+  }
+});
+
+// Ad ranking + rotation config (Business Basic/Pro/Enterprise)
+const { getRankConfig, updateRankConfig, invalidateRankConfigCache } = require('../services/adRankConfigService');
+const { runRotationCycle } = require('../services/adRotationService');
+
+router.get('/rank-config', async (req, res) => {
+  try {
+    const config = await getRankConfig();
+    res.json({ success: true, config });
+  } catch (error) {
+    console.error('Get rank config error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch rank config' });
+  }
+});
+
+router.put('/rank-config',
+  [
+    body('featuredDurationDays').optional().isInt({ min: 1, max: 90 }),
+    body('bumpDurationDays').optional().isInt({ min: 1, max: 30 }),
+    body('rotationIntervalHours').optional().isFloat({ min: 0.5, max: 24 }),
+    body('proSearchPercent').optional().isInt({ min: 0, max: 100 }),
+    body('enterpriseSearchPercent').optional().isInt({ min: 0, max: 100 }),
+    body('basicSearchPercent').optional().isInt({ min: 0, max: 100 }),
+    body('boostLimits').optional().isObject(),
+    body('disableRotation').optional().isBoolean(),
+    body('manualPriorityOverrides').optional().isObject()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+      const updates = { ...req.body };
+      delete updates.updatedAt;
+      delete updates.updatedBy;
+      const config = await updateRankConfig(updates, req.user?.id);
+      invalidateRankConfigCache();
+      res.json({ success: true, config });
+    } catch (error) {
+      console.error('Update rank config error:', error);
+      res.status(500).json({ success: false, message: 'Failed to update rank config' });
+    }
+  }
+);
+
+router.post('/rank-config/rotate-now', async (req, res) => {
+  try {
+    const result = await runRotationCycle();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('Run rotation error:', error);
+    res.status(500).json({ success: false, message: 'Failed to run rotation' });
   }
 });
 

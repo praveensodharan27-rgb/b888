@@ -1,30 +1,66 @@
 const AdService = require('../../application/services/AdService');
+const { getHomeFeedAds } = require('../../../services/locationWiseAdRankingService');
 const { PrismaClient } = require('@prisma/client');
+const { logger } = require('../../config/logger');
+const { getSafeErrorPayload } = require('../../../utils/safeErrorResponse');
 const prisma = new PrismaClient();
+
+function logError(req, err, msg, ctx = {}) {
+  const log = (req && req.log) ? req.log : logger;
+  log.error({ requestId: req && req.id, err: err && err.message, ...ctx }, msg);
+}
 
 /**
  * Ad Controller
  * Handles HTTP requests/responses for Ad operations
  */
 class AdController {
+  /**
+   * Validate MongoDB ObjectID format
+   * @param {string} id - The ID to validate
+   * @returns {boolean} - True if valid ObjectID format
+   */
+  isValidObjectId(id) {
+    if (!id || typeof id !== 'string') return false;
+    const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+    return objectIdRegex.test(id);
+  }
+
+  async getHomeFeed(req, res) {
+    try {
+      const { page = 1, limit = 12, city, state, location, latitude, longitude, category, subcategory } = req.query;
+      const result = await getHomeFeedAds({
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
+        city: city || undefined,
+        state: state || undefined,
+        locationSlug: location || undefined,
+        latitude: latitude ? parseFloat(latitude) : undefined,
+        longitude: longitude ? parseFloat(longitude) : undefined,
+        category: category || undefined,
+        subcategory: subcategory || undefined,
+        includeSponsored: true,
+      });
+      res.json({
+        success: true,
+        ads: result.ads,
+        pagination: {
+          page: result.page,
+          limit: result.limit,
+          total: result.total,
+          totalPages: result.totalPages,
+        },
+      });
+    } catch (error) {
+      logError(req, error, 'Get home feed error');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch home feed'));
+    }
+  }
+
   async getAds(req, res) {
     try {
-      const filters = {
-        page: req.query.page,
-        limit: req.query.limit,
-        category: req.query.category,
-        subcategory: req.query.subcategory,
-        location: req.query.location,
-        minPrice: req.query.minPrice,
-        maxPrice: req.query.maxPrice,
-        search: req.query.search,
-        condition: req.query.condition,
-        sort: req.query.sort,
-        latitude: req.query.latitude,
-        longitude: req.query.longitude,
-        radius: req.query.radius,
-        userId: req.query.userId
-      };
+      const filters = { ...req.query };
+      // ram, storage, processor, graphics, etc. from query are passed through for attribute filtering
 
       const result = await AdService.getAds(filters);
       res.json({
@@ -38,31 +74,123 @@ class AdController {
         }
       });
     } catch (error) {
-      console.error('Get ads error:', error);
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Failed to fetch ads'
-      });
+      logError(req, error, 'Get ads error');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch ads'));
+    }
+  }
+
+  /**
+   * GET /ads/filter-options — aggregate from products (real data).
+   * Only specs that exist in currently available ads are returned.
+   */
+  async getFilterOptions(req, res) {
+    try {
+      const categorySlug = req.query.category;
+      const subcategorySlug = req.query.subcategory;
+      if (!categorySlug && !subcategorySlug) {
+        return res.json({ success: true, filterOptions: {}, brandModels: {} });
+      }
+      const { filterOptions, brandModels } = await AdService.getFilterOptionsFromAds(categorySlug, subcategorySlug);
+      res.json({ success: true, filterOptions: filterOptions || {}, brandModels: brandModels || {} });
+    } catch (error) {
+      logError(req, error, 'Get filter options error');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch filter options'));
     }
   }
 
   async getAdById(req, res) {
     try {
       const { id } = req.params;
+      
+      // Log the request for debugging
+      console.log('🔍 getAdById - Request received:', {
+        id,
+        idLength: id?.length,
+        idType: typeof id,
+        url: req.url,
+        path: req.path
+      });
+      
+      // Validate MongoDB ObjectID format (24 hex characters)
+      // This prevents errors when non-ID strings like "home-feed" are passed
+      if (!this.isValidObjectId(id)) {
+        console.warn('⚠️ getAdById - Invalid ObjectID format:', id);
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+      
       const ad = await AdService.getAdById(id);
+      
+      if (!ad) {
+        console.warn('⚠️ getAdById - Ad not found in database:', id);
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+      
+      console.log('✅ getAdById - Ad found:', {
+        id: ad.id,
+        title: ad.title?.substring(0, 50),
+        status: ad.status
+      });
+      
       res.json({ success: true, ad });
     } catch (error) {
-      console.error('Get ad error:', error);
+      logError(req, error, 'Get ad error', {
+        message: error.message,
+        code: error.code,
+        id: req.params.id,
+        stack: error.stack
+      });
+
+      // Handle Prisma ObjectID validation errors
+      if (error.code === 'P2023' || error.message?.includes('Malformed ObjectID')) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+      
       if (error.message === 'Ad not found') {
         return res.status(404).json({
           success: false,
           message: error.message
         });
       }
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Failed to fetch ad'
-      });
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch ad'));
+    }
+  }
+
+  /** GET /ads/by-path/:stateSlug/:citySlug/:categorySlug/:slug — ad by SEO path for /{state}/{city}/{category}/{slug} */
+  async getAdByPath(req, res) {
+    try {
+      const { stateSlug, citySlug, categorySlug, slug } = req.params;
+      const ad = await AdService.getAdByPath(stateSlug, citySlug, categorySlug, slug);
+      if (!ad) {
+        return res.status(404).json({ success: false, message: 'Ad not found' });
+      }
+      res.json({ success: true, ad });
+    } catch (error) {
+      logError(req, error, 'Get ad by path error', { message: error.message });
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch ad'));
+    }
+  }
+
+  /** GET /ads/by-service-path/:locationSlug/:categorySlug/:slug — JustDial-style /:city/services/:category/:slug */
+  async getAdByServicePath(req, res) {
+    try {
+      const { locationSlug, categorySlug, slug } = req.params;
+      const ad = await AdService.getAdByServicePath(locationSlug, categorySlug, slug);
+      if (!ad) {
+        return res.status(404).json({ success: false, message: 'Ad not found' });
+      }
+      res.json({ success: true, ad });
+    } catch (error) {
+      logError(req, error, 'Get ad by service path error', { message: error.message });
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch ad'));
     }
   }
 
@@ -109,23 +237,36 @@ class AdController {
         }
       }
 
+      const attributes = req.body.attributes ? (typeof req.body.attributes === 'string' ? JSON.parse(req.body.attributes) : req.body.attributes) : {};
+      const specifications = req.body.specifications ? (typeof req.body.specifications === 'string' ? JSON.parse(req.body.specifications) : req.body.specifications) : [];
+      if (Array.isArray(specifications) && specifications.length > 0) {
+        const specObj = {};
+        specifications.forEach((s) => {
+          if (s && (s.specificationId || s.name) && s.value != null && s.value !== '') {
+            const key = s.name || s.specificationId || s.id;
+            if (key) specObj[key] = s.value;
+          }
+        });
+        Object.assign(attributes, specObj);
+      }
       const adData = {
         title: req.body.title,
         description: req.body.description,
         price: req.body.price,
         originalPrice: req.body.originalPrice,
+        discount: req.body.discount != null && req.body.discount !== '' ? parseFloat(req.body.discount) : null,
         condition: req.body.condition,
         categoryId: req.body.categoryId,
         subcategoryId: req.body.subcategoryId,
-        locationId: req.body.locationId,
-        state: req.body.state,
-        city: req.body.city,
-        neighbourhood: req.body.neighbourhood,
-        exactLocation: req.body.exactLocation,
+        locationId: req.body.locationId || null,
+        state: req.body.state || null,
+        city: req.body.city || null,
+        neighbourhood: req.body.neighbourhood || null,
+        exactLocation: req.body.exactLocation || null,
         images: req.uploadedImages || [],
-        attributes: req.body.attributes ? (typeof req.body.attributes === 'string' ? JSON.parse(req.body.attributes) : req.body.attributes) : {},
-        premiumType: req.body.premiumType,
-        isUrgent: req.body.isUrgent
+        attributes,
+        premiumType: req.body.premiumType || null,
+        isUrgent: req.body.isUrgent === true || req.body.isUrgent === 'true'
       };
 
       const ad = await AdService.createAd(req.user.id, adData, paymentOrder);
@@ -136,7 +277,7 @@ class AdController {
         ad
       });
     } catch (error) {
-      console.error('Create ad error:', error);
+      logError(req, error, 'Create ad error');
       res.status(400).json({
         success: false,
         message: error.message || 'Failed to create ad'
@@ -147,17 +288,48 @@ class AdController {
   async updateAd(req, res) {
     try {
       const { id } = req.params;
+      
+      // Validate MongoDB ObjectID format
+      if (!this.isValidObjectId(id)) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+      // Only allow user to set status to INACTIVE or SOLD (prevent moderation bypass)
+      const allowedStatusesForUser = ['INACTIVE', 'SOLD'];
+      const requestedStatus = req.body.status;
+      const statusForUpdate =
+        requestedStatus && allowedStatusesForUser.includes(requestedStatus)
+          ? requestedStatus
+          : undefined;
+
       const adData = {
         title: req.body.title,
         description: req.body.description,
         price: req.body.price,
         originalPrice: req.body.originalPrice,
+        discount: req.body.discount != null && req.body.discount !== '' ? parseFloat(req.body.discount) : undefined,
         condition: req.body.condition,
+        ...(statusForUpdate && { status: statusForUpdate }),
         categoryId: req.body.categoryId,
         subcategoryId: req.body.subcategoryId,
-        locationId: req.body.locationId,
+        locationId: req.body.locationId != null ? req.body.locationId : undefined,
+        state: req.body.state != null ? req.body.state : undefined,
+        city: req.body.city != null ? req.body.city : undefined,
+        neighbourhood: req.body.neighbourhood != null ? req.body.neighbourhood : undefined,
+        exactLocation: req.body.exactLocation != null ? req.body.exactLocation : undefined,
         images: req.uploadedImages || req.body.images,
-        attributes: req.body.attributes
+        attributes: (() => {
+          const raw = req.body.attributes;
+          if (raw == null) return undefined;
+          if (typeof raw === 'object') return raw;
+          try {
+            return typeof raw === 'string' ? JSON.parse(raw) : raw;
+          } catch (e) {
+            return {};
+          }
+        })()
       };
 
       // Remove undefined values
@@ -174,7 +346,16 @@ class AdController {
         ad
       });
     } catch (error) {
-      console.error('Update ad error:', error);
+      logError(req, error, 'Update ad error');
+      
+      // Handle Prisma ObjectID validation errors
+      if (error.code === 'P2023' || error.message?.includes('Malformed ObjectID')) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+      
       if (error.message === 'Ad not found') {
         return res.status(404).json({
           success: false,
@@ -197,13 +378,31 @@ class AdController {
   async deleteAd(req, res) {
     try {
       const { id } = req.params;
+      
+      // Validate MongoDB ObjectID format
+      if (!this.isValidObjectId(id)) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+      
       await AdService.deleteAd(id, req.user.id);
       res.json({
         success: true,
         message: 'Ad deleted successfully'
       });
     } catch (error) {
-      console.error('Delete ad error:', error);
+      logError(req, error, 'Delete ad error');
+      
+      // Handle Prisma ObjectID validation errors
+      if (error.code === 'P2023' || error.message?.includes('Malformed ObjectID')) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+      
       if (error.message === 'Ad not found') {
         return res.status(404).json({
           success: false,
@@ -216,28 +415,202 @@ class AdController {
           message: error.message
         });
       }
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Failed to delete ad'
-      });
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to delete ad'));
     }
   }
 
   async checkLimit(req, res) {
     try {
-      const limit = await AdService.checkAdLimit(req.user.id);
+      const premiumSelected = req.query.premiumSelected === 'true';
+      const limit = await AdService.checkAdLimit(req.user.id, { premiumSelected });
       res.json({
         success: true,
         ...limit
       });
     } catch (error) {
-      console.error('Check limit error:', error);
-      res.status(500).json({
-        success: false,
-        message: error.message || 'Failed to check ad limit'
-      });
+      logError(req, error, 'Check limit error');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to check ad limit'));
     }
   }
+
+  async getFavoriteStatus(req, res) {
+    try {
+      const { id } = req.params;
+      const userId = req.user.id;
+
+      // Validate ObjectID
+      if (!this.isValidObjectId(id)) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+
+      // Check if ad exists
+      const ad = await prisma.ad.findUnique({
+        where: { id },
+        select: { id: true }
+      });
+
+      if (!ad) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+
+      // Check if favorite exists
+      const favorite = await prisma.favorite.findUnique({
+        where: {
+          userId_adId: {
+            userId,
+            adId: id
+          }
+        }
+      });
+
+      res.json({
+        success: true,
+        isFavorite: !!favorite
+      });
+    } catch (error) {
+      logError(req, error, 'Get favorite status error');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to check favorite status'));
+    }
+  }
+
+  async toggleFavorite(req, res) {
+    try {
+      const { id } = req.params;
+      const userId = req.user.id;
+
+      // Validate ObjectID
+      if (!this.isValidObjectId(id)) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+
+      // Check if ad exists
+      const ad = await prisma.ad.findUnique({
+        where: { id },
+        select: { id: true }
+      });
+
+      if (!ad) {
+        return res.status(404).json({
+          success: false,
+          message: 'Ad not found'
+        });
+      }
+
+      // Check if favorite already exists
+      const existingFavorite = await prisma.favorite.findUnique({
+        where: {
+          userId_adId: {
+            userId,
+            adId: id
+          }
+        }
+      });
+
+      let isFavorite;
+      if (existingFavorite) {
+        // Remove favorite
+        await prisma.favorite.delete({
+          where: {
+            userId_adId: {
+              userId,
+              adId: id
+            }
+          }
+        });
+        isFavorite = false;
+      } else {
+        // Add favorite
+        await prisma.favorite.create({
+          data: {
+            userId,
+            adId: id
+          }
+        });
+        isFavorite = true;
+      }
+
+      res.json({
+        success: true,
+        isFavorite
+      });
+    } catch (error) {
+      logError(req, error, 'Toggle favorite error');
+      
+      // Handle unique constraint violation (already favorited)
+      if (error.code === 'P2002') {
+        return res.status(409).json({
+          success: false,
+          message: 'Favorite already exists'
+        });
+      }
+
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to toggle favorite'));
+    }
+  }
+
+  /**
+   * Autocomplete endpoint for search suggestions
+   * GET /ads/autocomplete?q=<query>&limit=<limit>
+   */
+  async autocomplete(req, res) {
+    try {
+      const { q: query, limit = 8 } = req.query;
+      
+      if (!query || query.trim().length < 2) {
+        return res.json({ success: true, suggestions: [] });
+      }
+
+      // Use Meilisearch autocomplete
+      const { autocomplete } = require('../../../services/meilisearch');
+      const suggestions = await autocomplete(query.trim(), parseInt(limit, 10));
+
+      // Log search for analytics (async, non-blocking)
+      const { logSearch } = require('../../../utils/searchAnalytics');
+      setImmediate(() => {
+        logSearch(query.trim(), suggestions?.length || 0, req.user?.id, { type: 'autocomplete' });
+      });
+
+      res.json({
+        success: true,
+        suggestions: suggestions || [],
+      });
+    } catch (error) {
+      logError(req, error, 'Autocomplete error');
+      // Return empty array on error (graceful degradation)
+      res.json({ success: true, suggestions: [] });
+    }
+  }
+
+  /**
+   * Get popular searches
+   * GET /ads/popular-searches?limit=<limit>
+   */
+  async getPopularSearches(req, res) {
+    try {
+      const { limit = 10 } = req.query;
+      
+      const { getPopularSearches } = require('../../../utils/searchAnalytics');
+      const searches = await getPopularSearches(parseInt(limit, 10));
+
+      res.json({
+        success: true,
+        searches: searches || [],
+      });
+    } catch (error) {
+      logError(req, error, 'Get popular searches error');
+      res.json({ success: true, searches: [] });
+    }
+  }
+
 }
 
 module.exports = new AdController();

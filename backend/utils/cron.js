@@ -5,142 +5,151 @@ const { autoApprovePendingAds } = require('../services/autoApproval');
 const { resetMonthlyFreeAds } = require('../services/monthlyQuotaReset');
 const { expireAds } = require('../scripts/expire-ads');
 const { cleanupExpiredAds, refreshAllClusters, mergeLowVolumeClusters } = require('../services/clusterAutoUpdate');
+const { runRotationCycle } = require('../services/adRotationService');
+const { expireFeaturedAds, expireBumpAds, expireTopAds } = require('../services/promotionService');
+const { logger } = require('../src/config/logger');
+
+// Job lock: prevent duplicate runs when a job overruns its schedule
+const runningJobs = new Map();
+const JOB_LOCK_TTL_MS = 30 * 60 * 1000; // 30 min max run; then lock expires
+
+function withJobLock(name, fn) {
+  return async () => {
+    if (runningJobs.get(name)) {
+      logger.warn({ job: name }, 'Cron job skipped (already running)');
+      return;
+    }
+    runningJobs.set(name, Date.now());
+    try {
+      await fn();
+    } catch (error) {
+      logger.error({ err: error.message, job: name }, 'Cron job failed');
+    } finally {
+      runningJobs.delete(name);
+    }
+  };
+}
+
+// Startup delays (avoid blocking server; spread load)
+const STARTUP_DELAY_SEARCH_ALERTS_MS = 2 * 60 * 1000;   // 2 min
+const STARTUP_DELAY_MODERATION_MS = 3 * 60 * 1000;      // 3 min
 
 /**
- * Setup cron jobs for scheduled tasks
+ * Setup cron jobs: spread heavy jobs across time, job locking, structured logging
  */
 function setupCronJobs() {
-  // Run daily at 2 AM to delete deactivated accounts
-  cron.schedule('0 2 * * *', async () => {
-    console.log('⏰ Running scheduled task: Delete deactivated accounts');
-    try {
-      await deleteDeactivatedAccounts();
-    } catch (error) {
-      console.error('❌ Error in scheduled task:', error);
-    }
-  });
-  
-  // Run search alerts processing every hour
-  cron.schedule('0 * * * *', async () => {
-    console.log('⏰ Running scheduled task: Process search alerts');
-    try {
-      await processSearchAlerts();
-    } catch (error) {
-      console.error('❌ Error in search alerts task:', error);
-    }
-  });
-  
-  // Process pending moderation after 5 minutes (runs every 5 minutes)
-  cron.schedule('*/5 * * * *', async () => {
-    console.log('⏰ Running scheduled task: Process pending moderation');
-    try {
-      await autoApprovePendingAds(5); // Process ads after 5 minutes
-    } catch (error) {
-      console.error('❌ Error in moderation processing task:', error);
-    }
-  });
+  // Daily 2 AM - delete deactivated accounts
+  cron.schedule('0 2 * * *', withJobLock('delete_deactivated', async () => {
+    logger.info({ job: 'delete_deactivated' }, 'Cron: running');
+    await deleteDeactivatedAccounts();
+    logger.info({ job: 'delete_deactivated' }, 'Cron: done');
+  }));
 
-  // Reset monthly free ads quota on the 1st of every month at midnight
-  cron.schedule('0 0 1 * *', async () => {
-    console.log('⏰ Running scheduled task: Reset monthly free ads quota');
-    try {
-      await resetMonthlyFreeAds();
-    } catch (error) {
-      console.error('❌ Error in monthly quota reset task:', error);
-    }
-  });
+  // Hourly at :05 - search alerts (was :00; moved to avoid overlap)
+  cron.schedule('5 * * * *', withJobLock('search_alerts', async () => {
+    logger.info({ job: 'search_alerts' }, 'Cron: running');
+    await processSearchAlerts();
+    logger.info({ job: 'search_alerts' }, 'Cron: done');
+  }));
 
-  // Auto-expire ads that have passed their expiration date (runs every hour)
-  cron.schedule('0 * * * *', async () => {
-    console.log('⏰ Running scheduled task: Auto-expire ads');
-    try {
-      await expireAds();
-    } catch (error) {
-      console.error('❌ Error in ad expiration task:', error);
-    }
-  });
-  
-  // Run search alerts on startup (after 30 seconds delay to allow server to fully initialize)
-  setTimeout(async () => {
-    console.log('⏰ Running initial search alerts check on startup...');
-    try {
-      await processSearchAlerts();
-    } catch (error) {
-      console.error('❌ Error in initial search alerts check:', error);
-    }
-  }, 30000);
-  
-  // Run moderation processing on startup (after 1 minute to allow server to fully initialize)
-  setTimeout(async () => {
-    console.log('⏰ Running initial moderation processing check on startup...');
-    try {
-      await autoApprovePendingAds(5);
-    } catch (error) {
-      console.error('❌ Error in initial moderation processing check:', error);
-    }
-  }, 60000);
-  
-  // Cleanup expired ads from clusters daily at 3:30 AM
-  cron.schedule('30 3 * * *', async () => {
-    console.log('⏰ Running scheduled task: Cleanup expired ads from clusters');
-    try {
-      const result = await cleanupExpiredAds();
-      console.log(`✅ Cleaned up ${result.cleaned} expired ads from clusters`);
-    } catch (error) {
-      console.error('❌ Error in cluster cleanup task:', error);
-    }
-  });
+  // Every 5 min at :02 and :07 (spread) - moderation (approve ads pending 3+ minutes)
+  cron.schedule('2,7,12,17,22,27,32,37,42,47,52,57 * * * *', withJobLock('moderation', async () => {
+    await autoApprovePendingAds(3);
+  }));
 
-  // Refresh all clusters daily at 4 AM
-  cron.schedule('0 4 * * *', async () => {
-    console.log('⏰ Running scheduled task: Refresh all clusters');
-    try {
-      const result = await refreshAllClusters();
-      console.log(`✅ Refreshed ${result.updated} clusters, ${result.errors} errors`);
-    } catch (error) {
-      console.error('❌ Error in cluster refresh task:', error);
-    }
-  });
+  // 1st of month midnight - reset monthly quota
+  cron.schedule('0 0 1 * *', withJobLock('reset_monthly_quota', async () => {
+    logger.info({ job: 'reset_monthly_quota' }, 'Cron: running');
+    await resetMonthlyFreeAds();
+    logger.info({ job: 'reset_monthly_quota' }, 'Cron: done');
+  }));
 
-  // Merge low-volume clusters weekly on Sunday at 5 AM
-  cron.schedule('0 5 * * 0', async () => {
-    console.log('⏰ Running scheduled task: Merge low-volume clusters');
-    try {
-      const result = await mergeLowVolumeClusters(3);
-      console.log(`✅ Merged ${result.merged} low-volume clusters`);
-    } catch (error) {
-      console.error('❌ Error in cluster merge task:', error);
-    }
-  });
+  // Hourly at :25 - auto-expire ads (was :00)
+  cron.schedule('25 * * * *', withJobLock('expire_ads', async () => {
+    logger.info({ job: 'expire_ads' }, 'Cron: running');
+    await expireAds();
+    logger.info({ job: 'expire_ads' }, 'Cron: done');
+  }));
 
-  // Refresh home feed every 4 hours (background refresh without changing user's selected location)
-  cron.schedule('0 */4 * * *', async () => {
-    console.log('⏰ Running scheduled task: Refresh home feed (4-hour refresh)');
-    try {
-      // This is a background refresh - the actual refresh happens when users request the home feed
-      // The cache will be invalidated, and fresh data will be fetched on next request
-      const { clearCache } = require('../middleware/cache');
-      // Clear cache for home feed to force refresh
-      // Note: This is a conceptual refresh - actual data refresh happens on-demand
-      console.log('✅ Home feed cache cleared (will refresh on next request)');
-    } catch (error) {
-      console.error('❌ Error in home feed refresh task:', error);
-    }
-  });
+  // Daily 3:45 AM - cluster cleanup (was 3:30)
+  cron.schedule('45 3 * * *', withJobLock('cluster_cleanup', async () => {
+    logger.info({ job: 'cluster_cleanup' }, 'Cron: running');
+    const result = await cleanupExpiredAds();
+    logger.info({ job: 'cluster_cleanup', cleaned: result.cleaned }, 'Cron: done');
+  }));
 
-  console.log('✅ Cron jobs scheduled:');
-  console.log('   - Delete deactivated accounts: Daily at 2 AM');
-  console.log('   - Process search alerts: Every hour');
-  console.log('   - Process pending moderation: Every 5 minutes (approve/reject after review)');
-  console.log('   - Reset monthly free ads quota: 1st of every month at midnight');
-  console.log('   - Auto-expire ads: Every hour');
-  console.log('   - Cleanup expired ads from clusters: Daily at 3:30 AM');
-  console.log('   - Refresh all clusters: Daily at 4 AM');
-  console.log('   - Merge low-volume clusters: Weekly on Sunday at 5 AM');
-  console.log('   - Refresh home feed: Every 4 hours');
-  console.log('   - Initial search alerts check: 30 seconds after startup');
-  console.log('   - Initial moderation check: 1 minute after startup');
+  // Daily 4:15 AM - refresh clusters (was 4:00)
+  cron.schedule('15 4 * * *', withJobLock('cluster_refresh', async () => {
+    logger.info({ job: 'cluster_refresh' }, 'Cron: running');
+    const result = await refreshAllClusters();
+    logger.info({ job: 'cluster_refresh', updated: result.updated, errors: result.errors }, 'Cron: done');
+  }));
+
+  // Sunday 5:30 AM - merge low-volume clusters (was 5:00)
+  cron.schedule('30 5 * * 0', withJobLock('cluster_merge', async () => {
+    logger.info({ job: 'cluster_merge' }, 'Cron: running');
+    const result = await mergeLowVolumeClusters(3);
+    logger.info({ job: 'cluster_merge', merged: result.merged }, 'Cron: done');
+  }));
+
+  // Every 4 hours at :10 - clear home feed cache
+  cron.schedule('10 */4 * * *', withJobLock('home_feed_cache', async () => {
+    const { clearCache } = require('../middleware/cache');
+    await clearCache('ads:homefeed:*').catch(() => {});
+    logger.info({ job: 'home_feed_cache' }, 'Cron: home feed cache cleared');
+  }));
+
+  // Hourly at :18 - expire Featured/TOP
+  cron.schedule('18 * * * *', withJobLock('expire_promoted', async () => {
+    const [f, t] = await Promise.all([expireFeaturedAds(), expireTopAds()]);
+    if (f > 0 || t > 0) logger.info({ job: 'expire_promoted', featured: f, top: t }, 'Cron: done');
+  }));
+
+  // Hourly at :48 - expire Bump (was :45)
+  cron.schedule('48 * * * *', withJobLock('expire_bump', async () => {
+    const b = await expireBumpAds();
+    if (b > 0) logger.info({ job: 'expire_bump', count: b }, 'Cron: done');
+  }));
+
+  // Ad rotation every ~2.5h (spread: :00 and :30 on same hours)
+  cron.schedule('0 0,3,6,9,12,15,18,21 * * *', withJobLock('ad_rotation', async () => {
+    const result = await runRotationCycle();
+    logger.info({ job: 'ad_rotation', rotated: result.rotated }, 'Cron: done');
+  }));
+  cron.schedule('30 2,5,8,11,14,17,20,23 * * *', withJobLock('ad_rotation', async () => {
+    const result = await runRotationCycle();
+    logger.info({ job: 'ad_rotation', rotated: result.rotated }, 'Cron: done');
+  }));
+
+  // Delayed startup: non-critical jobs after server is up
+  setTimeout(() => {
+    withJobLock('search_alerts_startup', () => processSearchAlerts())()
+      .catch((err) => logger.warn({ err: err.message, job: 'search_alerts_startup' }, 'Cron startup job failed'));
+  }, STARTUP_DELAY_SEARCH_ALERTS_MS);
+
+  setTimeout(() => {
+    withJobLock('moderation_startup', () => autoApprovePendingAds(3))()
+      .catch((err) => logger.warn({ err: err.message, job: 'moderation_startup' }, 'Cron startup job failed'));
+  }, STARTUP_DELAY_MODERATION_MS);
+
+  logger.info({
+    cron: true,
+    jobs: [
+      'delete_deactivated(0 2 * * *)',
+      'search_alerts(5 * * * *)',
+      'moderation(2,7..57 * * * *)',
+      'reset_monthly_quota(0 0 1 * *)',
+      'expire_ads(25 * * * *)',
+      'cluster_cleanup(45 3 * * *)',
+      'cluster_refresh(15 4 * * *)',
+      'cluster_merge(30 5 * * 0)',
+      'home_feed_cache(10 */4 * * *)',
+      'expire_promoted(18 * * * *)',
+      'expire_bump(48 * * * *)',
+      'ad_rotation(0,30 various)',
+    ],
+    startupDelays: { searchAlerts: '2m', moderation: '3m' },
+  }, 'Cron jobs scheduled (with job lock)');
 }
 
 module.exports = { setupCronJobs };
-

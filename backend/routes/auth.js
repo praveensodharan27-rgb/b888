@@ -41,9 +41,12 @@ router.post('/register',
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
+        const firstError = errors.array()[0];
+        const message = firstError?.msg || 'Validation failed';
+        console.warn('Register validation failed:', { body: req.body, errors: errors.array() });
         return res.status(400).json({ 
           success: false, 
-          message: 'Validation failed',
+          message,
           errors: errors.array() 
         });
       }
@@ -59,15 +62,13 @@ router.post('/register',
         return res.status(400).json({ success: false, message: 'Email or phone is required' });
       }
 
-      // Check if user exists
-      const existingUser = await prisma.user.findFirst({
-        where: {
-          OR: [
-            normalizedEmail ? { email: normalizedEmail } : {},
-            normalizedPhone ? { phone: normalizedPhone } : {}
-          ]
-        }
-      });
+      // Check if user exists - avoid empty objects in OR (Prisma MongoDB issue)
+      const orConditions = [];
+      if (normalizedEmail) orConditions.push({ email: normalizedEmail });
+      if (normalizedPhone) orConditions.push({ phone: normalizedPhone });
+      const existingUser = orConditions.length > 0
+        ? await prisma.user.findFirst({ where: { OR: orConditions } })
+        : null;
 
       if (existingUser) {
         return res.status(400).json({ 
@@ -86,7 +87,8 @@ router.post('/register',
       const { generateReferralCode, processReferral } = require('../utils/referral');
       const referralCode = await generateReferralCode(name.trim());
 
-      // Create user with referral code
+      // Create user with referral code; all users get monthly free ads (freeAdsRemaining/freeAdsUsedThisMonth from schema default or explicit)
+      const FREE_ADS_LIMIT = parseInt(process.env.FREE_ADS_LIMIT || '2', 10);
       const user = await prisma.user.create({
         data: {
           name: name.trim(),
@@ -94,7 +96,9 @@ router.post('/register',
           phone: normalizedPhone,
           password: hashedPassword,
           referralCode,
-          isVerified: false
+          isVerified: false,
+          freeAdsRemaining: FREE_ADS_LIMIT,
+          freeAdsUsedThisMonth: 0
         },
         select: {
           id: true,
@@ -555,17 +559,8 @@ router.post('/login',
       });
     } catch (error) {
       console.error('Login error:', error);
-      console.error('Error stack:', error.stack);
-      console.error('Error details:', {
-        name: error.name,
-        message: error.message,
-        code: error.code
-      });
-      res.status(500).json({ 
-        success: false, 
-        message: 'Login failed',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+      const { getSafeErrorPayload } = require('../utils/safeErrorResponse');
+      res.status(500).json(getSafeErrorPayload(error, 'Login failed'));
     }
   }
 );

@@ -91,7 +91,7 @@ router.post('/room',
         include: {
           user1: { select: { id: true, name: true, avatar: true, phone: true } },
           user2: { select: { id: true, name: true, avatar: true, phone: true } },
-          ad: { select: { id: true, title: true, images: true, price: true } }
+          ad: { select: { id: true, title: true, images: true, price: true, userId: true } }
         }
       });
 
@@ -105,7 +105,7 @@ router.post('/room',
           include: {
             user1: { select: { id: true, name: true, avatar: true, phone: true } },
             user2: { select: { id: true, name: true, avatar: true, phone: true } },
-            ad: { select: { id: true, title: true, images: true, price: true } }
+            ad: { select: { id: true, title: true, images: true, price: true, userId: true } }
           }
         });
       }
@@ -131,7 +131,7 @@ router.get('/rooms', authenticate, async (req, res) => {
       include: {
         user1: { select: { id: true, name: true, avatar: true, phone: true } },
         user2: { select: { id: true, name: true, avatar: true, phone: true } },
-        ad: { select: { id: true, title: true, images: true, price: true } },
+        ad: { select: { id: true, title: true, images: true, price: true, userId: true } },
         messages: {
           take: 1,
           orderBy: { createdAt: 'desc' },
@@ -202,9 +202,18 @@ router.get('/rooms/:roomId/messages', authenticate, async (req, res) => {
       data: { isRead: true }
     });
 
+    // For AI messages: do not expose sender avatar (bot has no profile image)
+    const normalizedMessages = messages.reverse().map((msg) => {
+      const m = { ...msg, isAI: !!msg.isAI };
+      if (m.isAI && m.sender) {
+        m.sender = { id: m.sender.id, name: m.sender.name };
+      }
+      return m;
+    });
+
     res.json({
       success: true,
-      messages: messages.reverse(),
+      messages: normalizedMessages,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -237,12 +246,13 @@ router.post('/rooms/:roomId/messages',
       const roomIdString = String(req.params.roomId);
       const { content, type = 'TEXT', imageUrl } = req.body;
 
-      // Verify room access
+      // Verify room access and get ad owner for lastSellerMessageAt (AI human override)
       const room = await prisma.chatRoom.findUnique({
         where: { id: roomIdString },
         include: {
           user1: true,
-          user2: true
+          user2: true,
+          ad: { select: { userId: true } }
         }
       });
 
@@ -254,9 +264,9 @@ router.post('/rooms/:roomId/messages',
         return res.status(403).json({ success: false, message: 'Not authorized' });
       }
 
-      // Check if users are blocked
       const { areUsersBlocked } = require('../middleware/blockCheck');
       const receiverId = room.user1Id === req.user.id ? room.user2Id : room.user1Id;
+      const sellerId = room.ad?.userId;
       const isBlocked = await areUsersBlocked(req.user.id, receiverId);
       if (isBlocked) {
         return res.status(403).json({ success: false, message: 'You cannot send messages to this user', blocked: true });
@@ -288,10 +298,14 @@ router.post('/rooms/:roomId/messages',
         }
       });
 
-      // Update room's updatedAt
+      // Update room's updatedAt; if sender is seller, set lastSellerMessageAt (AI stays silent 30 min)
+      const now = new Date();
       await prisma.chatRoom.update({
         where: { id: roomIdString },
-        data: { updatedAt: new Date() }
+        data: {
+          updatedAt: now,
+          ...(sellerId && req.user.id === sellerId ? { lastSellerMessageAt: now } : {})
+        }
       });
 
       // ROOT FIX: Emit message via Socket.IO using io.to() to broadcast to ALL users in room
@@ -316,7 +330,7 @@ router.post('/rooms/:roomId/messages',
                 title: 'New Message',
                 message: `You have a new message from ${message.sender.name}`,
                 type: 'new_message',
-                link: `/chat/${roomId}`
+                link: `/chat/${roomIdString}`
               }
             });
 
@@ -332,6 +346,17 @@ router.post('/rooms/:roomId/messages',
       } catch (socketError) {
         // Socket.IO not available, but message is saved - continue
         console.warn('Socket.IO not available, message saved via REST:', socketError.message);
+      }
+
+      // Auto AI reply: if sender is buyer (not seller), trigger AI reply in background if seller eligible
+      if (sellerId && req.user.id !== sellerId) {
+        const openAiKey = process.env.OPENAI_API_KEY;
+        setImmediate(() => {
+          const { triggerAiReplyIfEligible } = require('../services/salesAssistantService');
+          triggerAiReplyIfEligible(roomIdString, sellerId, openAiKey).catch((err) =>
+            console.error('AI auto-reply:', err.message)
+          );
+        });
       }
 
       res.json({
@@ -648,7 +673,7 @@ router.get('/mobile/summary', authenticate, async (req, res) => {
       include: {
         user1: { select: { id: true, name: true, avatar: true } },
         user2: { select: { id: true, name: true, avatar: true } },
-        ad: { select: { id: true, title: true, images: true, price: true } },
+        ad: { select: { id: true, title: true, images: true, price: true, userId: true } },
         messages: {
           take: 1,
           orderBy: { createdAt: 'desc' },

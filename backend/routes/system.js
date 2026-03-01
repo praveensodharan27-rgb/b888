@@ -7,32 +7,28 @@ const packageJson = require('../package.json');
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// Get system version information
+// Get system version information (minimal in production to avoid info disclosure)
 router.get('/version', async (req, res) => {
   try {
+    const isProd = process.env.NODE_ENV === 'production';
     const version = {
       api: {
         version: packageJson.version || '1.0.0',
         name: packageJson.name || 'sellit-api',
         description: packageJson.description || 'SellIt Marketplace API',
-        nodeVersion: process.version,
-        environment: process.env.NODE_ENV || 'development'
+        ...(!isProd && { nodeVersion: process.version, environment: process.env.NODE_ENV || 'development' })
       },
-      database: {
-        provider: 'mongodb',
-        connected: true // Can be enhanced with actual connection check
-      },
-      server: {
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
-      }
+      ...(!isProd && {
+        database: { provider: 'mongodb', connected: true },
+        server: {
+          uptime: process.uptime(),
+          timestamp: new Date().toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        }
+      })
     };
 
-    res.json({
-      success: true,
-      version
-    });
+    res.json({ success: true, version });
   } catch (error) {
     console.error('Get version error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch version information' });
@@ -132,13 +128,13 @@ router.get('/health', async (req, res) => {
       }
     };
 
-    // Test database connection
+    // Test database connection (MongoDB: use runCommandRaw; Prisma may use $queryRaw for SQL - adapt if needed)
     try {
       await prisma.$queryRaw`SELECT 1`;
       health.checks.database.status = 'ok';
-    } catch (error) {
+    } catch (dbErr) {
       health.checks.database.status = 'error';
-      health.checks.database.error = error.message;
+      health.checks.database.error = process.env.NODE_ENV === 'production' ? 'Database unavailable' : dbErr.message;
       health.status = 'degraded';
     }
 
@@ -154,7 +150,7 @@ router.get('/health', async (req, res) => {
       health: {
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
-        error: error.message
+        error: process.env.NODE_ENV === 'production' ? 'Service unavailable' : error.message
       }
     });
   }
@@ -208,7 +204,7 @@ router.get('/readiness', async (req, res) => {
       await prisma.$queryRaw`SELECT 1`;
       readiness.checks.database = { status: 'ok', message: 'Database connected' };
     } catch (error) {
-      readiness.checks.database = { status: 'error', message: error.message };
+      readiness.checks.database = { status: 'error', message: process.env.NODE_ENV === 'production' ? 'Database unavailable' : error.message };
       readiness.status = 'degraded';
     }
 
@@ -221,7 +217,7 @@ router.get('/readiness', async (req, res) => {
         readiness.checks.paymentGateway = { status: 'warning', message: 'Payment gateway not configured (dev mode)' };
       }
     } catch (error) {
-      readiness.checks.paymentGateway = { status: 'error', message: error.message };
+      readiness.checks.paymentGateway = { status: 'error', message: process.env.NODE_ENV === 'production' ? 'Payment gateway check failed' : error.message };
       readiness.status = 'degraded';
     }
 
@@ -230,7 +226,7 @@ router.get('/readiness', async (req, res) => {
       const walletCount = await prisma.wallet.count();
       readiness.checks.wallet = { status: 'ok', message: `Wallet system operational (${walletCount} wallets)` };
     } catch (error) {
-      readiness.checks.wallet = { status: 'error', message: error.message };
+      readiness.checks.wallet = { status: 'error', message: process.env.NODE_ENV === 'production' ? 'Wallet check failed' : error.message };
       readiness.status = 'degraded';
     }
 
@@ -244,7 +240,7 @@ router.get('/readiness', async (req, res) => {
         message: premiumSettings ? 'Premium settings configured' : 'Premium settings using defaults' 
       };
     } catch (error) {
-      readiness.checks.premium = { status: 'error', message: error.message };
+      readiness.checks.premium = { status: 'error', message: process.env.NODE_ENV === 'production' ? 'Premium check failed' : error.message };
       readiness.status = 'degraded';
     }
 
@@ -256,7 +252,7 @@ router.get('/readiness', async (req, res) => {
         message: `Business package system operational (${businessPackageCount} packages)` 
       };
     } catch (error) {
-      readiness.checks.businessPackage = { status: 'error', message: error.message };
+      readiness.checks.businessPackage = { status: 'error', message: process.env.NODE_ENV === 'production' ? 'Business package check failed' : error.message };
       readiness.status = 'degraded';
     }
 
@@ -278,7 +274,7 @@ router.get('/readiness', async (req, res) => {
       readiness: {
         status: 'not_ready',
         timestamp: new Date().toISOString(),
-        error: error.message
+        error: process.env.NODE_ENV === 'production' ? 'Service unavailable' : error.message
       }
     });
   }

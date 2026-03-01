@@ -1,52 +1,110 @@
 const { MeiliSearch } = require('meilisearch');
+const { logger } = require('../src/config/logger');
+const { createRateLimitedLogger } = require('../utils/rateLimitedLog');
+const { calculateRankingScore, getPlanPriority } = require('../utils/adRankingScore');
 
-// Initialize Meilisearch client
+const rlLog = createRateLimitedLogger(logger, 60 * 1000); // once per minute
+
+// Prefer MEILI_* so local (e.g. MEILI_HOST=http://127.0.0.1:7700) overrides Cloud when both set
 const client = new MeiliSearch({
-  host: process.env.MEILISEARCH_HOST || 'http://localhost:7700',
-  apiKey: process.env.MEILISEARCH_MASTER_KEY || 'masterKey',
+  host: process.env.MEILI_HOST || process.env.MEILISEARCH_HOST || 'http://localhost:7700',
+  apiKey: process.env.MEILI_API_KEY || process.env.MEILI_MASTER_KEY || process.env.MEILISEARCH_MASTER_KEY || 'masterKey',
 });
 
-const INDEX_NAME = 'ads';
+const INDEX_NAME = process.env.MEILI_INDEX || process.env.MEILISEARCH_INDEX || 'ads';
 let isMeilisearchAvailable = false;
+let backgroundHealthCheckStarted = false;
+const HEALTH_CHECK_INTERVAL_MS = 60 * 1000;
+let healthCheckTimer = null;
 
-// Business package types for ranking
-const BUSINESS_PACKAGE_TYPES = ['SELLER_PRIME', 'SELLER_PLUS', 'MAX_VISIBILITY'];
+// Plan types mapping for OLX-style ranking
+const PLAN_PRIORITY_MAP = {
+  'enterprise': 4,
+  'pro': 3,
+  'basic': 2,
+  'normal': 1
+};
 
 /**
- * Calculate ranking priority for an ad
+ * Calculate plan priority based on planType
+ * Priority: Enterprise (4) > Pro (3) > Basic (2) > Normal (1)
+ */
+function calculatePlanPriority(ad) {
+  const planType = (ad.planType || 'normal').toLowerCase();
+  return PLAN_PRIORITY_MAP[planType] || 1;
+}
+
+/**
+ * Calculate ranking priority for an ad (legacy support)
  * Priority: Premium (3) > Business (2) > Free (1)
  */
 function calculateRankingPriority(ad) {
-  // Premium: isPremium = true
+  // If planType exists, use new system
+  if (ad.planType) {
+    return calculatePlanPriority(ad);
+  }
+  
+  // Legacy: Premium
   if (ad.isPremium === true) {
     return 3;
   }
   
-  // Business: packageType in BUSINESS_PACKAGE_TYPES AND isPremium = false
+  // Legacy: Business packages
+  const BUSINESS_PACKAGE_TYPES = ['SELLER_PRIME', 'SELLER_PLUS', 'MAX_VISIBILITY'];
   if (ad.packageType && BUSINESS_PACKAGE_TYPES.includes(ad.packageType)) {
     return 2;
   }
   
-  // Free: packageType = NORMAL AND isPremium = false
   return 1;
 }
 
-// Check if Meilisearch is available
+// Check if Meilisearch is available (graceful health check)
 async function checkMeilisearchConnection() {
   try {
     await client.health();
     isMeilisearchAvailable = true;
-    console.log('✅ Meilisearch connection successful');
     return true;
   } catch (error) {
     isMeilisearchAvailable = false;
-    console.warn('⚠️ Meilisearch not available:', error.message);
-    console.warn('⚠️ Search will fallback to database queries');
+    rlLog.warn('meilisearch_unavailable', { err: error.message }, 'Meilisearch not available; search will fallback to database');
     return false;
   }
 }
 
-// Initialize index with settings
+/** Call from server boot; starts background health check and optional reconnect */
+function startBackgroundHealthCheck() {
+  if (backgroundHealthCheckStarted) return;
+  backgroundHealthCheckStarted = true;
+  checkMeilisearchConnection().then((ok) => {
+    if (ok) logger.info('Meilisearch connected');
+    scheduleNextHealthCheck();
+  }).catch(() => scheduleNextHealthCheck());
+}
+
+function scheduleNextHealthCheck() {
+  if (healthCheckTimer) clearTimeout(healthCheckTimer);
+  healthCheckTimer = setTimeout(async () => {
+    const wasDown = !isMeilisearchAvailable;
+    const ok = await checkMeilisearchConnection();
+    if (ok) {
+      if (wasDown) {
+        logger.info('Meilisearch reconnected');
+        setImmediate(() => {
+          initializeIndex().then((initialized) => {
+            if (initialized) logger.info('Meilisearch index ready after reconnect');
+          }).catch(() => {});
+        });
+      }
+    }
+    scheduleNextHealthCheck();
+  }, HEALTH_CHECK_INTERVAL_MS);
+}
+
+function getIsMeilisearchAvailable() {
+  return isMeilisearchAvailable;
+}
+
+// Initialize index with settings (Meilisearch v1 format)
 async function initializeIndex() {
   try {
     // Check connection first
@@ -57,66 +115,103 @@ async function initializeIndex() {
 
     const index = client.index(INDEX_NAME);
     
-    // Configure searchable attributes - MUST include title, description, category, ALL location fields, tags
-    // Keywords will match against all these fields with OR logic
-    // Each keyword in query matches any of these fields (OR behavior)
-    await index.updateSearchableAttributes([
-      'title',
-      'description',
-      'category',
-      'city',
-      'state',
-      'neighbourhood',
-      'location',
-      'tags',
-    ]);
-    
-    // Configure typo tolerance for fuzzy matching
-    await index.updateTypoTolerance({
-      enabled: true,
-      minWordSizeForTypos: {
-        oneTypo: 4,
-        twoTypos: 8,
+    // Configure ALL settings in ONE call (v1 format)
+    await index.updateSettings({
+      // Searchable attributes - Priority order
+      searchableAttributes: [
+        'title',
+        'brand',
+        'model',
+        'categoryName',
+        'category',
+        'tags',
+        'city',
+        'state',
+        'neighbourhood',
+        'location',
+        'description',
+        'specifications',
+      ],
+      
+      // Filterable attributes - Including geo
+      filterableAttributes: [
+        'categoryId',
+        'subcategoryId',
+        'locationId',
+        'status',
+        'condition',
+        'price',
+        'isPremium',
+        'userId',
+        'createdAt',
+        'planPriority',
+        'isTopAdActive',
+        'isFeaturedActive',
+        'isBumpActive',
+        'adExpiryDate',
+        'categoryName',
+        '_geo',  // For geo-location filtering
+      ],
+
+      // Sortable attributes
+      sortableAttributes: [
+        'createdAt',
+        'price',
+        'featuredAt',
+        'bumpedAt',
+        'rankingPriority',
+        'planPriority',
+        'isTopAdActive',
+        'isFeaturedActive',
+        'rankingScore',
+        'isUrgent',
+        'isBumpActive',
+        'adExpiryDate',
+        '_geo',  // For geo-distance sorting
+      ],
+
+      // Ranking rules - OLX-style
+      rankingRules: [
+        'typo',
+        'words',
+        'proximity',
+        'attribute',
+        'sort',
+        'exactness',
+      ],
+      
+      // Synonyms
+      synonyms: {
+        'car': ['vehicle', 'automobile'],
+        'bike': ['motorcycle', 'motorbike'],
+        'mobile': ['phone', 'smartphone', 'cellphone'],
+        'laptop': ['notebook', 'computer'],
+        'tv': ['television'],
+        'ac': ['air conditioner', 'airconditioner'],
+        'fridge': ['refrigerator'],
+        'house': ['home', 'property'],
+        'flat': ['apartment'],
+      },
+      
+      // Typo tolerance
+      typoTolerance: {
+        enabled: true,
+        minWordSizeForTypos: {
+          oneTypo: 4,
+          twoTypos: 8,
+        },
+      },
+      
+      // Pagination
+      pagination: {
+        maxTotalHits: 10000,
       },
     });
 
-    // Configure filterable attributes
-    await index.updateFilterableAttributes([
-      'categoryId',
-      'subcategoryId',
-      'locationId',
-      'status',
-      'condition',
-      'price',
-      'isPremium',
-      'userId',
-      'createdAt',
-    ]);
-
-    // Configure sortable attributes
-    await index.updateSortableAttributes([
-      'createdAt',
-      'price',
-      'featuredAt',
-      'bumpedAt',
-      'rankingPriority', // For Premium > Business > Free ranking
-    ]);
-
-    // Configure ranking rules - MUST BE IN THIS EXACT ORDER for optimal search
-    // Priority: typo > words > proximity > attribute > sort > exactness
-    await index.updateRankingRules([
-      'typo',
-      'words',
-      'proximity',
-      'attribute',
-      'sort',
-      'exactness',
-    ]);
-
-    console.log('✅ Meilisearch index initialized');
+    logger.info('Meilisearch index initialized with v1 settings');
     return true;
   } catch (error) {
-    console.error('❌ Error initializing Meilisearch index:', error.message);
+    rlLog.error('meilisearch_init', { err: error.message }, 'Error initializing Meilisearch index');
     isMeilisearchAvailable = false;
     return false;
   }
@@ -131,12 +226,23 @@ async function indexAd(ad) {
     
     // Only index APPROVED ads - DISABLED, REJECTED, PENDING ads should not appear in search
     if (ad.status !== 'APPROVED') {
-      console.log(`⏭️ Skipping indexing for ad ${ad.id} - status: ${ad.status} (only APPROVED ads are indexed)`);
+      logger.debug({ adId: ad.id, status: ad.status }, 'Skipping indexing (only APPROVED ads indexed)');
       return;
     }
 
     const index = client.index(INDEX_NAME);
     
+    // Build geo-location object if coordinates exist
+    const _geo = (ad.latitude && ad.longitude) || (ad.location?.latitude && ad.location?.longitude)
+      ? {
+          lat: ad.latitude || ad.location?.latitude,
+          lng: ad.longitude || ad.location?.longitude,
+        }
+      : null;
+
+    // Calculate ranking score for optimal sorting
+    const rankingScore = calculateRankingScore(ad);
+
     const document = {
       id: ad.id,
       title: ad.title,
@@ -145,32 +251,55 @@ async function indexAd(ad) {
       subcategoryId: ad.subcategoryId,
       locationId: ad.locationId,
       category: ad.category?.name || '',
+      categoryName: ad.category?.name || '',
       subcategory: ad.subcategory?.name || '',
-      location: ad.location?.name || '', // Location name from relation
-      city: ad.city || '', // City field from Ad model
-      state: ad.state || '', // State field from Ad model
-      neighbourhood: ad.neighbourhood || '', // Neighbourhood field from Ad model
-      exactLocation: ad.exactLocation || '', // Exact location field from Ad model
-      tags: (ad.tags && Array.isArray(ad.tags)) ? ad.tags.join(' ') : '', // Tags as space-separated string for search
+      location: ad.location?.name || '',
+      city: ad.city || '',
+      state: ad.state || '',
+      neighbourhood: ad.neighbourhood || '',
+      exactLocation: ad.exactLocation || '',
+      tags: (ad.tags && Array.isArray(ad.tags)) ? ad.tags.join(' ') : '',
+      
+      // Geo-location for proximity search
+      _geo,
+      
+      // OLX-style fields
+      brand: ad.brand || '',
+      model: ad.model || '',
+      specifications: ad.specifications ? JSON.stringify(ad.specifications) : '',
+      
+      // Plan and promotion fields
+      planType: ad.planType || 'normal',
+      planPriority: getPlanPriority(ad.planType),
+      rankingScore,                              // Precomputed ranking score
+      isTopAdActive: ad.isTopAdActive || false,
+      isFeaturedActive: ad.isFeaturedActive || false,
+      isUrgent: ad.isUrgent || false,            // Urgent ad flag
+      isBumpActive: ad.isBumpActive || false,
+      
+      // Timestamps
+      createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
+      adExpiryDate: ad.expiresAt?.toISOString() || ad.adExpiryDate?.toISOString() || null,
+      
+      // Other fields
       price: ad.price,
       condition: ad.condition,
       status: ad.status,
       isPremium: ad.isPremium || false,
       premiumType: ad.premiumType || null,
-      packageType: ad.packageType || 'NORMAL', // For Premium → Business → Free ranking
-      rankingPriority: calculateRankingPriority(ad), // Premium (3) > Business (2) > Free (1)
+      packageType: ad.packageType || 'NORMAL',
+      rankingPriority: calculateRankingPriority(ad),
       userId: ad.userId,
       images: ad.images || [],
-      createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
       featuredAt: ad.featuredAt?.toISOString() || null,
       bumpedAt: ad.bumpedAt?.toISOString() || null,
       expiresAt: ad.expiresAt?.toISOString() || null,
     };
 
     await index.addDocuments([document]);
-    console.log(`✅ Indexed ad: ${ad.id}`);
+    logger.debug({ adId: ad.id }, 'Indexed ad');
   } catch (error) {
-    console.error(`❌ Error indexing ad ${ad.id}:`, error.message);
+    rlLog.error('meilisearch_index_ad', { adId: ad.id, err: error.message }, 'Error indexing ad');
     isMeilisearchAvailable = false;
   }
 }
@@ -187,50 +316,85 @@ async function indexAds(ads) {
     // Filter out non-APPROVED ads - only index APPROVED ads
     const approvedAds = ads.filter(ad => ad.status === 'APPROVED');
     if (approvedAds.length === 0) {
-      console.log('⏭️ No APPROVED ads to index (all ads are PENDING, DISABLED, or other status)');
+      logger.debug('No APPROVED ads to index');
       return;
     }
-    
     if (approvedAds.length < ads.length) {
-      console.log(`⏭️ Filtered out ${ads.length - approvedAds.length} non-APPROVED ads (only indexing APPROVED ads)`);
+      logger.debug({ filtered: ads.length - approvedAds.length }, 'Filtered non-APPROVED ads');
     }
     
     const index = client.index(INDEX_NAME);
     
-    const documents = approvedAds.map(ad => ({
-      id: ad.id,
-      title: ad.title,
-      description: ad.description || '',
-      categoryId: ad.categoryId,
-      subcategoryId: ad.subcategoryId,
-      locationId: ad.locationId,
-      category: ad.category?.name || '',
-      subcategory: ad.subcategory?.name || '',
-      location: ad.location?.name || '', // Location name from relation
-      city: ad.city || '', // City field from Ad model
-      state: ad.state || '', // State field from Ad model
-      neighbourhood: ad.neighbourhood || '', // Neighbourhood field from Ad model
-      exactLocation: ad.exactLocation || '', // Exact location field from Ad model
-      tags: (ad.tags && Array.isArray(ad.tags)) ? ad.tags.join(' ') : '', // Tags as space-separated string for search
-      price: ad.price,
-      condition: ad.condition,
-      status: ad.status,
-      isPremium: ad.isPremium || false,
-      premiumType: ad.premiumType || null,
-      packageType: ad.packageType || 'NORMAL', // For Premium → Business → Free ranking
-      rankingPriority: calculateRankingPriority(ad), // Premium (3) > Business (2) > Free (1)
-      userId: ad.userId,
-      images: ad.images || [],
-      createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
-      featuredAt: ad.featuredAt?.toISOString() || null,
-      bumpedAt: ad.bumpedAt?.toISOString() || null,
-      expiresAt: ad.expiresAt?.toISOString() || null,
-    }));
+    const documents = approvedAds.map(ad => {
+      // Build geo-location object if coordinates exist
+      const _geo = (ad.latitude && ad.longitude) || (ad.location?.latitude && ad.location?.longitude)
+        ? {
+            lat: ad.latitude || ad.location?.latitude,
+            lng: ad.longitude || ad.location?.longitude,
+          }
+        : null;
+
+      // Calculate ranking score
+      const rankingScore = calculateRankingScore(ad);
+
+      return {
+        id: ad.id,
+        title: ad.title,
+        description: ad.description || '',
+        categoryId: ad.categoryId,
+        subcategoryId: ad.subcategoryId,
+        locationId: ad.locationId,
+        category: ad.category?.name || '',
+        categoryName: ad.category?.name || '',
+        subcategory: ad.subcategory?.name || '',
+        location: ad.location?.name || '',
+        city: ad.city || '',
+        state: ad.state || '',
+        neighbourhood: ad.neighbourhood || '',
+        exactLocation: ad.exactLocation || '',
+        tags: (ad.tags && Array.isArray(ad.tags)) ? ad.tags.join(' ') : '',
+        
+        // Geo-location for proximity search
+        _geo,
+        
+        // OLX-style fields
+        brand: ad.brand || '',
+        model: ad.model || '',
+        specifications: ad.specifications ? JSON.stringify(ad.specifications) : '',
+        
+        // Plan and promotion fields
+        planType: ad.planType || 'normal',
+        planPriority: getPlanPriority(ad.planType),
+        rankingScore,
+        isTopAdActive: ad.isTopAdActive || false,
+        isFeaturedActive: ad.isFeaturedActive || false,
+        isUrgent: ad.isUrgent || false,
+        isBumpActive: ad.isBumpActive || false,
+        
+        // Timestamps
+        createdAt: ad.createdAt?.toISOString() || new Date().toISOString(),
+        adExpiryDate: ad.expiresAt?.toISOString() || ad.adExpiryDate?.toISOString() || null,
+        
+        // Other fields
+        price: ad.price,
+        condition: ad.condition,
+        status: ad.status,
+        isPremium: ad.isPremium || false,
+        premiumType: ad.premiumType || null,
+        packageType: ad.packageType || 'NORMAL',
+        rankingPriority: calculateRankingPriority(ad),
+        userId: ad.userId,
+        images: ad.images || [],
+        featuredAt: ad.featuredAt?.toISOString() || null,
+        bumpedAt: ad.bumpedAt?.toISOString() || null,
+        expiresAt: ad.expiresAt?.toISOString() || null,
+      };
+    });
 
     await index.addDocuments(documents);
-    console.log(`✅ Indexed ${documents.length} ads`);
+    logger.info({ count: documents.length }, 'Indexed ads');
   } catch (error) {
-    console.error('❌ Error indexing ads:', error.message);
+    rlLog.error('meilisearch_index_ads', { err: error.message }, 'Error indexing ads');
     isMeilisearchAvailable = false;
   }
 }
@@ -244,16 +408,20 @@ async function deleteAd(adId) {
 
     const index = client.index(INDEX_NAME);
     await index.deleteDocument(adId);
-    console.log(`✅ Deleted ad from index: ${adId}`);
+    logger.debug({ adId }, 'Deleted ad from index');
   } catch (error) {
-    console.error(`❌ Error deleting ad ${adId} from index:`, error.message);
+    rlLog.error('meilisearch_delete', { adId, err: error.message }, 'Error deleting ad from index');
     isMeilisearchAvailable = false;
   }
 }
 
-// Search ads with keyword-based OR logic
+// Search ads with keyword-based OR logic. When Meilisearch is offline, throws so caller can fallback to DB.
 async function searchAds(query, options = {}) {
   try {
+    if (!isMeilisearchAvailable) {
+      throw new Error('MEILISEARCH_UNAVAILABLE');
+    }
+
     const {
       page = 1,
       limit = 20,
@@ -276,30 +444,22 @@ async function searchAds(query, options = {}) {
     
     // Status filter (always filter by status and exclude INACTIVE)
     filters.push(`status = "${status}"`);
-    filters.push(`status != "INACTIVE"`); // Explicitly exclude INACTIVE ads
+    filters.push(`status != "INACTIVE"`);
     
-    // Expired ads filter
+    // Expired ads filter - OLX-style: hide expired ads
     const now = new Date().toISOString();
-    filters.push(`expiresAt = null OR expiresAt > "${now}"`);
+    filters.push(`(adExpiryDate IS NULL OR adExpiryDate > ${Date.now()})`);
     
-    // IMPORTANT: If search query exists, ignore category/subcategory filters (search overrides category)
     const hasSearchQuery = query && query.trim();
-    
-    if (!hasSearchQuery && categoryId) {
+
+    // Apply category/subcategory/location when provided (search within category/location)
+    if (categoryId) {
       filters.push(`categoryId = "${categoryId}"`);
     }
-    
-    if (!hasSearchQuery && subcategoryId) {
+    if (subcategoryId) {
       filters.push(`subcategoryId = "${subcategoryId}"`);
     }
-    
-    // CRITICAL: Location must NEVER block results when searching
-    // Location fields (city, state, neighbourhood, exactLocation) are searchable, not filterable
-    // When searching: location is just one of many fields to match against (OR logic)
-    // When browsing (no search): location filter can be applied for browsing/filtering mode
-    // NEVER apply locationId filter when searching - location fields are searchable, not filterable
-    if (locationId && !hasSearchQuery) {
-      // Only apply location filter when NOT searching (browsing/filtering mode)
+    if (locationId) {
       filters.push(`locationId = "${locationId}"`);
     }
     // When hasSearchQuery is true, locationId filter is NOT applied
@@ -317,29 +477,39 @@ async function searchAds(query, options = {}) {
       filters.push(`price <= ${maxPrice}`);
     }
     
-    // Build sort array
-    // For search queries: relevance first, then rankingPriority (Premium > Business > Free) as tiebreaker
-    // For non-search queries: use explicit sort with rankingPriority
+    // Build sort array - OLX-style: Top Ads > Featured > Plan Priority > Recency
     let sortArray = [];
-    switch (sort) {
-      case 'oldest':
-        sortArray = ['rankingPriority:desc', 'createdAt:asc']; // Premium/Business/Free first, then oldest
-        break;
-      case 'price_low':
-        sortArray = ['rankingPriority:desc', 'price:asc', 'createdAt:desc']; // Premium/Business/Free first, then price low
-        break;
-      case 'price_high':
-        sortArray = ['rankingPriority:desc', 'price:desc', 'createdAt:desc']; // Premium/Business/Free first, then price high
-        break;
-      case 'featured':
-        sortArray = ['rankingPriority:desc', 'featuredAt:desc', 'createdAt:desc']; // Premium/Business/Free first, then featured
-        break;
-      case 'bumped':
-        sortArray = ['rankingPriority:desc', 'bumpedAt:desc', 'createdAt:desc']; // Premium/Business/Free first, then bumped
-        break;
-      default:
-        // Default 'newest': Premium/Business/Free first, then newest
-        sortArray = ['rankingPriority:desc', 'createdAt:desc'];
+    
+    if (!hasSearchQuery) {
+      // Home page / category page: Show promoted ads first
+      sortArray = [
+        'isTopAdActive:desc',
+        'isFeaturedActive:desc',
+        'planPriority:desc',
+        'createdAt:desc'
+      ];
+    } else {
+      // Search results: Relevance + promotions
+      switch (sort) {
+        case 'oldest':
+          sortArray = ['isTopAdActive:desc', 'isFeaturedActive:desc', 'planPriority:desc', 'createdAt:asc'];
+          break;
+        case 'price_low':
+          sortArray = ['isTopAdActive:desc', 'isFeaturedActive:desc', 'planPriority:desc', 'price:asc', 'createdAt:desc'];
+          break;
+        case 'price_high':
+          sortArray = ['isTopAdActive:desc', 'isFeaturedActive:desc', 'planPriority:desc', 'price:desc', 'createdAt:desc'];
+          break;
+        case 'featured':
+          sortArray = ['isTopAdActive:desc', 'isFeaturedActive:desc', 'planPriority:desc', 'createdAt:desc'];
+          break;
+        case 'bumped':
+          sortArray = ['isTopAdActive:desc', 'isFeaturedActive:desc', 'planPriority:desc', 'isBumpActive:desc', 'createdAt:desc'];
+          break;
+        default:
+          // Default 'newest': Top > Featured > Plan > Newest
+          sortArray = ['isTopAdActive:desc', 'isFeaturedActive:desc', 'planPriority:desc', 'createdAt:desc'];
+      }
     }
     
     // For search queries, prepend rankingPriority to existing sort as tiebreaker after relevance
@@ -357,7 +527,7 @@ async function searchAds(query, options = {}) {
       // Meilisearch treats space-separated words as OR by default
       // But we can make it explicit by using quotes for exact phrases
       const keywords = query.trim().split(/\s+/).filter(k => k.length > 0);
-      console.log(`🔍 Search query split into ${keywords.length} keywords:`, keywords);
+      logger.debug({ keywordCount: keywords.length }, 'Search keywords');
       
       // Meilisearch will automatically match each keyword against all searchable attributes
       // with OR logic (any keyword matching returns the ad)
@@ -377,9 +547,7 @@ async function searchAds(query, options = {}) {
     };
     
     const results = await index.search(searchQuery, searchParams);
-    
-    console.log(`🔍 Search results: ${results.estimatedTotalHits || 0} ads found for query: "${searchQuery}"`);
-    
+    logger.debug({ query: searchQuery, total: results.estimatedTotalHits || 0 }, 'Search results');
     return {
       hits: results.hits || [],
       total: results.estimatedTotalHits || 0,
@@ -388,31 +556,19 @@ async function searchAds(query, options = {}) {
       pages: Math.ceil((results.estimatedTotalHits || 0) / parseInt(limit)),
     };
   } catch (error) {
-    console.error('❌ Error searching ads:', error);
+    if (error.message !== 'MEILISEARCH_UNAVAILABLE') {
+      rlLog.error('meilisearch_search', { err: error.message, query }, 'Error searching ads');
+      isMeilisearchAvailable = false;
+    }
     throw error;
   }
 }
 
-// Autocomplete search (for search suggestions)
+// Autocomplete search (for search suggestions). When Meilisearch is offline, returns [] (no log spam).
 async function autocomplete(query, limit = 5) {
   try {
-    if (!query || query.trim().length < 2) {
-      return [];
-    }
-
-    // Check if Meilisearch is available
-    if (!isMeilisearchAvailable) {
-      // Try to reconnect
-      try {
-        const isConnected = await checkMeilisearchConnection();
-        if (!isConnected) {
-          return [];
-        }
-      } catch (connectionError) {
-        console.warn('⚠️ Meilisearch connection failed in autocomplete:', connectionError.message);
-        return [];
-      }
-    }
+    if (!query || query.trim().length < 2) return [];
+    if (!isMeilisearchAvailable) return [];
 
     const index = client.index(INDEX_NAME);
     
@@ -443,10 +599,8 @@ async function autocomplete(query, limit = 5) {
 
     return suggestions.slice(0, limit);
   } catch (error) {
-    console.error('❌ Error in autocomplete:', error.message);
-    // Mark Meilisearch as unavailable
+    rlLog.error('meilisearch_autocomplete', { err: error.message }, 'Error in autocomplete');
     isMeilisearchAvailable = false;
-    // Return empty array instead of throwing
     return [];
   }
 }
@@ -454,7 +608,7 @@ async function autocomplete(query, limit = 5) {
 // Reindex all ads (for initial setup or full reindex)
 async function reindexAllAds(prisma) {
   try {
-    console.log('🔄 Starting full reindex of all ads...');
+    logger.info('Starting full reindex of all ads');
     
     const batchSize = 100;
     let skip = 0;
@@ -485,13 +639,211 @@ async function reindexAllAds(prisma) {
       totalIndexed += ads.length;
       skip += batchSize;
       
-      console.log(`📊 Progress: ${totalIndexed} ads indexed...`);
+      logger.info({ totalIndexed }, 'Reindex progress');
     }
-    
-    console.log(`✅ Full reindex complete: ${totalIndexed} ads indexed`);
+    logger.info({ totalIndexed }, 'Full reindex complete');
     return totalIndexed;
   } catch (error) {
-    console.error('❌ Error during full reindex:', error);
+    rlLog.error('meilisearch_reindex', { err: error.message }, 'Error during full reindex');
+    throw error;
+  }
+}
+
+/**
+ * Bump up an ad - updates createdAt and re-indexes
+ * @param {string} adId - The ad ID to bump
+ * @param {object} prisma - Prisma client instance
+ */
+async function bumpAd(adId, prisma) {
+  try {
+    if (!isMeilisearchAvailable) {
+      logger.warn('Meilisearch unavailable, skipping bump reindex');
+      return false;
+    }
+
+    // Update ad in database with new createdAt
+    const updatedAd = await prisma.ad.update({
+      where: { id: adId },
+      data: {
+        createdAt: new Date(),
+        isBumpActive: true,
+        bumpedAt: new Date(),
+      },
+      include: {
+        category: { select: { id: true, name: true } },
+        subcategory: { select: { id: true, name: true } },
+        location: { select: { id: true, name: true } },
+      },
+    });
+
+    // Re-index the ad
+    await indexAd(updatedAd);
+    
+    logger.info({ adId }, 'Ad bumped and re-indexed');
+    return true;
+  } catch (error) {
+    rlLog.error('meilisearch_bump', { adId, err: error.message }, 'Error bumping ad');
+    return false;
+  }
+}
+
+/**
+ * Sync ad to Meilisearch (for create, update, plan purchase, bump, expiry)
+ * @param {object} ad - The ad object to sync
+ */
+async function syncAdToMeilisearch(ad) {
+  try {
+    if (!isMeilisearchAvailable) {
+      logger.debug('Meilisearch unavailable, skipping sync');
+      return false;
+    }
+
+    // If ad is not approved, delete from index
+    if (ad.status !== 'APPROVED') {
+      await deleteAd(ad.id);
+      return true;
+    }
+
+    // Index or update the ad
+    await indexAd(ad);
+    return true;
+  } catch (error) {
+    rlLog.error('meilisearch_sync', { adId: ad.id, err: error.message }, 'Error syncing ad');
+    return false;
+  }
+}
+
+/**
+ * Get search suggestions for autocomplete
+ * @param {string} query - Search query
+ * @param {number} limit - Number of suggestions
+ */
+async function getSearchSuggestions(query, limit = 8) {
+  try {
+    if (!query || query.trim().length < 2) return [];
+    if (!isMeilisearchAvailable) return [];
+
+    const index = client.index(INDEX_NAME);
+    
+    const now = new Date().toISOString();
+    const results = await index.search(query.trim(), {
+      limit: limit,
+      attributesToRetrieve: ['id', 'title', 'category', 'categoryName', 'city', 'price', 'images'],
+      filter: `status = "APPROVED" AND status != "INACTIVE" AND (adExpiryDate IS NULL OR adExpiryDate > ${Date.now()})`,
+      sort: ['isTopAdActive:desc', 'isFeaturedActive:desc', 'planPriority:desc', 'createdAt:desc'],
+    });
+
+    return results.hits || [];
+  } catch (error) {
+    rlLog.error('meilisearch_suggestions', { err: error.message }, 'Error getting suggestions');
+    return [];
+  }
+}
+
+/**
+ * Get home feed ads with geo-location support (OLX-style)
+ * @param {object} options - Search options
+ * @returns {Promise<object>} - Categorized results
+ */
+async function getHomeFeedWithGeo(options = {}) {
+  try {
+    if (!isMeilisearchAvailable) {
+      throw new Error('MEILISEARCH_UNAVAILABLE');
+    }
+
+    const {
+      userLat,
+      userLng,
+      city,
+      limit = 20,
+      radiusInMeters = 50000, // 50km default
+    } = options;
+
+    const index = client.index(INDEX_NAME);
+    const now = new Date().toISOString();
+    
+    // Base filters
+    const baseFilters = [
+      'status = "APPROVED"',
+      'status != "INACTIVE"',
+      `(adExpiryDate IS NULL OR adExpiryDate > ${Date.now()})`,
+    ];
+
+    const results = {
+      nearYou: [],
+      moreInYourCity: [],
+      topAds: [],
+      featured: [],
+      latest: [],
+    };
+
+    // If user location is available
+    if (userLat && userLng) {
+      // 1. Near you (within radius, sorted by distance)
+      const nearResults = await index.search('', {
+        filter: baseFilters.join(' AND '),
+        sort: [
+          '_geoDistance(lat, lng):asc',
+          'isTopAdActive:desc',
+          'isFeaturedActive:desc',
+          'planPriority:desc',
+          'createdAt:desc',
+        ],
+        limit,
+        _geoRadius: {
+          lat: userLat,
+          lng: userLng,
+          radiusInMeters,
+        },
+      });
+      results.nearYou = nearResults.hits || [];
+
+      // 2. More in your city (same city, not in near you)
+      if (city) {
+        const cityResults = await index.search('', {
+          filter: [...baseFilters, `city = "${city}"`].join(' AND '),
+          sort: [
+            'isTopAdActive:desc',
+            'isFeaturedActive:desc',
+            'planPriority:desc',
+            'createdAt:desc',
+          ],
+          limit,
+        });
+        
+        // Filter out ads already in nearYou
+        const nearYouIds = new Set(results.nearYou.map(ad => ad.id));
+        results.moreInYourCity = (cityResults.hits || []).filter(ad => !nearYouIds.has(ad.id));
+      }
+    }
+
+    // 3. Top Ads (promoted ads)
+    const topResults = await index.search('', {
+      filter: [...baseFilters, 'isTopAdActive = true'].join(' AND '),
+      sort: ['planPriority:desc', 'createdAt:desc'],
+      limit: 10,
+    });
+    results.topAds = topResults.hits || [];
+
+    // 4. Featured Ads
+    const featuredResults = await index.search('', {
+      filter: [...baseFilters, 'isFeaturedActive = true'].join(' AND '),
+      sort: ['planPriority:desc', 'createdAt:desc'],
+      limit: 10,
+    });
+    results.featured = featuredResults.hits || [];
+
+    // 5. Latest Ads
+    const latestResults = await index.search('', {
+      filter: baseFilters.join(' AND '),
+      sort: ['createdAt:desc'],
+      limit,
+    });
+    results.latest = latestResults.hits || [];
+
+    return results;
+  } catch (error) {
+    rlLog.error('meilisearch_home_feed', { err: error.message }, 'Error getting home feed');
     throw error;
   }
 }
@@ -500,11 +852,17 @@ module.exports = {
   client,
   initializeIndex,
   checkMeilisearchConnection,
+  startBackgroundHealthCheck,
+  getIsMeilisearchAvailable,
   indexAd,
   indexAds,
   deleteAd,
   searchAds,
   autocomplete,
   reindexAllAds,
+  bumpAd,
+  syncAdToMeilisearch,
+  getSearchSuggestions,
+  getHomeFeedWithGeo,
 };
 

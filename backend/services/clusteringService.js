@@ -200,18 +200,39 @@ async function clusterByAttributes(categoryId, locationId, attributes, priceRang
     }
 
     // Brand/model filters from attributes JSON
-    if (attributes.brand || attributes.model) {
-      where.attributes = {};
-      if (attributes.brand) {
-        where.attributes.path = ['brand'];
-        where.attributes.equals = attributes.brand;
-      }
+    // Note: Prisma MongoDB doesn't support path operator for JSON fields
+    // We'll filter results after fetching (post-filtering approach)
+    const attributesFilters = {};
+    if (attributes.brand) {
+      attributesFilters.brand = attributes.brand;
+    }
+    if (attributes.model) {
+      attributesFilters.model = attributes.model;
     }
 
-    const ads = await prisma.ad.findMany({
+    const adsResult = await prisma.ad.findMany({
       where,
-      select: { id: true }
+      select: { id: true, attributes: true }
     });
+    
+    // Apply attributes filters (post-processing)
+    let ads = adsResult;
+    if (Object.keys(attributesFilters).length > 0) {
+      ads = adsResult.filter(ad => {
+        if (!ad.attributes || typeof ad.attributes !== 'object') {
+          return false;
+        }
+        
+        // Check if all attribute filters match
+        return Object.entries(attributesFilters).every(([key, value]) => {
+          const adValue = ad.attributes[key];
+          return String(adValue) === String(value);
+        });
+      });
+    }
+    
+    // Map to just IDs for cluster creation
+    ads = ads.map(ad => ({ id: ad.id }));
 
     cluster = await prisma.adCluster.create({
       data: {

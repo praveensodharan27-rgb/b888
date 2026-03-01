@@ -108,5 +108,5 @@ console.log('\n' + '='.repeat(80));
 console.log('📋 Next Steps:');
 console.log('='.repeat(80));
 console.log('   1. npm run prisma:generate');
-console.log('   2. npm run add-dummy-data');
+console.log('   2. npm run seed-all-db');
 console.log('='.repeat(80) + '\n');

@@ -48,4 +48,4 @@ if (changed) {
   console.log('✅ .env file updated!\n');
 }
 
-console.log('Next: npm run prisma:generate && npm run add-dummy-data\n');
+console.log('Next: npm run prisma:generate && npm run seed-all-db\n');
