@@ -215,20 +215,9 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // Category: match ads targeted to this category OR ads with no category (show to all)
-    const catSlug = category && String(category).trim()
-      ? normalizeLocationSlug(category)
-      : null;
-
-    const categoryCond = catSlug
-      ? {
-          $or: [
-            { categorySlug: catSlug },
-            { categorySlug: { $in: [null, ''] } },
-            { categorySlug: { $exists: false } },
-          ],
-        }
-      : null;
+    // Category targeting disabled for now – use location-based only
+    const catSlug = null;
+    const categoryCond = null;
 
     // Active ads: budget > 0 OR budget 0/null/undefined (treat as unlimited - show ad)
     const budgetCond = {

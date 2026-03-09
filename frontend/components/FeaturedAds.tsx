@@ -4,22 +4,16 @@ import { useAds } from '@/hooks/useAds';
 import AdCard from './AdCard';
 import Link from 'next/link';
 import { FiArrowRight } from 'react-icons/fi';
-import { dummyAds } from '@/lib/dummyData';
-
 export default function FeaturedAds() {
   // Fetch featured ads - component is already wrapped in ProgressiveLoader on home page
-  const { data, isLoading, isError, error } = useAds({ 
+  const { data, isLoading } = useAds({ 
     limit: 8, 
     sort: 'featured' 
   });
 
-  // Determine which ads to show
-  // Use real data if available, otherwise show dummy data as fallback
   const ads = (data?.ads && Array.isArray(data.ads) && data.ads.length > 0) 
     ? data.ads 
-    : (isError || (!isLoading && (!data || !data.ads || data.ads.length === 0))
-      ? dummyAds.filter(ad => ad.isPremium).slice(0, 8)
-      : []);
+    : [];
 
   return (
     <section className="my-12">

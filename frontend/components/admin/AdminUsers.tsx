@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import ImageWithFallback from '@/components/ImageWithFallback';
 import { FiLock, FiUnlock, FiAlertCircle } from 'react-icons/fi';
 

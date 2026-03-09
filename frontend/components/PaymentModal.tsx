@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { FiX, FiCreditCard, FiLock, FiCheckCircle, FiAlertCircle, FiRefreshCw, FiShield, FiZap, FiTrendingUp, FiStar, FiPackage, FiUsers, FiEye, FiLayers, FiPhone, FiInfo } from 'react-icons/fi';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import api from '@/lib/api';
 
 declare global {
@@ -91,7 +91,7 @@ export default function PaymentModal({
         setPaymentState('processing');
         await generateQRCode();
       } else {
-        toast('Waiting for UPI payment confirmation...');
+        toast.info('Waiting for UPI payment confirmation...');
       }
       return;
     }
@@ -211,7 +211,7 @@ export default function PaymentModal({
       key: razorpayKey,
       amount: amountInPaise,
       currency: 'INR',
-      name: 'SellIt',
+      name: 'Sell Box',
       description: description,
       order_id: orderId,
       handler: function (response: any) {

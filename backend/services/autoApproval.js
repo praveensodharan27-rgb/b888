@@ -1,4 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
+const { addNotificationToQueue } = require('../queues/notificationQueue');
 
 const prisma = new PrismaClient();
 
@@ -146,7 +147,7 @@ async function processPendingModeration(minutesThreshold = 3) {
             console.error(`⚠️ Error indexing approved ad ${updatedAd.id} in Meilisearch:`, indexError);
           }
 
-          // Create notification for user
+          // Create in-app notification for user
           const approveNotif = await prisma.notification.create({
             data: {
               userId: ad.user.id,
@@ -176,6 +177,19 @@ async function processPendingModeration(minutesThreshold = 3) {
             const { invalidateNotificationCache } = require('../utils/redis-helpers');
             await invalidateNotificationCache(ad.user.id);
           } catch (_) {}
+
+          // Queue email/SMS notification for ad approval
+          try {
+            await addNotificationToQueue({
+              type: 'ad_approved',
+              data: {
+                user: ad.user,
+                ad: updatedAd,
+              },
+            });
+          } catch (notificationError) {
+            console.error('⚠️ Failed to queue ad_approved notification (autoApproval):', notificationError.message);
+          }
 
           // Emit socket event for new approved ad (home feed / live listing)
           try {

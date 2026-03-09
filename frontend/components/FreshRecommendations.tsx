@@ -5,24 +5,18 @@ import AdCard from './AdCard';
 import Link from 'next/link';
 import { useState } from 'react';
 import { FiArrowRight } from 'react-icons/fi';
-import { dummyAds } from '@/lib/dummyData';
-
 export default function FreshRecommendations() {
   const [page, setPage] = useState(1);
   const limit = 6; // Show 6 ads initially (2 rows of 3)
   
-  // Fetch fresh ads (newest first, with priority: paid/premium first)
-  const { data, isLoading, isError, error } = useAds({ 
+  const { data, isLoading } = useAds({ 
     limit: page * limit,
     sort: 'newest'
   });
 
-  // Determine which ads to show
   const ads = (data?.ads && Array.isArray(data.ads) && data.ads.length > 0) 
     ? data.ads.slice(0, page * limit)
-    : (isError || (!isLoading && (!data || !data.ads || data.ads.length === 0))
-      ? dummyAds.slice(0, page * limit)
-      : []);
+    : [];
 
   const hasMore = data?.pagination ? page < data.pagination.pages : false;
   const totalAds = data?.pagination?.total || 0;
@@ -48,7 +42,7 @@ export default function FreshRecommendations() {
         </div>
       ) : ads.length > 0 ? (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6 lg:gap-8 items-stretch">
             {ads.map((ad: any, index: number) => {
               // Validate ad structure before rendering
               if (!ad || !ad.id || !ad.title) {

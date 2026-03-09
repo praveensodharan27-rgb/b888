@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { FiTrash2, FiEdit } from 'react-icons/fi';
+import ImageResizeInput from './ImageResizeInput';
 
 export default function AdminBanners() {
   const [showForm, setShowForm] = useState(false);
@@ -175,13 +176,15 @@ function BannerForm({ banner, onClose }: { banner?: any; onClose: () => void }) 
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-2">Image {!banner && '*'}</label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => setImage(e.target.files?.[0] || null)}
-              className="w-full px-4 py-2 border rounded-lg"
+            <ImageResizeInput
+              label={`Image ${!banner ? '*' : ''}`}
+              value={image}
+              onChange={setImage}
+              previewUrl={banner?.image}
               required={!banner}
+              maxWidth={1920}
+              maxHeight={600}
+              quality={0.85}
             />
           </div>
           <div>

@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
+  // App Router is default in Next.js 13+ when app/ directory exists (SSR supported)
+  // Set NEXT_PUBLIC_DISABLE_STRICT_MODE=true in .env to avoid double mount in dev (reduces duplicate API calls)
+  reactStrictMode: process.env.NEXT_PUBLIC_DISABLE_STRICT_MODE !== 'true',
   // Ensure Next treats this folder as root (monorepo-safe)
   outputFileTracingRoot: __dirname,
   // Enable compression
@@ -13,19 +15,17 @@ const nextConfig = {
     minimumCacheTTL: 31536000, // 1 year for optimized images
     dangerouslyAllowSVG: true,
     contentSecurityPolicy: "default-src 'self'; script-src 'none'; sandbox;",
-    domains: [
-      'localhost',
-      '127.0.0.1',
-      'images.unsplash.com',
-      'i.pravatar.cc',
-      'via.placeholder.com',
-      'picsum.photos', // Placeholder images for dummy ads
-      'lh3.googleusercontent.com', // Google profile images
-      'graph.facebook.com', // Facebook profile images
-      process.env.NEXT_PUBLIC_S3_BUCKET?.replace('https://', '').replace('http://', '').split('/')[0],
-      'res.cloudinary.com'
-    ].filter(Boolean),
     remotePatterns: [
+      {
+        protocol: 'http',
+        hostname: 'localhost',
+        pathname: '/**',
+      },
+      {
+        protocol: 'http',
+        hostname: '127.0.0.1',
+        pathname: '/**',
+      },
       {
         protocol: 'http',
         hostname: 'localhost',
@@ -56,12 +56,7 @@ const nextConfig = {
       },
       {
         protocol: 'https',
-        hostname: 'via.placeholder.com',
-        pathname: '/**',
-      },
-      {
-        protocol: 'https',
-        hostname: 'picsum.photos', // Placeholder images for dummy ads
+        hostname: 'picsum.photos',
         pathname: '/**',
       },
       {
@@ -87,50 +82,44 @@ const nextConfig = {
   },
   // Performance optimizations
   experimental: {
-    // NOTE: `optimizeCss` has caused missing /_next/static assets in dev on Windows
-    // (e.g. main-app.js / app-pages-internals.js / layout.css returning 404).
-    // Keep it disabled for stable local development.
     optimizeCss: false,
-    // NOTE: Disabling optimizePackageImports entirely because Next 15 dev can emit
-    // missing server vendor chunks (e.g. "./vendor-chunks/react-icons.js") on Windows.
+    // ⚡ PACKAGE IMPORT OPTIMIZATION - Tree-shaking for large libraries
+    optimizePackageImports: [
+      'react-icons',
+      '@tanstack/react-query',
+      'react-select',
+      'date-fns',
+      'lottie-react',
+      'firebase',
+      'socket.io-client',
+    ],
+    // ⚡ TURBOPACK FEATURES
+    turbo: {
+      rules: {
+        '*.svg': {
+          loaders: ['@svgr/webpack'],
+          as: '*.js',
+        },
+      },
+    },
   },
-  // Compress output
-  compress: true,
+  // Compiler optimizations
+  compiler: {
+    removeConsole: process.env.NODE_ENV === 'production' ? {
+      exclude: ['error', 'warn'],
+    } : false,
+  },
   // Production source maps (disable for better performance)
   productionBrowserSourceMaps: false,
-  // Webpack configuration to handle chunk loading errors
-  webpack: (config, { isServer, dev }) => {
+  // Webpack configuration
+  webpack: (config, { isServer }) => {
     if (!isServer) {
-      // Avoid overriding Next's dev chunking behavior (can cause stale/mismatched chunks in dev).
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,
         net: false,
         tls: false,
       };
-      
-      // Add chunk loading error handling for client-side
-      if (dev) {
-        // In dev mode, add retry logic for failed chunks
-        config.optimization = {
-          ...config.optimization,
-          splitChunks: {
-            ...config.optimization.splitChunks,
-            cacheGroups: {
-              default: false,
-              vendors: false,
-              // Prevent chunk splitting issues in dev
-              framework: {
-                chunks: 'all',
-                name: 'framework',
-                test: /(?<!node_modules.*)[\\/]node_modules[\\/](react|react-dom|scheduler|prop-types|use-subscription)[\\/]/,
-                priority: 40,
-                enforce: true,
-              },
-            },
-          },
-        };
-      }
     } else {
       // Handle Firebase modules during SSR
       config.externals = config.externals || [];

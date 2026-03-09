@@ -1,0 +1,3 @@
+# Brand logos (PNG or SVG), filename = slug from domain (e.g. bmw.png, tatamotors.svg)
+# PNG: from frontend run: npm run download-brand-logos
+# SVG: add files manually with same slug (e.g. bmw.svg) and change extension in lib/brandLogoDomains.ts to .svg if you prefer

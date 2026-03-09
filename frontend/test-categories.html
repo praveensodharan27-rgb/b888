@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Category Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-box {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .success { color: green; }
+        .error { color: red; }
+        .warning { color: orange; }
+        button {
+            background: #0070f3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #0051cc;
+        }
+        pre {
+            background: #f0f0f0;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 Category API Test</h1>
+    
+    <div class="test-box">
+        <h2>Test 1: Backend API</h2>
+        <button onclick="testBackend()">Test Backend</button>
+        <div id="backend-result"></div>
+    </div>
+
+    <div class="test-box">
+        <h2>Test 2: Frontend API</h2>
+        <button onclick="testFrontend()">Test Frontend</button>
+        <div id="frontend-result"></div>
+    </div>
+
+    <div class="test-box">
+        <h2>Test 3: Database</h2>
+        <button onclick="testDatabase()">Test Database</button>
+        <div id="database-result"></div>
+    </div>
+
+    <script>
+        async function testBackend() {
+            const result = document.getElementById('backend-result');
+            result.innerHTML = '<p>Testing...</p>';
+            
+            try {
+                const response = await fetch('http://localhost:5000/api/categories');
+                const data = await response.json();
+                
+                if (data.success && data.categories) {
+                    result.innerHTML = `
+                        <p class="success">✅ Backend API Working!</p>
+                        <p>Categories: ${data.categories.length}</p>
+                        <p>First 5 categories:</p>
+                        <pre>${JSON.stringify(data.categories.slice(0, 5).map(c => ({ id: c.id, name: c.name })), null, 2)}</pre>
+                    `;
+                } else {
+                    result.innerHTML = `
+                        <p class="error">❌ Backend returned unexpected format</p>
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                    `;
+                }
+            } catch (error) {
+                result.innerHTML = `
+                    <p class="error">❌ Backend API Failed</p>
+                    <p>Error: ${error.message}</p>
+                    <p>Make sure backend is running on port 5000</p>
+                `;
+            }
+        }
+
+        async function testFrontend() {
+            const result = document.getElementById('frontend-result');
+            result.innerHTML = '<p>Testing...</p>';
+            
+            try {
+                const response = await fetch('http://localhost:3000/post-ad');
+                
+                if (response.ok) {
+                    result.innerHTML = `
+                        <p class="success">✅ Frontend Page Accessible!</p>
+                        <p>Status: ${response.status}</p>
+                        <p><a href="http://localhost:3000/post-ad" target="_blank">Open Post Ad Page</a></p>
+                    `;
+                } else {
+                    result.innerHTML = `
+                        <p class="error">❌ Frontend Page Error</p>
+                        <p>Status: ${response.status}</p>
+                    `;
+                }
+            } catch (error) {
+                result.innerHTML = `
+                    <p class="error">❌ Frontend Not Accessible</p>
+                    <p>Error: ${error.message}</p>
+                    <p>Make sure frontend is running on port 3000</p>
+                `;
+            }
+        }
+
+        async function testDatabase() {
+            const result = document.getElementById('database-result');
+            result.innerHTML = '<p>Testing...</p>';
+            
+            try {
+                const response = await fetch('http://localhost:5000/api/categories');
+                const data = await response.json();
+                
+                if (data.success && data.categories && data.categories.length > 0) {
+                    const mainCategories = data.categories.filter(c => !c.categoryId && !c.category_id);
+                    const totalSubcategories = data.categories.reduce((sum, c) => sum + (c.subcategories?.length || 0), 0);
+                    
+                    result.innerHTML = `
+                        <p class="success">✅ Database Has Categories!</p>
+                        <p>Main Categories: ${mainCategories.length}</p>
+                        <p>Total Subcategories: ${totalSubcategories}</p>
+                        <p>All categories:</p>
+                        <ul>
+                            ${mainCategories.map(c => `<li>${c.name} (${c.subcategories?.length || 0} subs)</li>`).join('')}
+                        </ul>
+                    `;
+                } else if (data.categories && data.categories.length === 0) {
+                    result.innerHTML = `
+                        <p class="warning">⚠️ Database is Empty</p>
+                        <p>No categories found. Run seed script:</p>
+                        <pre>cd backend
+node scripts/seed-all-categories.js</pre>
+                    `;
+                } else {
+                    result.innerHTML = `
+                        <p class="error">❌ Unexpected Response</p>
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                    `;
+                }
+            } catch (error) {
+                result.innerHTML = `
+                    <p class="error">❌ Database Test Failed</p>
+                    <p>Error: ${error.message}</p>
+                `;
+            }
+        }
+
+        // Auto-run all tests on load
+        window.onload = () => {
+            testBackend();
+            setTimeout(testFrontend, 500);
+            setTimeout(testDatabase, 1000);
+        };
+    </script>
+</body>
+</html>

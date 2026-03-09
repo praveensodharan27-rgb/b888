@@ -257,6 +257,23 @@ app.use('/api/home-feed', require('../routes/home-feed'));
 // Test/debug routes — only in non-production to prevent abuse and info disclosure
 if (env.NODE_ENV !== 'production') {
   app.use('/api/test', testEmailRoutes);
+
+  // Simple queue test endpoint: GET /api/test/queue
+  app.get('/api/test/queue', async (req, res) => {
+    try {
+      const { notificationQueue } = require('../src/queues/notification.queue');
+      await notificationQueue.add('sendMail', {
+        to: req.query.to || 'test@example.com',
+        subject: 'Queue test',
+        html: '<p>This is a test email from BullMQ queue.</p>',
+        text: 'This is a test email from BullMQ queue.',
+      });
+      res.json({ success: true, message: 'Job added to notification queue' });
+    } catch (error) {
+      logError(error, { path: '/api/test/queue' });
+      res.status(500).json({ success: false, message: 'Failed to enqueue job', error: error.message });
+    }
+  });
 }
 
 // 404 handler

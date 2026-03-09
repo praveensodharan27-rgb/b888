@@ -1,20 +1,9 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import api from '@/lib/api';
 import Link from 'next/link';
 import { FiArrowRight } from 'react-icons/fi';
-import { dummyCategories } from '@/lib/dummyData';
 import ImageWithFallback from './ImageWithFallback';
-
-interface Category {
-  id: string;
-  name: string;
-  slug: string;
-  icon?: string;
-  image?: string;
-  _count: { ads: number };
-}
+import { useCategories, type Category } from '@/hooks/useCategories';
 
 // Map category names to Material Symbols icons
 const getCategoryIcon = (categoryName: string, icon?: string): string => {
@@ -41,24 +30,8 @@ const getCategoryIcon = (categoryName: string, icon?: string): string => {
 };
 
 export default function Categories() {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      try {
-        const response = await api.get('/categories');
-        return response.data.categories;
-      } catch (error) {
-        return null;
-      }
-    },
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-    refetchOnWindowFocus: false,
-  });
-
-  // Use dummy data if API fails or is loading
-  // Show more categories (24 instead of 12)
-  const categories = (data as Category[])?.slice(0, 24) || dummyCategories.slice(0, 24);
+  const { categories: data, isLoading, isError } = useCategories();
+  const categories = (data?.length ? data.slice(0, 24) : []) as (Category & { _count?: { ads: number } })[];
 
   return (
     <section>

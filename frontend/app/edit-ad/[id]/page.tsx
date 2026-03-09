@@ -7,10 +7,11 @@ import { useUpdateAd, useAd } from '@/hooks/useAds';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
+import { useCategories } from '@/hooks/useCategories';
 import { FiX, FiUpload, FiNavigation } from 'react-icons/fi';
 import ImageWithFallback from '@/components/ImageWithFallback';
 import ProductSpecifications from '@/components/ProductSpecifications';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export default function EditAdPage() {
   const router = useRouter();
@@ -25,27 +26,21 @@ export default function EditAdPage() {
   const [existingImages, setExistingImages] = useState<string[]>([]);
   const [mounted, setMounted] = useState(false);
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const { data: categories, isLoading: categoriesLoading, isError: categoriesError } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      const response = await api.get('/categories');
-      return response.data.categories;
-    },
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-    refetchOnWindowFocus: false,
-  });
+  const { categories = [], isLoading: categoriesLoading, isError: categoriesError } = useCategories();
 
   const selectedCategoryId = watch('categoryId');
-  const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
+  const selectedCategory = categories?.find((c: any) => String(c.id) === String(selectedCategoryId));
   const selectedSubcategoryId = watch('subcategoryId');
-  const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId);
+  const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => String(s.id) === String(selectedSubcategoryId));
 
 
-  // Load ad data into form
+  // Load ad data into form (use category/subcategory id from relation if scalar missing)
   useEffect(() => {
     if (ad) {
+      const categoryId = ad.categoryId ?? (ad.category as any)?.id ?? '';
+      const subcategoryId = ad.subcategoryId ?? (ad.subcategory as any)?.id ?? '';
       reset({
         title: ad.title,
         description: ad.description,
@@ -53,11 +48,14 @@ export default function EditAdPage() {
         originalPrice: ad.originalPrice || '',
         discount: ad.discount || '',
         condition: ad.condition || '',
-        categoryId: ad.categoryId,
-        subcategoryId: ad.subcategoryId || '',
+        categoryId: categoryId ? String(categoryId) : '',
+        subcategoryId: subcategoryId ? String(subcategoryId) : '',
+        locationId: ad.locationId || '',
         state: ad.state || '',
         city: ad.city || '',
         neighbourhood: ad.neighbourhood || '',
+        exactLocation: ad.exactLocation || '',
+        attributes: ad.attributes || {},
       });
       // Ensure images is an array and filter out empty/null values
       const imagesArray = Array.isArray(ad.images) 
@@ -90,7 +88,7 @@ export default function EditAdPage() {
   // Show loading during initial mount or while loading
   if (!mounted || authLoading || adLoading) {
     return (
-      <div className="container mx-auto px-4 py-8 flex items-center justify-center min-h-screen">
+      <div className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 flex items-center justify-center min-h-screen">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
       </div>
     );
@@ -108,15 +106,7 @@ export default function EditAdPage() {
 
     setIsDetectingLocation(true);
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
-        });
-      });
-
-      const { latitude, longitude } = position.coords;
+      const { latitude, longitude } = await import('@/utils/geolocation').then((m) => m.getCurrentPosition());
 
       // Call geocoding API to detect location
       const response = await api.post('/geocoding/detect-location', {
@@ -145,7 +135,7 @@ export default function EditAdPage() {
           if (detectedLocation.state || detectedLocation.city || detectedLocation.neighbourhood) {
             toast.success('Location information auto-filled successfully!');
           } else {
-            toast('Location detected but no detailed information available', { icon: 'ℹ️' });
+            toast.info('Location detected but no detailed information available');
           }
         }
       } else {
@@ -153,12 +143,12 @@ export default function EditAdPage() {
       }
     } catch (error: any) {
       console.error('Location detection error:', error);
-      
-      if (error.code === 'PERMISSION_DENIED') {
+      const geoCode = error?.code;
+      if (geoCode === 1 || geoCode === 'PERMISSION_DENIED') {
         toast.error('Location access denied. Please enable location permissions.');
-      } else if (error.code === 'POSITION_UNAVAILABLE') {
+      } else if (geoCode === 2 || geoCode === 'POSITION_UNAVAILABLE') {
         toast.error('Location information unavailable');
-      } else if (error.code === 'TIMEOUT') {
+      } else if (geoCode === 3 || geoCode === 'TIMEOUT') {
         toast.error('Location request timed out');
       } else {
         toast.error(error.response?.data?.message || 'Failed to detect location');
@@ -215,9 +205,33 @@ export default function EditAdPage() {
     if (data.condition) formData.append('condition', data.condition);
     formData.append('categoryId', data.categoryId);
     if (data.subcategoryId) formData.append('subcategoryId', data.subcategoryId);
-    if (data.state) formData.append('state', data.state);
-    if (data.city) formData.append('city', data.city);
+    // Location fields - include all location data
+    if (data.locationId) formData.append('locationId', data.locationId);
+    formData.append('state', data.state || '');
+    formData.append('city', data.city || '');
     if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
+    if (data.exactLocation) formData.append('exactLocation', data.exactLocation);
+    
+    // Add attributes (technical details) - always send so DB is updated
+    // Clean attributes: remove empty strings and null values, and remove price (sent at root level)
+    const cleanedAttributes: any = {};
+    if (data.attributes && typeof data.attributes === 'object') {
+      Object.keys(data.attributes).forEach(key => {
+        // Skip price field - it's sent at root level, not in attributes
+        if (key === 'price') return;
+        const value = data.attributes[key];
+        // Only include non-empty values
+        if (value !== null && value !== undefined && value !== '') {
+          cleanedAttributes[key] = value;
+        }
+      });
+    }
+    formData.append('attributes', JSON.stringify(cleanedAttributes));
+
+    // Add specifications if they exist
+    if (data._specifications && Array.isArray(data._specifications) && data._specifications.length > 0) {
+      formData.append('specifications', JSON.stringify(data._specifications));
+    }
     
     // Append existing images that should be kept
     existingImages.forEach((img) => {
@@ -229,9 +243,11 @@ export default function EditAdPage() {
       formData.append('images', image);
     });
 
+    setIsSubmitting(true);
     updateAd.mutate(
       { id: adId, data: formData },
       {
+        onSettled: () => setIsSubmitting(false),
         onSuccess: () => {
           router.push('/my-ads');
         },
@@ -240,7 +256,7 @@ export default function EditAdPage() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
+    <div className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <h1 className="text-3xl font-bold mb-8">Edit Ad</h1>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
@@ -319,11 +335,12 @@ export default function EditAdPage() {
               {...register('categoryId', { required: 'Category is required' })}
               className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
               disabled={categoriesLoading}
+              aria-label="Category"
             >
               <option value="">{categoriesLoading ? 'Loading categories...' : 'Select Category'}</option>
-              {categories && categories.length > 0 ? (
+              {Array.isArray(categories) && categories.length > 0 ? (
                 categories.map((cat: any) => (
-                  <option key={cat.id} value={cat.id}>
+                  <option key={cat.id} value={String(cat.id)}>
                     {cat.name}
                   </option>
                 ))
@@ -349,10 +366,11 @@ export default function EditAdPage() {
                 errors.subcategoryId ? 'border-red-500' : ''
               }`}
               disabled={!selectedCategory}
+              aria-label="Subcategory"
             >
-              <option value="">Select Subcategory</option>
+              <option value="">{selectedCategory ? 'Select Subcategory' : 'Select category first'}</option>
               {selectedCategory?.subcategories?.map((sub: any) => (
-                <option key={sub.id} value={sub.id}>
+                <option key={sub.id} value={String(sub.id)}>
                   {sub.name}
                 </option>
               ))}
@@ -420,13 +438,14 @@ export default function EditAdPage() {
           </div>
         </div>
 
-        {/* Product Specifications - Show when category and subcategory are selected */}
-        {selectedCategory && selectedSubcategory && (
+        {/* Product Specifications - Show when category and subcategory are selected; pass current ad attributes for edit */}
+        {(selectedCategory || ad?.category) && (
           <div className="mt-6 pt-6 border-t border-gray-200">
             <ProductSpecifications
               adId={adId}
-              categorySlug={selectedCategory.slug}
-              subcategorySlug={selectedSubcategory.slug}
+              categorySlug={selectedCategory?.slug || (ad?.category as any)?.slug}
+              subcategorySlug={selectedSubcategory?.slug || (ad?.subcategory as any)?.slug}
+              initialAttributes={ad?.attributes && typeof ad.attributes === 'object' ? ad.attributes : undefined}
               register={register}
               watch={watch}
               setValue={setValue}
@@ -509,10 +528,10 @@ export default function EditAdPage() {
           </button>
           <button
             type="submit"
-            disabled={updateAd.isPending}
+            disabled={isSubmitting || updateAd.isPending}
             className="flex-1 bg-primary-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-primary-700 disabled:opacity-50"
           >
-            {updateAd.isPending ? 'Updating...' : 'Update Ad'}
+            {isSubmitting || updateAd.isPending ? 'Updating...' : 'Update Ad'}
           </button>
         </div>
       </form>

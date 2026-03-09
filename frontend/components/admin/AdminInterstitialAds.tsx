@@ -3,9 +3,10 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { FiTrash2, FiEdit, FiPlus, FiX } from 'react-icons/fi';
 import ImageWithFallback from '../ImageWithFallback';
+import ImageResizeInput from './ImageResizeInput';
 
 export default function AdminInterstitialAds() {
   const [showForm, setShowForm] = useState(false);
@@ -137,7 +138,9 @@ function InterstitialAdForm({ ad, onClose }: { ad?: any; onClose: () => void }) 
     endDate: ad?.endDate ? new Date(ad.endDate).toISOString().split('T')[0] : '',
   });
   const [image, setImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(ad?.image || null);
+  const imagePreviewUrl = ad?.image
+    ? (ad.image.startsWith('http') ? ad.image : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000'}${ad.image.startsWith('/') ? '' : '/'}${ad.image}`)
+    : null;
 
   const createMutation = useMutation({
     mutationFn: async (data: FormData) => {
@@ -159,15 +162,6 @@ function InterstitialAdForm({ ad, onClose }: { ad?: any; onClose: () => void }) 
       toast.error(error.response?.data?.message || 'Failed to save interstitial ad');
     },
   });
-
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setImage(file);
-      const url = URL.createObjectURL(file);
-      setImagePreview(url);
-    }
-  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -208,24 +202,15 @@ function InterstitialAdForm({ ad, onClose }: { ad?: any; onClose: () => void }) 
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-2">Image *</label>
-          {imagePreview && (
-            <div className="mb-4">
-              <ImageWithFallback
-                src={imagePreview}
-                alt="Preview"
-                width={400}
-                height={300}
-                className="w-full max-w-md h-64 object-cover rounded-lg border"
-              />
-            </div>
-          )}
-          <input
-            type="file"
-            accept="image/*"
-            onChange={handleImageChange}
-            className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+          <ImageResizeInput
+            label="Image *"
+            value={image}
+            onChange={setImage}
+            previewUrl={imagePreviewUrl}
             required={!ad}
+            maxWidth={1920}
+            maxHeight={1920}
+            quality={0.85}
           />
           <p className="text-xs text-gray-500 mt-1">Recommended: 1080x1920px (portrait) or 1920x1080px (landscape)</p>
         </div>

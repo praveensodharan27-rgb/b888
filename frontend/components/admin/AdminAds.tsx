@@ -4,8 +4,9 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import ImageWithFallback from '../ImageWithFallback';
+import { getAdUrl } from '@/lib/directory';
 
 export default function AdminAds() {
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -122,7 +123,7 @@ export default function AdminAds() {
                       </>
                     )}
                     <a
-                      href={`/ads/${ad.id}`}
+                      href={getAdUrl(ad)}
                       target="_blank"
                       className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
                     >

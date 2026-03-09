@@ -44,7 +44,7 @@ self.addEventListener('activate', (event) => {
 // Push notification event - handles both VAPID and Firebase Cloud Messaging
 self.addEventListener('push', (event) => {
   let notificationData = {
-    title: 'SellIt',
+    title: 'Sell Box',
     body: 'You have a new notification',
     icon: '/logo.png',
     badge: '/logo.png',

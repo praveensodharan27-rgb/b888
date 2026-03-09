@@ -139,7 +139,11 @@ export async function onMessageListener(): Promise<any> {
  * Delete FCM token (unsubscribe)
  */
 export async function deleteFCMToken(): Promise<boolean> {
-  if (typeof window === 'undefined' || !firebaseMessaging) {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const firebaseMessaging = await getFirebaseMessaging();
+  if (!firebaseMessaging) {
     return false;
   }
 

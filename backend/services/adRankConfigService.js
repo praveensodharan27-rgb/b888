@@ -96,8 +96,10 @@ function invalidateRankConfigCache() {
 
 /**
  * Check if featured/bump is still active for an ad
+ * Uses featuredAt/bumpedAt when present; falls back to stored isFeaturedActive/isBumpActive when dates are missing
  */
 function isFeaturedActive(ad, config) {
+  if (ad.isFeaturedActive === true && (ad.featuredAt == null || ad.featuredAt === undefined)) return true;
   if (!ad.featuredAt) return false;
   const days = config.featuredDurationDays ?? 7;
   const expiry = new Date(ad.featuredAt);
@@ -106,6 +108,7 @@ function isFeaturedActive(ad, config) {
 }
 
 function isBumpActive(ad, config) {
+  if (ad.isBumpActive === true && (ad.bumpedAt == null || ad.bumpedAt === undefined)) return true;
   if (!ad.bumpedAt) return false;
   const days = config.bumpDurationDays ?? 1;
   const expiry = new Date(ad.bumpedAt);

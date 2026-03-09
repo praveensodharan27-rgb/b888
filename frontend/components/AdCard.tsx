@@ -3,10 +3,16 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { FiMapPin, FiHeart, FiStar, FiTrendingUp, FiRefreshCw } from 'react-icons/fi';
-import { useMemo, type MouseEvent } from 'react';
+import { useMemo, useCallback, memo, type MouseEvent } from 'react';
 import ImageWithFallback from './ImageWithFallback';
+import { PLACEHOLDER_IMAGE } from '@/lib/imageConstants';
 import { useIsFavorite, useToggleFavorite } from '@/hooks/useAds';
 import { useAuth } from '@/hooks/useAuth';
+import { useAuthModal } from '@/contexts/AuthModalContext';
+import { getAdUrl } from '@/lib/adUrl';
+import { formatPriceShort } from '@/lib/formatPrice';
+import { formatAdTitle } from '@/lib/formatText';
+import SpecPills from './SpecPills';
 
 interface AdCardProps {
   ad: {
@@ -21,6 +27,8 @@ interface AdCardProps {
     premiumType?: 'TOP' | 'FEATURED' | 'BUMP_UP' | 'RENT' | 'ECO' | null;
     isUrgent?: boolean;
     postedAt?: string | Date;
+    createdAt?: string | Date;
+    attributes?: Record<string, string | number | null | undefined>;
   };
   priority?: boolean;
 }
@@ -30,22 +38,23 @@ function AdCard({ ad, priority = false }: AdCardProps) {
   const { isAuthenticated } = useAuth();
   const { data: isFavorite } = useIsFavorite(ad.id, true);
   const toggleFavorite = useToggleFavorite();
+  const { openLoginModal } = useAuthModal();
 
-  const handleWishlist = (e: MouseEvent) => {
+  const handleWishlist = useCallback((e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
     if (!isAuthenticated) {
-      router.push('/login');
+      openLoginModal(() => toggleFavorite.mutate(ad.id));
       return;
     }
 
     if (!toggleFavorite.isPending) {
       toggleFavorite.mutate(ad.id);
     }
-  };
+  }, [isAuthenticated, openLoginModal, toggleFavorite, ad.id]);
 
-  const handleCardClick = (e: MouseEvent) => {
+  const handleCardClick = useCallback((e: MouseEvent) => {
     // Allow Ctrl+Click (Windows/Linux) or Cmd+Click (Mac) to open in new tab
     // Allow middle-click to open in new tab
     if (e.ctrlKey || e.metaKey || e.button === 1) {
@@ -53,7 +62,7 @@ function AdCard({ ad, priority = false }: AdCardProps) {
       return;
     }
     // For regular clicks, Next.js Link will handle navigation
-  };
+  }, []);
 
   const imageUrl = useMemo(() => {
     if (
@@ -65,8 +74,7 @@ function AdCard({ ad, priority = false }: AdCardProps) {
     ) {
       return ad.images[0].trim();
     }
-    // Fallback image when missing
-    return 'https://via.placeholder.com/600x400?text=No+Image';
+    return PLACEHOLDER_IMAGE;
   }, [ad.images]);
 
   const displayLocation = useMemo(() => {
@@ -78,9 +86,28 @@ function AdCard({ ad, priority = false }: AdCardProps) {
     return parts[0] || 'Location not specified';
   }, [ad.location, ad.city, ad.state]);
 
+  const attrs = ad.attributes || {};
+  const specPills: string[] = [];
+  const kmDriven = attrs.km_driven ?? attrs.kms_driven;
+  if (kmDriven != null) {
+    const km = Number(kmDriven);
+    specPills.push(km >= 1000 ? `${Math.round(km).toLocaleString('en-IN')} km` : `${km} km`);
+  }
+  const fuelType = attrs.fuel_type ?? attrs.fuel;
+  if (fuelType) specPills.push(String(fuelType));
+  const transmission = attrs.transmission;
+  if (transmission) specPills.push(String(transmission));
+  const year = attrs.year || attrs.release_year || attrs.year_of_manufacture;
+  if (year) specPills.push(String(year));
+  const brand = attrs.brand;
+  if (brand) specPills.push(String(brand));
+  const condition = attrs.condition;
+  if (condition) specPills.push(String(condition));
+
   const timeAgo = useMemo(() => {
-    if (!ad.postedAt) return 'Just now';
-    const posted = new Date(ad.postedAt);
+    const timestamp = ad.postedAt ?? ad.createdAt;
+    if (!timestamp) return 'Just now';
+    const posted = new Date(timestamp);
     const now = new Date();
     const diffInSeconds = Math.floor((now.getTime() - posted.getTime()) / 1000);
     
@@ -96,84 +123,110 @@ function AdCard({ ad, priority = false }: AdCardProps) {
     return '1 month ago';
   }, [ad.postedAt]);
 
+  const adUrl = getAdUrl(ad);
+  const promotionType = ad.premiumType ?? (ad.isPremium ? 'FEATURED' : null);
+  const imageCount = ad.images?.length ?? 0;
+
   return (
     <Link 
-      href={`/ads/${ad.id}`} 
-      className="block group"
+      href={adUrl} 
+      className="block group h-full"
       onClick={handleCardClick}
       onAuxClick={(e) => {
-        // Handle middle-click (mouse wheel click)
         if (e.button === 1) {
-          window.open(`/ads/${ad.id}`, '_blank');
+          window.open(adUrl, '_blank');
         }
       }}
     >
-      <div className="group bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden hover:shadow-xl hover:border-primary/30 transition-all duration-300 cursor-pointer transform hover:-translate-y-1">
-        <div className="relative aspect-[4/3] overflow-hidden">
+      <div className="h-full flex flex-col rounded-xl border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm hover:shadow-lg hover:border-slate-300 dark:hover:border-slate-600 transition-all duration-300 cursor-pointer hover:-translate-y-0.5 active:translate-y-0">
+        <div className="relative w-full aspect-[4/3] flex-shrink-0 overflow-hidden bg-slate-100 dark:bg-slate-700/50">
           {imageUrl ? (
             <ImageWithFallback
               src={imageUrl}
               alt={ad.title}
               fill
               sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
-              className="object-cover group-hover:scale-105 transition-transform duration-500"
+              className="object-cover group-hover:scale-[1.04] transition-transform duration-400 ease-out"
               priority={priority}
             />
           ) : (
-            <div className="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
-              <span className="text-4xl">📷</span>
+            <div className="w-full h-full bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-700 dark:to-slate-600 flex items-center justify-center">
+              <span className="text-4xl opacity-60">📷</span>
             </div>
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+          <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
           
-          {/* Badges - Bottom Left */}
-          {ad.isPremium && ad.premiumType && (
-            <div className={`absolute bottom-2 left-3 text-xs font-bold px-2 py-1 rounded shadow-sm opacity-90 ${
-              ad.premiumType === 'FEATURED' ? 'bg-yellow-400 text-black' :
-              ad.premiumType === 'RENT' ? 'bg-blue-500 text-white' :
-              ad.premiumType === 'ECO' ? 'bg-green-500 text-white' :
-              ad.premiumType === 'TOP' ? 'bg-orange-500 text-white' :
-              'bg-green-500 text-white'
-            }`}>
-              {ad.premiumType === 'FEATURED' ? 'FEATURED' : 
-               ad.premiumType === 'RENT' ? 'RENT' :
-               ad.premiumType === 'ECO' ? 'ECO' :
-               ad.premiumType === 'TOP' ? 'TOP' : 'BUMP UP'}
+          {/* Promotion & urgent badges */}
+          {(promotionType || ad.isUrgent) && (
+            <div className="absolute top-2 left-2 z-10 flex flex-wrap gap-1">
+              {promotionType && (
+                <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-semibold uppercase tracking-wide shadow-sm ${
+                  promotionType === 'TOP' ? 'bg-blue-500 text-white' :
+                  promotionType === 'FEATURED' ? 'bg-amber-400 text-gray-900' :
+                  promotionType === 'BUMP_UP' ? 'bg-emerald-500 text-white' :
+                  promotionType === 'RENT' ? 'bg-indigo-500 text-white' :
+                  promotionType === 'ECO' ? 'bg-green-500 text-white' :
+                  'bg-slate-600 text-white'
+                }`}>
+                  {promotionType === 'TOP' ? 'TOP' : promotionType === 'FEATURED' ? 'Featured' : promotionType === 'BUMP_UP' ? 'Bump' : promotionType === 'RENT' ? 'Rent' : promotionType === 'ECO' ? 'Eco' : 'Premium'}
+                </span>
+              )}
+              {ad.isUrgent && (
+                <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-semibold uppercase tracking-wide bg-rose-500 text-white shadow-sm">
+                  Urgent
+                </span>
+              )}
             </div>
           )}
-          
-          {/* Urgent Badge */}
-          {ad.isUrgent && !ad.isPremium && (
-            <div className="absolute bottom-2 left-3 bg-red-500 text-white text-xs font-bold px-2 py-1 rounded shadow-sm opacity-90">
-              URGENT
+
+          {/* Image count badge */}
+          {imageCount > 1 && (
+            <div className="absolute bottom-2 left-2 z-10 flex items-center gap-1 px-2 py-1 rounded-md bg-black/50 text-white text-[11px] font-medium">
+              <span className="material-symbols-outlined text-[14px]">photo_library</span>
+              {imageCount}
             </div>
           )}
 
           <button
             onClick={handleWishlist}
-            className={`absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/80 rounded-full transition-all shadow-sm ${
+            className={`absolute top-2 right-2 z-10 p-2 rounded-full bg-white/95 dark:bg-slate-800/95 shadow-sm ring-1 ring-black/5 dark:ring-white/10 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
               isFavorite
                 ? 'text-red-500'
-                : 'text-slate-400 hover:text-red-500 hover:scale-110'
+                : 'text-slate-500 hover:text-red-500 hover:scale-105'
             }`}
             aria-label={isFavorite ? 'Remove from wishlist' : 'Add to wishlist'}
           >
             <span className={`material-symbols-outlined text-[20px] ${isFavorite ? 'filled' : ''}`}>favorite</span>
           </button>
-        </div>
-        <div className="p-4">
-          <div className="flex justify-between items-start mb-1">
-            <h3 className="text-xl font-bold text-slate-900 dark:text-white">₹{ad.price.toLocaleString('en-IN')}</h3>
+
+          {/* Watermark: Sell Box logo */}
+          <div className="absolute z-[5] flex items-center justify-center pointer-events-none" style={{ right: 8, bottom: 8, width: 40, opacity: 0.7 }} aria-hidden>
+            <img src="/logo.png?v=7" alt="Sell Box" width={40} height={40} className="object-contain" style={{ width: 40, height: 40 }} />
           </div>
-          <p className="text-sm font-medium text-slate-700 dark:text-slate-300 truncate mb-3 group-hover:text-primary transition-colors">
-            {ad.title}
-          </p>
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <div className="flex items-center gap-1">
-              <span className="material-symbols-outlined text-[14px]">location_on</span>
-              <span className="truncate max-w-[100px]">{displayLocation}</span>
+        </div>
+        <div className="p-5 flex-1 flex flex-col min-h-0">
+          <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100 line-clamp-2 min-h-[2.75rem] leading-snug mb-2 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+            {formatAdTitle(ad.title)}
+          </h3>
+          <div className="min-h-[1.75rem] mb-2">
+            <SpecPills items={specPills} max={4} />
+          </div>
+          <div className="min-h-[1.25rem] flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <span className="material-symbols-outlined text-[14px] flex-shrink-0 text-slate-400">location_on</span>
+              <span className="truncate">{displayLocation}</span>
             </div>
-            <span>{timeAgo}</span>
+            <span className="flex-shrink-0">{timeAgo}</span>
+          </div>
+          <div className="mt-auto pt-3 border-t border-slate-100 dark:border-slate-700">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+                {formatPriceShort(ad.price)}
+              </span>
+              <span className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm group-hover:bg-blue-700 transition-colors whitespace-nowrap">
+                View Details
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -181,4 +234,4 @@ function AdCard({ ad, priority = false }: AdCardProps) {
   );
 }
 
-export default AdCard;
+export default memo(AdCard);

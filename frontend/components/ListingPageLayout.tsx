@@ -1,16 +1,17 @@
 'use client';
 
-import { ReactNode } from 'react';
+import { ReactNode, useCallback } from 'react';
 import SmartFiltersPanel from './SmartFiltersPanel';
 import EmptyState from './EmptyState';
-import AdCardOGNOX from './AdCardOGNOX';
+import LazyAdCard from './LazyAdCard';
 import SortDropdown from './SortDropdown';
 import FilterChips from './FilterChips';
 import { ListingFilters, SortOption } from '@/hooks/useListingFilters';
 import dynamic from 'next/dynamic';
 
 const SmartFiltersPanelDynamic = dynamic(() => import('@/components/SmartFiltersPanel'), {
-  loading: () => <div className="animate-pulse bg-gray-200 h-96 rounded-lg"></div>
+  ssr: false,
+  loading: () => <div className="animate-pulse bg-gray-200 h-96 rounded-lg" aria-hidden />,
 });
 
 interface ListingPageLayoutProps {
@@ -28,7 +29,7 @@ interface ListingPageLayoutProps {
   showFilterChips?: boolean;
   emptyStateTitle?: string;
   emptyStateMessage?: string;
-  emptyStateIcon?: string;
+  emptyStateIcon?: 'search' | 'inbox' | 'filter';
   children?: ReactNode;
   headerActions?: ReactNode;
 }
@@ -48,13 +49,13 @@ export default function ListingPageLayout({
   showFilterChips = false,
   emptyStateTitle = 'No ads found',
   emptyStateMessage = 'Try adjusting your filters or check back later.',
-  emptyStateIcon = 'search',
+  emptyStateIcon = 'search' as const,
   children,
   headerActions,
 }: ListingPageLayoutProps) {
-  const handleSortChange = (sort: SortOption) => {
+  const handleSortChange = useCallback((sort: SortOption) => {
     onFilterChange({ sort });
-  };
+  }, [onFilterChange]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -96,7 +97,7 @@ export default function ListingPageLayout({
                   {showFilterChips && (
                     <FilterChips
                       filters={filters}
-                      onRemove={onRemoveFilter}
+                      onRemove={(key) => onRemoveFilter(key as keyof ListingFilters)}
                       onClearAll={onClearAllFilters}
                     />
                   )}
@@ -129,9 +130,15 @@ export default function ListingPageLayout({
             ) : (
               <>
                 {/* Ads Grid */}
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-                  {ads.map((ad: any) => (
-                    <AdCardOGNOX key={ad.id} ad={ad} />
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6 lg:gap-8 items-stretch">
+                  {ads.map((ad: any, index: number) => (
+                    <LazyAdCard
+                      key={ad.id}
+                      ad={ad}
+                      variant="ognox"
+                      priority={index < 6}
+                      eager={index < 8}
+                    />
                   ))}
                 </div>
 

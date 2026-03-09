@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 /**
  * Firebase Provider Component
@@ -39,13 +39,12 @@ export default function FirebaseProvider({ children }: { children: React.ReactNo
             // Show notification using toast or browser notification
             const notification = payload.notification;
             if (notification) {
-              const title = notification.title || 'SellIt';
+              const title = notification.title || 'Sell Box';
               const body = notification.body || 'You have a new notification';
               
               // Show toast notification
               toast.success(body, {
                 duration: 5000,
-                icon: '🔔',
               });
 
               // Optionally show browser notification if permission is granted

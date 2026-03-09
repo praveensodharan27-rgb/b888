@@ -35,7 +35,8 @@ const PACKAGE_PRIORITY = {
   SELLER_PRIME: 4,    // Enterprise
 };
 
-const SPONSORED_INJECT_EVERY = 6;
+// Inject sponsored ads after every N normal ads (e.g. 5 normal → 1 sponsored)
+const SPONSORED_INJECT_EVERY = 5;
 const RANK_POOL_SIZE = 500; // Reduced from 5000 to 500 for faster queries (10x faster!)
 const CACHE_TTL_SEC = 300; // Increased from 120 to 300 seconds (5 minutes)
 
@@ -79,17 +80,50 @@ function getPromoPriority(ad, config) {
 }
 
 /**
- * Location score: same city=2, same state=1, else 0
+ * Location score:
+ * - Strong priority for exact city / location slug matches
+ * - Secondary boost for same state
+ *
+ * This is used only inside the home feed ranking, so we can safely
+ * weight it higher to ensure local ads appear first in Fresh Recommendations.
  */
 function locationScore(ad, userLocation) {
   if (!userLocation) return 0;
+
+  const userCitySlug = normalizeLocationSlug(userLocation.city || userLocation.slug || '');
+  const userStateSlug = normalizeLocationSlug(userLocation.state || '');
+
+  const adCitySlug = normalizeLocationSlug(
+    (ad.city ||
+      (ad.location && (ad.location.city || ad.location.name)) ||
+      '') // fallback to location.city/name if present
+  );
+  const adStateSlug = normalizeLocationSlug(
+    (ad.state ||
+      (ad.location && ad.location.state) ||
+      '')
+  );
+  const adLocationSlug = normalizeLocationSlug(
+    (ad.location && ad.location.slug) ||
+      ad.locationSlug ||
+      ''
+  );
+
   let score = 0;
-  const userCity = (userLocation.city || '').toLowerCase();
-  const userState = (userLocation.state || '').toLowerCase();
-  const adCity = (ad.city || '').toLowerCase();
-  const adState = (ad.state || '').toLowerCase();
-  if (userCity && adCity && adCity === userCity) score += 2;
-  if (userState && adState && adState === userState) score += 1;
+
+  // Strong boost: exact city or location slug match (Kottayam vs Kottayam)
+  if (userCitySlug && adCitySlug && adCitySlug === userCitySlug) {
+    score += 5;
+  }
+  if (userCitySlug && adLocationSlug && adLocationSlug === userCitySlug) {
+    score += 5;
+  }
+
+  // Secondary: same state (Kerala vs Kerala)
+  if (userStateSlug && adStateSlug && adStateSlug === userStateSlug) {
+    score += 2;
+  }
+
   return score;
 }
 
@@ -176,27 +210,61 @@ async function rankAdsByLocation(ads, userLocation, config) {
 }
 
 /**
- * Fetch sponsored ads for user's location (platform default or location match)
+ * Fetch sponsored ads for user's location (location-based only)
+ * - Only active ads
+ * - Respect startDate/endDate (expiry window)
+ * - Location targeting:
+ *   - targetLocations empty or "india"/"all-india" → show everywhere (India-wide)
+ *   - Otherwise, show only when user city/state/location slug matches one of targetLocations
+ * - Category targeting:
+ *   - If categorySlug set on sponsored ad, match the current category
+ *   - If categorySlug empty/null, show on all categories
  */
 async function fetchSponsoredAds(userLocation, category, limit = 5) {
+  void category; // category targeting disabled - location-based only
   try {
+    const now = new Date();
+
     const citySlug = userLocation?.city ? normalizeLocationSlug(userLocation.city) : null;
     const stateSlug = userLocation?.state ? normalizeLocationSlug(userLocation.state) : null;
     const locSlug = userLocation?.slug ? normalizeLocationSlug(userLocation.slug) : citySlug || stateSlug;
 
+    // Location conditions (platform default + India-wide + exact city/state/slug match)
     const orConditions = [
-      { targetLocations: { $size: 0 } },
+      { targetLocations: { $size: 0 } },   // no targeting → show everywhere
       { targetLocations: [] },
       { targetLocations: 'india' },
       { targetLocations: 'all-india' },
     ];
-    if (locSlug) orConditions.push({ targetLocations: locSlug });
+    if (locSlug) orConditions.push({ targetLocations: normalizeLocationSlug(locSlug) });
     if (citySlug) orConditions.push({ targetLocations: citySlug });
     if (stateSlug) orConditions.push({ targetLocations: stateSlug });
 
-    const query = { status: 'active', $or: orConditions };
+    // Active + within date window
+    const dateConds = [
+      {
+        $or: [
+          { startDate: null },
+          { startDate: { $lte: now } },
+        ],
+      },
+      {
+        $or: [
+          { endDate: null },
+          { endDate: { $gte: now } },
+        ],
+      },
+    ];
+
+    const query = {
+      status: 'active',
+      $and: [...dateConds, { $or: orConditions }].filter(Boolean),
+    };
+
+    // Higher priority first, then least recently shown (for fair rotation)
     const sort = { priority: -1, lastShownAt: 1 };
     const ads = await sponsoredAdsService.findManyRaw(query, sort, limit);
+
     return (ads || []).map((a) => ({ ...a, _type: 'sponsored' }));
   } catch (e) {
     return [];
@@ -207,7 +275,10 @@ async function fetchSponsoredAds(userLocation, category, limit = 5) {
  * Inject sponsored ads into feed after every N normal ads
  */
 function injectSponsoredAds(normalAds, sponsoredAds, everyN = SPONSORED_INJECT_EVERY) {
-  if (!sponsoredAds?.length) return normalAds;
+  if (!Array.isArray(normalAds) || !normalAds.length) return normalAds || [];
+  if (!Array.isArray(sponsoredAds) || !sponsoredAds.length || !everyN || everyN <= 0) {
+    return normalAds;
+  }
 
   const result = [];
   let sponsoredIdx = 0;
@@ -216,12 +287,16 @@ function injectSponsoredAds(normalAds, sponsoredAds, everyN = SPONSORED_INJECT_E
   for (const item of normalAds) {
     result.push(item);
     countSinceLast++;
-    if (countSinceLast >= everyN && sponsoredIdx < sponsoredAds.length) {
-      result.push(sponsoredAds[sponsoredIdx]);
-      sponsoredIdx++;
+
+    if (countSinceLast >= everyN) {
+      // Rotate through sponsored ads when we reach the interval
+      const adToInsert = sponsoredAds[sponsoredIdx % sponsoredAds.length];
+      result.push(adToInsert);
+      sponsoredIdx += 1;
       countSinceLast = 0;
     }
   }
+
   return result;
 }
 
@@ -243,8 +318,11 @@ async function getHomeFeedAds(options = {}) {
     includeSponsored = true,
   } = options;
 
-  const userLocation = (city || state || locationSlug) ? { city: city || null, state: state || null, slug: locationSlug } : null;
-  const rankListKey = `home:ranked:${city || ''}:${state || ''}:${locationSlug || ''}:${category || ''}:${subcategory || ''}`;
+  const userLocation = (city || state || locationSlug)
+    ? { city: city || null, state: state || null, slug: locationSlug || null }
+    : null;
+  // v3: pool ordered by featured/premium/planPriority first so they appear at top of feed
+  const rankListKey = `home:ranked:v3:${city || ''}:${state || ''}:${locationSlug || ''}:${category || ''}:${subcategory || ''}`;
   const pageCacheKey = `${rankListKey}:${page}:${limit}`;
 
   // Try page-level cache first (faster)
@@ -277,7 +355,15 @@ async function getHomeFeedAds(options = {}) {
       prisma.ad.findMany({
         where,
         take: RANK_POOL_SIZE,
-        orderBy: { createdAt: 'desc' },
+        // Priority order: Featured/Premium/Business first, then by recency (so they appear at top of feed)
+        orderBy: [
+          { isTopAdActive: 'desc' },
+          { isFeaturedActive: 'desc' },
+          { isBumpActive: 'desc' },
+          { isPremium: 'desc' },
+          { planPriority: 'desc' },
+          { createdAt: 'desc' },
+        ],
         select: {
           // Only select fields we need (reduces payload size by ~60%)
           id: true,
@@ -299,12 +385,15 @@ async function getHomeFeedAds(options = {}) {
           isFeaturedActive: true,
           isBumpActive: true,
           isUrgent: true,
+          featuredAt: true,
+          bumpedAt: true,
           expiresAt: true,
           premiumExpiresAt: true,
           createdAt: true,
           lastShownAt: true,
           userId: true,
           slug: true,
+          attributes: true,
           // Relations with minimal fields
           user: { select: { id: true, name: true, avatar: true, isVerified: true } },
           category: { select: { id: true, name: true, slug: true } },
@@ -316,6 +405,23 @@ async function getHomeFeedAds(options = {}) {
     total = count;
     const config = await getRankConfig();
     ranked = await rankAdsByLocation(pool, userLocation, config);
+
+    // Dev-only debug: verify location slug & ranking order for first page
+    if (process.env.NODE_ENV === 'development' && page === 1) {
+      // eslint-disable-next-line no-console
+      console.log('[HomeFeedRank] userLocation:', userLocation);
+      // eslint-disable-next-line no-console
+      console.log(
+        '[HomeFeedRank] top 10 ads by location:',
+        ranked.slice(0, 10).map((ad) => ({
+          id: ad.id,
+          city: ad.city,
+          state: ad.state,
+          locationSlug: ad.location?.slug || ad.locationSlug || null,
+          premiumType: ad.premiumType,
+        }))
+      );
+    }
     await cacheAds(rankListKey, { ranked, total }, CACHE_TTL_SEC);
   } else if (total == null) {
     total = ranked.length;

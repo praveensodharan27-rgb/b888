@@ -3,7 +3,7 @@
     "category": "mobiles",
     "subcategories": {
       "mobile-phones": {
-        "fields": ["brand", "model", "ram", "storage", "camera", "battery", "os", "condition"],
+        "fields": ["brand", "model", "ram", "storage", "condition"],
         "brands": {
           "Samsung": ["Galaxy S21", "Galaxy A52", "Galaxy M32"],
           "Apple": ["iPhone 11", "iPhone 12", "iPhone 13", "iPhone 14"],
@@ -115,11 +115,32 @@
       "cars": {
         "fields": ["brand", "model", "year", "fuel", "km_driven", "transmission", "owners", "color"],
         "brands": {
-          "Maruti": ["Swift", "Baleno", "Alto", "WagonR", "Brezza"],
-          "Hyundai": ["i10", "i20", "Creta", "Verna"],
-          "Tata": ["Nexon", "Punch", "Altroz", "Harrier"],
-          "Mahindra": ["XUV300", "XUV700", "Scorpio"],
-          "Honda": ["City", "Amaze", "Jazz"]
+          "Maruti Suzuki": ["800", "Alto", "Alto K10", "Swift", "Baleno", "WagonR", "Dzire", "Brezza", "Ertiga", "Celerio", "S-Presso", "Ignis", "Fronx", "Grand Vitara"],
+          "Hyundai": ["Santro", "i10", "Grand i10", "i20", "Aura", "Verna", "Venue", "Creta", "Alcazar", "Exter", "Tucson"],
+          "Tata": ["Nano", "Tiago", "Tigor", "Altroz", "Punch", "Nexon", "Harrier", "Safari"],
+          "Mahindra": ["Bolero", "Bolero Neo", "Thar", "Scorpio", "Scorpio N", "XUV300", "XUV400", "XUV500", "XUV700"],
+          "Toyota": ["Etios", "Glanza", "Urban Cruiser", "Hyryder", "Innova", "Innova Crysta", "Fortuner", "Camry", "Vellfire"],
+          "Honda": ["City", "Amaze", "Jazz", "WR-V", "BR-V", "Elevate"],
+          "Kia": ["Seltos", "Sonet", "Carens", "EV6"],
+          "Renault": ["Kwid", "Triber", "Kiger", "Duster"],
+          "Nissan": ["Magnite", "Kicks", "Sunny", "Terrano"],
+          "Volkswagen": ["Polo", "Vento", "Virtus", "Taigun", "Tiguan"],
+          "Skoda": ["Slavia", "Kushaq", "Octavia", "Superb", "Kodiaq"],
+          "MG": ["Hector", "Hector Plus", "Astor", "ZS EV", "Comet EV"],
+          "Jeep": ["Compass", "Meridian", "Wrangler"],
+          "BMW": ["3 Series", "5 Series", "7 Series", "X1", "X3", "X5", "X7", "i4", "iX"],
+          "Mercedes-Benz": ["A-Class", "C-Class", "E-Class", "S-Class", "GLA", "GLC", "GLE", "GLS", "EQS"],
+          "Audi": ["A4", "A6", "A8", "Q3", "Q5", "Q7", "Q8", "e-tron"],
+          "Volvo": ["XC40", "XC60", "XC90", "S60", "S90", "C40 Recharge"],
+          "Jaguar": ["XE", "XF", "F-Pace", "I-Pace"],
+          "Land Rover": ["Defender", "Discovery", "Range Rover Evoque", "Range Rover Velar", "Range Rover Sport", "Range Rover"],
+          "Lexus": ["ES", "LS", "NX", "RX", "LX"],
+          "Porsche": ["Macan", "Cayenne", "Panamera", "Taycan"],
+          "Mini": ["Cooper", "Countryman", "Clubman"],
+          "BYD": ["Atto 3", "e6", "Seal"],
+          "Citroen": ["C3", "eC3", "C5 Aircross"],
+          "Isuzu": ["D-Max", "MU-X"],
+          "Force Motors": ["Gurkha"]
         }
       },
       "motorcycles": {

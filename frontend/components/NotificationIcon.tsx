@@ -45,6 +45,13 @@ export default function NotificationIcon() {
     };
   }, [isOpen]);
 
+  // When user opens the notification panel, mark all as read and reset badge
+  useEffect(() => {
+    if (isOpen && unreadCount > 0) {
+      markAllAsRead();
+    }
+  }, [isOpen, unreadCount, markAllAsRead]);
+
   const handleNotificationClick = (notification: any) => {
     markAsRead(notification.id);
     setIsOpen(false);

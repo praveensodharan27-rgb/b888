@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
-import { dummyCategories, dummyLocations } from '@/lib/dummyData';
+import { useCategories } from '@/hooks/useCategories';
 
 interface FiltersProps {
   filters: any;
@@ -11,22 +11,8 @@ interface FiltersProps {
 }
 
 export default function Filters({ filters, onFilterChange }: FiltersProps) {
-  const [showFilters, setShowFilters] = useState(false);
-
-  const { data: categoriesData } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      try {
-        const response = await api.get('/categories');
-        return response.data.categories;
-      } catch (error) {
-        return null;
-      }
-    },
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-    refetchOnWindowFocus: false,
-  });
+  const [showFilters, setShowFilters] = useState(true);
+  const { categories: categoriesData } = useCategories();
 
   const { data: locationsData } = useQuery({
     queryKey: ['locations'],
@@ -43,8 +29,8 @@ export default function Filters({ filters, onFilterChange }: FiltersProps) {
     refetchOnWindowFocus: false,
   });
 
-  const categories = categoriesData || dummyCategories;
-  const locations = locationsData || dummyLocations;
+  const categories = categoriesData || [];
+  const locations = locationsData || [];
 
   const handleChange = (key: string, value: any) => {
     onFilterChange({ [key]: value });

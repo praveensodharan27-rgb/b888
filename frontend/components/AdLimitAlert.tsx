@@ -5,7 +5,7 @@ import { FiAlertCircle, FiArrowUpCircle, FiShoppingCart, FiX } from 'react-icons
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 
 const PaymentModal = dynamic(() => import('@/components/PaymentModal'), {

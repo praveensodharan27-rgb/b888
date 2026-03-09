@@ -13,13 +13,16 @@ import {
   FiStar, 
   FiShoppingBag, 
   FiGift,
+  FiPlusCircle,
   FiMonitor,
   FiBriefcase,
   FiBell,
   FiShield,
   FiMenu,
   FiX,
-  FiEdit3
+  FiEdit3,
+  FiDollarSign,
+  FiFlag,
 } from 'react-icons/fi';
 
 const adminNavItems = [
@@ -27,7 +30,9 @@ const adminNavItems = [
   { href: '/admin?tab=ads', label: 'Ads', icon: FiLayers, tab: 'ads' },
   { href: '/admin?tab=users', label: 'Users', icon: FiUsers, tab: 'users' },
   { href: '/admin/moderation', label: 'Moderation', icon: FiShield, tab: 'moderation' },
+  { href: '/admin/reports', label: 'Reports', icon: FiFlag, tab: 'reports' },
   { href: '/admin?tab=banners', label: 'Banners', icon: FiImage, tab: 'banners' },
+  { href: '/admin?tab=free-posting-promos', label: 'Free Posting Ads', icon: FiPlusCircle, tab: 'free-posting-promos' },
   { href: '/admin?tab=categories', label: 'Categories', icon: FiTag, tab: 'categories' },
   { href: '/admin?tab=auth-pages', label: 'Login/Signup Pages', icon: FiEdit3, tab: 'auth-pages' },
   { href: '/admin?tab=premium', label: 'Premium Ads', icon: FiStar, tab: 'premium' },
@@ -35,6 +40,7 @@ const adminNavItems = [
   { href: '/admin?tab=offers', label: 'Offers', icon: FiGift, tab: 'offers' },
   { href: '/admin?tab=business-packages', label: 'Business', icon: FiBriefcase, tab: 'business-packages' },
   { href: '/admin?tab=interstitial', label: 'Interstitial Ads', icon: FiMonitor, tab: 'interstitial' },
+  { href: '/admin?tab=sponsored-ads', label: 'Sponsored Ads', icon: FiDollarSign, tab: 'sponsored-ads' },
   { href: '/admin/search-alerts', label: 'Search Alerts', icon: FiBell, tab: 'search-alerts' },
 ];
 
@@ -51,6 +57,8 @@ export default function AdminSidebar() {
       return pathname === '/admin/search-alerts';
     } else if (item.href === '/admin/moderation') {
       return pathname === '/admin/moderation';
+    } else if (item.href === '/admin/reports') {
+      return pathname === '/admin/reports';
     } else {
       return pathname === '/admin' && currentTab === item.tab;
     }
@@ -77,10 +85,10 @@ export default function AdminSidebar() {
           <div className="px-6 mb-8 border-b border-gray-200 pb-6">
             <Link href="/admin" className="flex items-center gap-3 mb-3">
               <Image
-                src="/logo.png"
+                src="/logo.png?v=7"
                 alt="Logo"
-                width={180}
-                height={60}
+                width={200}
+                height={56}
                 className="h-14 w-auto object-contain"
               />
               <div>

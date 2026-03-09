@@ -89,21 +89,27 @@ function locationScore(ad, contextLocation) {
 }
 
 /**
- * Rotate within a group: oldest lastShownAt first (never shown = top), then weighted random for ties
+ * Rotate within a group.
+ * Ordering inside a tier is driven primarily by the combined ad score
+ * (which includes premium tier, freshness, location, engagement, quality, price),
+ * then by lastShownAt (oldest / never-shown first) and a tiny random factor.
  */
-function rotateAdsInGroup(ads, contextLocation = null) {
+function rotateAdsInGroup(ads, contextLocation = null, priceRange = null) {
   if (!ads.length) return [];
+
   const withScore = ads.map(ad => ({
     ad,
+    score: calculateAdScore(ad, contextLocation, priceRange),
     lastShown: ad.lastShownAt ? new Date(ad.lastShownAt).getTime() : 0,
-    locScore: locationScore(ad, contextLocation),
     rand: Math.random()
   }));
+
   withScore.sort((a, b) => {
-    if (a.locScore !== b.locScore) return b.locScore - a.locScore;
+    if (a.score !== b.score) return b.score - a.score;
     if (a.lastShown !== b.lastShown) return a.lastShown - b.lastShown;
     return a.rand - b.rand;
   });
+
   return withScore.map(x => x.ad);
 }
 
@@ -140,6 +146,20 @@ async function rankAds(ads, options = {}) {
   const valid = filterValidAds(ads);
   if (!valid.length) return [];
 
+  // Lightweight price range computation for PriceScore (single pass over already-fetched ads)
+  let priceRange = null;
+  const prices = valid
+    .map(a => (typeof a.price === 'number' ? a.price : null))
+    .filter(p => p !== null && !Number.isNaN(p) && p > 0);
+
+  if (prices.length) {
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    if (max > min) {
+      priceRange = { min, max };
+    }
+  }
+
   const topAds = [];
   const featured = [];
   const bumped = [];
@@ -153,15 +173,31 @@ async function rankAds(ads, options = {}) {
   }
 
   const order = [
-    ...rotateAdsInGroup(topAds, locationContext),
-    ...rotateAdsInGroup(featured, locationContext),
-    ...rotateAdsInGroup(bumped, locationContext)
+    ...rotateAdsInGroup(topAds, locationContext, priceRange),
+    ...rotateAdsInGroup(featured, locationContext, priceRange),
+    ...rotateAdsInGroup(bumped, locationContext, priceRange)
   ];
   const byPlan = groupAdsByPackage(rest);
   const planOrder = [PACKAGE_PRIORITY.ENTERPRISE, PACKAGE_PRIORITY.PRO, PACKAGE_PRIORITY.BASIC, PACKAGE_PRIORITY.NORMAL];
   for (const p of planOrder) {
     const group = byPlan[p] || [];
-    order.push(...rotateAdsInGroup(group, locationContext));
+    order.push(...rotateAdsInGroup(group, locationContext, priceRange));
+  }
+
+  // Development-only debug logging of score components for a few sample ads
+  if (process && process.env && process.env.NODE_ENV === 'development') {
+    const sample = order.slice(0, 5);
+    const debugPayload = sample.map((ad, index) => ({
+      index,
+      id: ad.id,
+      title: ad.title,
+      premiumType: ad.premiumType,
+      packagePriority: getPackagePriority(ad),
+      score: getAdScoreComponents(ad, locationContext, priceRange)
+    }));
+
+    // eslint-disable-next-line no-console
+    console.log('[AdRanking] Sample score breakdown:', JSON.stringify(debugPayload, null, 2));
   }
 
   if (updateLastShown && order.length > 0) {
@@ -189,18 +225,90 @@ function groupAdsByPackageExport(ads) {
   return groupAdsByPackage(ads);
 }
 
-function rotateAdsInGroupExport(ads, contextLocation) {
-  return rotateAdsInGroup(ads, contextLocation);
+function rotateAdsInGroupExport(ads, contextLocation, priceRange) {
+  return rotateAdsInGroup(ads, contextLocation, priceRange);
 }
 
-function calculateAdScore(ad, contextLocation) {
+function getAdScoreComponents(ad, contextLocation, priceRange = null) {
+  // Premium / business package contribution
   const plan = getPackagePriority(ad) * 1000;
   const featured = ad.featuredAt ? 500 : 0;
   const bump = ad.bumpedAt ? 200 : 0;
+
+  // Freshness & lightweight rotation bias
   const freshness = isNewAd(ad) ? 100 : 0;
   const rotation = ad.lastShownAt ? 0 : 50;
+
+  // Location relevance
   const loc = locationScore(ad, contextLocation) * 10;
-  return plan + featured + bump + freshness + rotation + loc;
+
+  // EngagementScore (clicks/messages/favourites/views) – use only cheap, already-loaded fields
+  const views = typeof ad.views === 'number' ? ad.views : 0;
+  const favourites = typeof ad.favouritesCount === 'number' ? ad.favouritesCount : 0;
+  const messages = typeof ad.messagesCount === 'number' ? ad.messagesCount : 0;
+  const clicks = typeof ad.clicksCount === 'number' ? ad.clicksCount : 0;
+
+  // Simple capped normalization so the score stays lightweight and bounded
+  const engagementRaw = views + favourites * 3 + messages * 4 + clicks * 2;
+  const engagementScore = Math.min(engagementRaw / 50, 1) * 80; // 0–80
+
+  // QualityScore – photos, description length, verified seller
+  const imagesCount = Array.isArray(ad.images) ? ad.images.length : 0;
+  const photosScore = Math.min(imagesCount, 8) * 5; // 0–40
+
+  const descLength = typeof ad.description === 'string' ? ad.description.length : 0;
+  const descScore = Math.min(descLength / 500, 1) * 40; // 0–40
+
+  const verifiedScore = ad.user && ad.user.isVerified ? 40 : 0;
+
+  const qualityScore = photosScore + descScore + verifiedScore; // max ~120
+
+  // PriceScore – favour competitive (cheaper) ads within the same pool
+  let priceScore = 0;
+  if (
+    priceRange &&
+    typeof ad.price === 'number' &&
+    !Number.isNaN(ad.price) &&
+    ad.price > 0
+  ) {
+    const span = priceRange.max - priceRange.min;
+    if (span > 0) {
+      const normalized = Math.min(
+        Math.max((priceRange.max - ad.price) / span, 0),
+        1
+      );
+      priceScore = normalized * 40; // 0–40
+    }
+  }
+
+  const total =
+    plan +
+    featured +
+    bump +
+    freshness +
+    rotation +
+    loc +
+    engagementScore +
+    qualityScore +
+    priceScore;
+
+  return {
+    total,
+    plan,
+    featured,
+    bump,
+    freshness,
+    rotation,
+    location: loc,
+    engagement: engagementScore,
+    quality: qualityScore,
+    price: priceScore
+  };
+}
+
+function calculateAdScore(ad, contextLocation, priceRange = null) {
+  const components = getAdScoreComponents(ad, contextLocation, priceRange);
+  return components.total;
 }
 
 module.exports = {

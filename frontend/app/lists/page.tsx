@@ -4,8 +4,8 @@ import api from '@/lib/api';
 import { FiChevronRight, FiTag, FiMapPin } from 'react-icons/fi';
 
 export const metadata: Metadata = {
-  title: 'Browse Lists | Auto-Generated Collections | SellIt',
-  description: 'Browse our auto-generated lists of products organized by category, location, price, and more. Find the best deals on SellIt.',
+  title: 'Browse Lists | Auto-Generated Collections | Sell Box',
+  description: 'Browse our auto-generated lists of products organized by category, location, price, and more. Find the best deals on Sell Box.',
 };
 
 async function getLists() {

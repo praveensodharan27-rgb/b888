@@ -11,7 +11,7 @@ export default function HelpCenter() {
     {
       icon: FiShoppingBag,
       title: 'Buying & Selling',
-      description: 'Learn how to buy and sell on SellIt',
+      description: 'Learn how to buy and sell on Sell Box',
       color: 'blue',
       articles: [
         'How to post an ad',
@@ -47,7 +47,7 @@ export default function HelpCenter() {
     {
       icon: FiBook,
       title: 'Getting Started',
-      description: 'New to SellIt? Start here',
+      description: 'New to Sell Box? Start here',
       color: 'orange',
       articles: [
         'Platform overview',
@@ -64,7 +64,7 @@ export default function HelpCenter() {
       answer: 'Click the "Post Ad" button in the navbar, fill in your item details, upload photos, and submit. Your ad will be reviewed and published within 24 hours.'
     },
     {
-      question: 'Is it free to use SellIt?',
+      question: 'Is it free to use Sell Box?',
       answer: 'Yes! Posting your first 2 ads is completely free. Additional ads may have a small posting fee to maintain quality.'
     },
     {

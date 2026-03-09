@@ -1,37 +1,37 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { useAuth } from '@/hooks/useAuth';
+import { useOTPTimer } from '@/hooks/useOTPTimer';
 import { useRouter } from 'next/navigation';
 import { FiX, FiMail, FiPhone, FiLock, FiUser, FiEye, FiEyeOff, FiUserPlus } from 'react-icons/fi';
 import Link from 'next/link';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { getOrCreateSessionAuthQuote } from '@/lib/authQuotes';
 
 interface SignupModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSwitchToLogin?: () => void;
+  onSignupSuccess?: () => void;
 }
 
-// Array of dark green/nature background images (free from Pexels/Unsplash)
+// Background images for Create Account modal (local from /images)
 const BACKGROUND_IMAGES = [
-  'https://images.pexels.com/photos/1072824/pexels-photo-1072824.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/1440476/pexels-photo-1440476.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/167699/pexels-photo-167699.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/167698/pexels-photo-167698.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/1179229/pexels-photo-1179229.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/1323712/pexels-photo-1323712.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?q=80&w=1920&auto=format&fit=crop',
-  'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=1920&auto=format&fit=crop',
+  '/images/liggraphy-olive-tree-3579922_1280.jpg',
+  '/images/pexels-forest-1868885_1280.jpg',
+  '/images/pexels-river-1866579_1280.jpg',
+  '/images/naster-forest-231066_1280.jpg',
+  '/images/pezibear-wolf-647528_1280.jpg',
 ];
 
-export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) {
+export default function SignupModal({ isOpen, onClose, onSwitchToLogin, onSignupSuccess }: SignupModalProps) {
   const router = useRouter();
   const { register: registerUser, sendOTP, verifyOTP } = useAuth();
   const [step, setStep] = useState<'register' | 'otp'>('register');
   const [formData, setFormData] = useState<any>({});
+  const otpTimer = useOTPTimer(60);
   const [receiveUpdates, setReceiveUpdates] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -100,11 +100,22 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
       setReceiveUpdates(false);
       setShowPassword(false);
       setIsSubmitting(false);
+      otpTimer.reset();
       setDisplayQuote('');
       setQuoteIndex(0);
       setIsDeleting(false);
     }
   }, [isOpen, reset]);
+
+  // Start OTP resend timer once when user reaches OTP step (OTP was just sent on register)
+  const otpStepMountRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) otpStepMountRef.current = false;
+    if (isOpen && step === 'otp' && !otpStepMountRef.current) {
+      otpStepMountRef.current = true;
+      otpTimer.start();
+    }
+  }, [isOpen, step]);
 
   // Pick ONE random quote per browser session (same for entire session)
   useEffect(() => {
@@ -158,8 +169,9 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
           }
           
           if (response?.token) {
+            onSignupSuccess?.();
             onClose();
-            router.push('/');
+            if (!onSignupSuccess) router.push('/');
             return;
           }
           
@@ -167,7 +179,7 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
         },
         onError: (error: any) => {
           setIsSubmitting(false);
-          console.error('Registration error:', error);
+          // useAuth already shows toast with backend message
         },
       });
     } catch (error) {
@@ -180,10 +192,11 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
     try {
       setIsSubmitting(true);
       verifyOTP({ email: formData.email, phone: formData.phone, code: data.code }, {
+        skipRedirect: !!onSignupSuccess,
         onSuccess: () => {
           setIsSubmitting(false);
+          onSignupSuccess?.();
           onClose();
-          router.push('/');
         },
         onError: () => {
           setIsSubmitting(false);
@@ -201,14 +214,14 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
     <>
       {/* Backdrop */}
       <div 
-        className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 transition-opacity"
+        className="fixed inset-0 bg-black/30 backdrop-blur-sm z-[110] transition-opacity"
         onClick={onClose}
       />
       
       {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto">
+      <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 overflow-y-auto">
         <div 
-          className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl transform transition-all my-8 relative overflow-hidden"
+          className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl transform transition-all my-8 relative overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Close Button */}
@@ -239,7 +252,7 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                 {/* Top: Logo */}
                 <div className="flex items-center gap-2">
                   <span className="text-2xl">🌱</span>
-                  <span className="text-2xl font-bold text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)]">SellIt</span>
+                  <span className="text-2xl font-bold text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)]">Sell Box</span>
                 </div>
 
                 {/* Center: Main Heading and Sub-heading */}
@@ -311,6 +324,12 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                             const email = watch('email');
                             if (!value && !email) {
                               return 'Phone or email is required';
+                            }
+                            if (value) {
+                              const digits = value.replace(/\D/g, '');
+                              if (digits.length < 10) {
+                                return 'Phone number must have at least 10 digits';
+                              }
                             }
                             return true;
                           }
@@ -526,14 +545,18 @@ export default function SignupModal({ isOpen, onClose, onSwitchToLogin }: Signup
                   
                   <button
                     type="button"
+                    disabled={otpTimer.isActive}
                     onClick={() => {
                       sendOTP({ email: formData.email, phone: formData.phone }, {
-                        onSuccess: () => toast.success('OTP resent successfully'),
+                        onSuccess: () => {
+                          toast.success('OTP resent successfully');
+                          otpTimer.start();
+                        },
                       });
                     }}
-                    className="w-full text-blue-600 hover:text-blue-700 font-semibold text-sm transition-colors"
+                    className="w-full text-blue-600 hover:text-blue-700 font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    Resend OTP
+                    {otpTimer.isActive ? `Resend OTP in ${otpTimer.formatted}` : 'Resend OTP'}
                   </button>
                 </form>
               </>

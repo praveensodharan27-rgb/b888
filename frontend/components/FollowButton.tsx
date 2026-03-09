@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { FiUserPlus, FiUserCheck } from 'react-icons/fi';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { useAuth } from '@/hooks/useAuth';
+import { useAuthModal } from '@/contexts/AuthModalContext';
 
 interface FollowButtonProps {
   userId: string;
@@ -25,12 +26,20 @@ export default function FollowButton({
   const [isFollowing, setIsFollowing] = useState(initialIsFollowing);
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
+  const checkStartedRef = useRef(false);
+  const lastUserIdRef = useRef<string | null>(null);
 
   const checkFollowingStatus = useCallback(async () => {
     if (!isAuthenticated) {
       setChecking(false);
       return;
     }
+    if (lastUserIdRef.current !== userId) {
+      lastUserIdRef.current = userId;
+      checkStartedRef.current = false;
+    }
+    if (checkStartedRef.current) return;
+    checkStartedRef.current = true;
 
     try {
       const response = await api.get(`/follow/check/${userId}`);
@@ -38,7 +47,6 @@ export default function FollowButton({
         setIsFollowing(response.data.isFollowing);
       }
     } catch (error: any) {
-      // Handle 401 (unauthorized) gracefully - user is not logged in
       if (error.response?.status === 401) {
         setIsFollowing(false);
       } else {
@@ -53,9 +61,11 @@ export default function FollowButton({
     checkFollowingStatus();
   }, [checkFollowingStatus]);
 
+  const { openLoginModal } = useAuthModal();
+
   const handleFollow = async () => {
     if (!isAuthenticated) {
-      router.push('/login');
+      openLoginModal(() => handleFollow());
       return;
     }
 
@@ -76,8 +86,7 @@ export default function FollowButton({
       if (onFollowChange) onFollowChange(previousState);
       
       if (error.response?.status === 401) {
-        router.push('/login');
-        toast.error('Please login to follow users');
+        openLoginModal(() => handleFollow());
       } else {
         const message = error.response?.data?.message || 'Failed to follow user';
         toast.error(message);
@@ -89,7 +98,7 @@ export default function FollowButton({
 
   const handleUnfollow = async () => {
     if (!isAuthenticated) {
-      router.push('/login');
+      openLoginModal(() => handleUnfollow());
       return;
     }
 
@@ -110,8 +119,7 @@ export default function FollowButton({
       if (onFollowChange) onFollowChange(previousState);
       
       if (error.response?.status === 401) {
-        router.push('/login');
-        toast.error('Please login to unfollow users');
+        openLoginModal(() => handleUnfollow());
       } else {
         const message = error.response?.data?.message || 'Failed to unfollow user';
         toast.error(message);

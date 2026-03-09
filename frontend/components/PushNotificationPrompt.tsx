@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { useAuth } from '@/hooks/useAuth';
 import { FiBell, FiBellOff, FiX } from 'react-icons/fi';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export default function PushNotificationPrompt() {
   const { isAuthenticated } = useAuth();

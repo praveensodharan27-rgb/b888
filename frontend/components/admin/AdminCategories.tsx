@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { FiPlus, FiEdit, FiTrash2, FiChevronDown, FiChevronRight } from 'react-icons/fi';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export default function AdminCategories() {
   const queryClient = useQueryClient();

@@ -1,7 +1,7 @@
 import { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import api from '@/lib/api';
-import AdCardOLX from '@/components/AdCardOLX';
+import LazyAdCard from '@/components/LazyAdCard';
 import Link from 'next/link';
 import { FiChevronRight, FiMapPin, FiTag } from 'react-icons/fi';
 
@@ -105,9 +105,9 @@ export default async function ListPage({ params }: ListPageProps) {
         {/* Ads Grid */}
         {ads.length > 0 ? (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 mb-6">
-              {ads.map((ad: any) => (
-                <AdCardOLX key={ad.id} ad={ad} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6 lg:gap-8 items-stretch mb-6">
+              {ads.map((ad: any, index: number) => (
+                <LazyAdCard key={ad.id} ad={ad} variant="olx" priority={index < 6} eager={index < 8} />
               ))}
             </div>
 

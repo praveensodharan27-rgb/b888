@@ -6,8 +6,9 @@ import { useRouter } from 'next/navigation';
 import ImageWithFallback from '@/components/ImageWithFallback';
 import { FiX, FiMapPin, FiUser, FiEye, FiTag, FiTrash2 } from 'react-icons/fi';
 import Link from 'next/link';
+import { getAdUrl } from '@/lib/directory';
 import { formatDistanceToNow } from 'date-fns';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 const getConditionLabel = (condition: string | null | undefined) => {
   if (!condition) return 'N/A';
@@ -140,7 +141,7 @@ export default function ComparePage() {
                       >
                         <FiX className="w-5 h-5" />
                       </button>
-                      <Link href={`/ads/${item.id}`} className="block">
+                      <Link href={getAdUrl(item)} className="block">
                         <div className="relative w-32 h-32 mx-auto mb-3 rounded-lg overflow-hidden bg-gray-100">
                           {item.images && item.images.length > 0 && item.images[0] ? (
                             <ImageWithFallback
@@ -239,7 +240,7 @@ export default function ComparePage() {
                       )}
                       {field.key === 'title' && (
                         <Link
-                          href={`/ads/${item.id}`}
+                          href={getAdUrl(item)}
                           className="text-sm font-semibold text-primary-600 hover:text-primary-700 hover:underline"
                         >
                           View Details
@@ -260,7 +261,7 @@ export default function ComparePage() {
         {comparisonItems.map((item) => (
           <Link
             key={item.id}
-            href={`/ads/${item.id}`}
+            href={getAdUrl(item)}
             className="px-6 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors font-semibold"
           >
             View {item.title.substring(0, 20)}...

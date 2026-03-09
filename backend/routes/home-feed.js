@@ -13,8 +13,19 @@ const router = express.Router();
 const { client, getIsMeilisearchAvailable } = require('../services/meilisearch');
 const { logger } = require('../src/config/logger');
 const { cacheMiddleware } = require('../middleware/cache');
+const { MongoClient } = require('mongodb');
 
 const INDEX_NAME = process.env.MEILI_INDEX || process.env.MEILISEARCH_INDEX || 'ads';
+
+// MongoDB connection for fallback
+let mongoClient = null;
+async function getMongoDb() {
+  if (!mongoClient) {
+    mongoClient = new MongoClient(process.env.DATABASE_URL);
+    await mongoClient.connect();
+  }
+  return mongoClient.db('olx_app');
+}
 
 /**
  * GET /api/home-feed
@@ -26,7 +37,14 @@ const INDEX_NAME = process.env.MEILI_INDEX || process.env.MEILISEARCH_INDEX || '
  * - page: Page number (default: 1)
  * - limit: Results per page (default: 20)
  */
-router.get('/', cacheMiddleware(60), async (req, res) => {
+router.get('/', async (req, res) => {
+  // Disable caching - always return fresh data
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+    'Surrogate-Control': 'no-store'
+  });
   try {
     const {
       userLat,
@@ -35,11 +53,97 @@ router.get('/', cacheMiddleware(60), async (req, res) => {
       limit = 20,
     } = req.query;
 
-    // Check if Meilisearch is available
-    if (!getIsMeilisearchAvailable()) {
-      return res.status(503).json({
-        success: false,
-        error: 'Search service temporarily unavailable',
+    // Check if Meilisearch is available - fallback to MongoDB if not
+    const useMeilisearch = getIsMeilisearchAvailable();
+    
+    if (!useMeilisearch) {
+      logger.warn('Meilisearch unavailable, falling back to MongoDB');
+      
+      // MongoDB fallback
+      const pageNum = parseInt(page, 10);
+      const limitNum = parseInt(limit, 10);
+      const skip = (pageNum - 1) * limitNum;
+      
+      const db = await getMongoDb();
+      const adsCollection = db.collection('ads');
+      
+      const now = new Date();
+      const query = {
+        status: 'APPROVED',
+        $or: [
+          { adExpiryDate: null },
+          { adExpiryDate: { $gt: now } }
+        ]
+      };
+      
+      // Add location-based filtering if provided
+      if (req.query.city) {
+        query.city = { $regex: new RegExp(req.query.city, 'i') };
+      }
+      if (req.query.state) {
+        query.state = { $regex: new RegExp(req.query.state, 'i') };
+      }
+      
+      // Sort by priority: featured/premium first, then newest (mirrors Meilisearch ranking)
+      const ads = await adsCollection.find(query)
+        .sort([
+          ['isTopAdActive', -1],
+          ['isFeaturedActive', -1],
+          ['isBumpActive', -1],
+          ['isPremium', -1],
+          ['planPriority', -1],
+          ['createdAt', -1],
+        ])
+        .skip(skip)
+        .limit(limitNum)
+        .project({
+          _id: 0,
+          id: { $toString: '$_id' },
+          title: 1,
+          price: 1,
+          images: 1,
+          categoryName: 1,
+          category: 1,
+          subcategory: 1,
+          location: 1,
+          city: 1,
+          state: 1,
+          slug: 1,
+          planType: 1,
+          isTopAdActive: 1,
+          isFeaturedActive: 1,
+          isUrgent: 1,
+          isBumpActive: 1,
+          createdAt: 1,
+          userId: { $toString: '$userId' },
+          // Specifications/Attributes
+          attributes: 1,
+          specifications: 1,
+          // Additional fields for ad card
+          categorySlug: 1,
+          subcategorySlug: 1,
+          locationSlug: 1,
+          locationName: 1,
+          postedAt: 1,
+          isPremium: 1,
+          premiumType: 1,
+          premiumExpiresAt: 1
+        })
+        .toArray();
+      
+      const total = await adsCollection.countDocuments(query);
+      
+      return res.json({
+        success: true,
+        ads,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum),
+        },
+        hasUserLocation: false,
+        fallback: 'mongodb'
       });
     }
 
@@ -98,6 +202,17 @@ router.get('/', cacheMiddleware(60), async (req, res) => {
         'isBumpActive',
         'createdAt',
         'userId',
+        // Specifications and additional fields
+        'attributes',
+        'specifications',
+        'categorySlug',
+        'subcategorySlug',
+        'locationSlug',
+        'locationName',
+        'postedAt',
+        'isPremium',
+        'premiumType',
+        'premiumExpiresAt',
       ],
     });
 

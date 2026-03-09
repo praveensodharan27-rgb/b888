@@ -42,6 +42,12 @@ next-env.d.ts
 # Prisma
 backend/prisma/migrations/
 
+# Database - keep DB files local, don't commit
+*.db
+*.sqlite
+*.sqlite3
+backend/data/*.db
+
 # IDE
 .idea/
 .vscode/

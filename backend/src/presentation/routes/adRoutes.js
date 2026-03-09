@@ -58,6 +58,8 @@ router.get('/home-feed',
     query('location').optional({ checkFalsy: true }).isString(),
     query('latitude').optional({ checkFalsy: true }).isFloat(),
     query('longitude').optional({ checkFalsy: true }).isFloat(),
+    query('userLat').optional({ checkFalsy: true }).isFloat(),
+    query('userLng').optional({ checkFalsy: true }).isFloat(),
     query('category').optional({ checkFalsy: true }).isString(),
     query('subcategory').optional({ checkFalsy: true }).isString(),
   ],
@@ -103,12 +105,14 @@ router.get('/',
   AdController.getAds.bind(AdController)
 );
 
-// Filter options aggregated from actual products (only specs that exist in DB)
+// Filter options aggregated from actual products (includes priceBucketCounts for Budget labels)
 router.get('/filter-options',
-  cacheMiddleware(60 * 5), // 5 min cache
+  cacheMiddleware(60), // 1 min cache (so filterOptionCounts/totalCount refresh after deploy)
   [
     query('category').optional({ checkFalsy: true }).isString(),
     query('subcategory').optional({ checkFalsy: true }).isString(),
+    query('location').optional({ checkFalsy: true }).isString(),
+    query('brand').optional({ checkFalsy: true }).isString(),
   ],
   (req, res, next) => {
     const errors = validationResult(req);
@@ -116,6 +120,23 @@ router.get('/filter-options',
     next();
   },
   AdController.getFilterOptions.bind(AdController)
+);
+
+// Price bucket counts for filter UI (e.g. "₹2 – ₹3 Lakh (36)"). Category-aware; short cache.
+router.get('/price-bucket-counts',
+  cacheMiddleware(60), // 1 min
+  [
+    query('category').optional({ checkFalsy: true }).isString(),
+    query('subcategory').optional({ checkFalsy: true }).isString(),
+    query('location').optional({ checkFalsy: true }).isString(),
+    query('brand').optional({ checkFalsy: true }).isString(),
+  ],
+  (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+    next();
+  },
+  AdController.getPriceBucketCounts.bind(AdController)
 );
 
 // Autocomplete endpoint for search suggestions (must be before /:id)

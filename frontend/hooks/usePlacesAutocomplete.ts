@@ -3,6 +3,12 @@
 import { useEffect, useRef, useCallback, useState, RefObject } from 'react';
 import { useGooglePlaces } from './useGooglePlaces';
 
+declare global {
+  interface Window {
+    google: any;
+  }
+}
+
 interface AutocompleteOptions {
   country?: string;
   bounds?: {
@@ -15,226 +21,163 @@ interface AutocompleteOptions {
 }
 
 /**
- * Shared hook for initializing Google Places Autocomplete
- * Prevents multiple initializations
- * Mandatory input DOM ready check
+ * Build legacy PlaceResult-compatible object from new Place API result.
+ * Allows existing onPlaceSelect handlers (post-ad, admin) to work unchanged.
+ */
+function toLegacyPlaceResult(
+  lat: number,
+  lng: number,
+  address: string,
+  displayName: string | undefined,
+  addressComponents: Array<{ longText?: string; shortText?: string; types: string[] }> | undefined
+): any {
+  const components = (addressComponents || []).map((c) => ({
+    long_name: c.longText || c.shortText || '',
+    short_name: c.shortText || c.longText || '',
+    types: c.types || [],
+  }));
+  return {
+    geometry: {
+      location: {
+        lat: () => lat,
+        lng: () => lng,
+      },
+    },
+    formatted_address: address,
+    name: displayName || address,
+    address_components: components,
+  };
+}
+
+/**
+ * Shared hook for Google Places Autocomplete using new PlaceAutocompleteElement.
+ * Uses gmp-place-autocomplete with gmp-select event (migrated from deprecated Autocomplete).
+ * Requires containerRef - PlaceAutocompleteElement provides its own input.
  */
 export function usePlacesAutocomplete(
-  inputRef: RefObject<HTMLInputElement | null>,
+  containerRef: RefObject<HTMLDivElement | null>,
   options: AutocompleteOptions = {}
 ) {
   const { googlePlacesLoaded } = useGooglePlaces();
-  const autocompleteInstanceRef = useRef<any>(null);
+  const elementRef = useRef<any>(null);
   const [isInitialized, setIsInitialized] = useState(false);
-  const initializationAttemptedRef = useRef(false);
+  const onPlaceSelectRef = useRef(options.onPlaceSelect);
+  onPlaceSelectRef.current = options.onPlaceSelect;
 
   const {
     country = 'in',
     bounds,
     types = ['geocode', 'establishment'],
-    fields = [
-      'place_id',
-      'geometry',
-      'formatted_address',
-      'address_components',
-      'name',
-      'types'
-    ],
-    onPlaceSelect
+    onPlaceSelect,
   } = options;
 
-  // Initialize autocomplete - MANDATORY input DOM ready check
-  const initializeAutocomplete = useCallback(() => {
-    // CRITICAL: Input element MUST exist in DOM
-    if (!inputRef.current) {
-      console.log('⚠️ Autocomplete init skipped: Input not in DOM');
-      return;
-    }
-
-    // CRITICAL: Google Places must be available
-    if (typeof window === 'undefined' || !window.google?.maps?.places) {
-      console.log('⚠️ Autocomplete init skipped: Google Places not available');
-      return;
-    }
-
-    // CRITICAL: Prevent multiple initializations
-    if (autocompleteInstanceRef.current) {
-      console.log('⚠️ Autocomplete init skipped: Already initialized');
-      return;
-    }
-
-    // CRITICAL: Check if already initialized on this input element
-    if ((inputRef.current as any).__autocompleteInitialized) {
-      console.log('⚠️ Autocomplete init skipped: Input already has autocomplete');
-      return;
-    }
-
-    // CRITICAL: Check if input is actually in the DOM (not just ref exists)
-    if (!document.body.contains(inputRef.current)) {
-      console.log('⚠️ Autocomplete init skipped: Input not attached to DOM');
-      return;
-    }
+  const initElement = useCallback(async () => {
+    if (!containerRef.current || typeof window === 'undefined') return;
+    if (!window.google?.maps?.importLibrary) return;
 
     try {
-      console.log('🔧 Initializing autocomplete - all conditions met');
+      const { PlaceAutocompleteElement } = await window.google.maps.importLibrary('places');
+      if (!PlaceAutocompleteElement) return;
 
-      // Create autocomplete options
-      const autocompleteOptions: any = {
-        componentRestrictions: country ? { country } : undefined,
-        fields: fields,
-        types: types,
-        strictBounds: false,
+      if (elementRef.current && containerRef.current.contains(elementRef.current)) {
+        elementRef.current.remove();
+        elementRef.current = null;
+      }
+
+      const opts: any = {
+        placeholder: 'Search location...',
+        includedRegionCodes: country ? [country] : undefined,
       };
 
-      // Add bounds if provided
-      if (bounds && window.google.maps.LatLngBounds && window.google.maps.LatLng) {
+      if (types?.length) {
+        opts.includedPrimaryTypes = types;
+      }
+
+      if (bounds && window.google.maps.LatLngBounds) {
         try {
-          autocompleteOptions.bounds = new window.google.maps.LatLngBounds(
+          opts.locationBias = new window.google.maps.LatLngBounds(
             new window.google.maps.LatLng(bounds.southwest.lat, bounds.southwest.lng),
             new window.google.maps.LatLng(bounds.northeast.lat, bounds.northeast.lng)
           );
-        } catch (boundsError) {
-          console.warn('⚠️ Could not set bounds for autocomplete:', boundsError);
+        } catch (e) {
+          console.warn('Could not set bounds:', e);
         }
       }
 
-      // Create autocomplete instance
-      const autocomplete = new window.google.maps.places.Autocomplete(
-        inputRef.current,
-        autocompleteOptions
-      );
+      const element = new PlaceAutocompleteElement(opts);
 
-      autocompleteInstanceRef.current = autocomplete;
+      const handleSelect = async (event: any) => {
+        const placePrediction = event?.placePrediction;
+        if (!placePrediction) return;
 
-      // Mark input as initialized
-      (inputRef.current as any).__autocompleteInitialized = true;
-      setIsInitialized(true);
-
-      console.log('✅ Google Places Autocomplete initialized successfully');
-
-      // Handle place selection
-      autocomplete.addListener('place_changed', () => {
         try {
-          const place = autocomplete.getPlace();
+          const place = placePrediction.toPlace();
+          await place.fetchFields({
+            fields: ['displayName', 'formattedAddress', 'location', 'addressComponents'],
+          });
 
-          if (onPlaceSelect && typeof onPlaceSelect === 'function') {
-            onPlaceSelect(place);
+          const location = place.location;
+          if (!location) return;
+
+          const lat = typeof location.lat === 'function' ? location.lat() : location.lat;
+          const lng = typeof location.lng === 'function' ? location.lng() : location.lng;
+          const address = place.formattedAddress || place.displayName || '';
+          const components = place.addressComponents || [];
+
+          const legacyPlace = toLegacyPlaceResult(
+            lat,
+            lng,
+            address,
+            place.displayName,
+            components
+          );
+
+          if (onPlaceSelectRef.current) {
+            onPlaceSelectRef.current(legacyPlace);
           }
-        } catch (error) {
-          console.error('Error in place_changed listener:', error);
-        }
-      });
-
-      // Minimum character requirement (3 characters) before showing suggestions
-      const MIN_CHARS_FOR_AUTOCOMPLETE = 3;
-
-      // Function to hide/show autocomplete dropdown based on character count
-      const toggleAutocompleteDropdown = () => {
-        const pacContainer = document.querySelector('.pac-container') as HTMLElement;
-        if (pacContainer && inputRef.current) {
-          const inputValue = inputRef.current.value.trim();
-          if (inputValue.length < MIN_CHARS_FOR_AUTOCOMPLETE) {
-            pacContainer.style.display = 'none';
-          } else {
-            pacContainer.style.display = 'block';
-          }
+        } catch (err) {
+          console.error('Error fetching place details:', err);
         }
       };
 
-      // Listen to input changes to control dropdown visibility
-      if (inputRef.current) {
-        inputRef.current.addEventListener('input', toggleAutocompleteDropdown);
-      }
-
-      // Function to ensure dropdown z-index is set
-      const ensureDropdownZIndex = () => {
-        const pacContainer = document.querySelector('.pac-container') as HTMLElement;
-        if (pacContainer) {
-          pacContainer.style.zIndex = '9999';
-          pacContainer.style.position = 'absolute';
-          toggleAutocompleteDropdown();
-        }
-      };
-
-      // Set z-index immediately
-      ensureDropdownZIndex();
-
-      // Watch for dropdown appearance using MutationObserver
-      const observer = new MutationObserver(() => {
-        ensureDropdownZIndex();
-      });
-
-      // Observe the document body for changes
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-      });
-
-      // Also set z-index on input focus
-      const handleFocus = () => {
-        ensureDropdownZIndex();
-        setTimeout(ensureDropdownZIndex, 100);
-      };
-
-      if (inputRef.current) {
-        inputRef.current.addEventListener('focus', handleFocus);
-      }
-
-    } catch (error) {
-      console.error('❌ Error initializing Google Places Autocomplete:', error);
+      element.addEventListener('gmp-select', handleSelect as EventListener);
+      // Re-check container after async - may have unmounted
+      if (!containerRef.current) return;
+      elementRef.current = element;
+      containerRef.current.appendChild(element);
+      setIsInitialized(true);
+    } catch (err) {
+      console.error('Error initializing PlaceAutocompleteElement:', err);
     }
-  }, [inputRef, country, bounds, types, fields, onPlaceSelect]);
+  }, [containerRef, country, bounds, types]);
 
-  // Initialize autocomplete when conditions are met
   useEffect(() => {
-    // Don't attempt if already tried
-    if (initializationAttemptedRef.current && isInitialized) {
-      return;
-    }
+    if (!googlePlacesLoaded) return;
+    if (!containerRef.current) return;
+    if (!document.body.contains(containerRef.current)) return;
+    if (elementRef.current) return;
 
-    // Wait for Google Places to be loaded
-    if (!googlePlacesLoaded) {
-      return;
-    }
+    const timer = setTimeout(initElement, 100);
+    return () => {
+      clearTimeout(timer);
+      if (elementRef.current && containerRef.current?.contains(elementRef.current)) {
+        elementRef.current.remove();
+        elementRef.current = null;
+      }
+    };
+  }, [googlePlacesLoaded, containerRef, initElement]);
 
-    // CRITICAL: Input must exist in DOM
-    if (!inputRef.current) {
-      return;
-    }
-
-    // CRITICAL: Input must be attached to DOM
-    if (!document.body.contains(inputRef.current)) {
-      return;
-    }
-
-    // CRITICAL: Prevent multiple initialization attempts
-    if (autocompleteInstanceRef.current || (inputRef.current as any).__autocompleteInitialized) {
-      return;
-    }
-
-    // Small delay to ensure DOM is fully ready
-    const timer = setTimeout(() => {
-      // Re-check all conditions before initializing
-      if (!inputRef.current) return;
-      if (!document.body.contains(inputRef.current)) return;
-      if (!window.google?.maps?.places) return;
-      if (autocompleteInstanceRef.current) return;
-      if ((inputRef.current as any).__autocompleteInitialized) return;
-
-      initializationAttemptedRef.current = true;
-      initializeAutocomplete();
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [googlePlacesLoaded, inputRef, initializeAutocomplete, isInitialized]);
+  const setValue = useCallback((v: string) => {
+    if (elementRef.current) elementRef.current.value = v;
+  }, []);
 
   return {
-    autocompleteInstance: autocompleteInstanceRef.current,
+    autocompleteInstance: elementRef.current,
     isInitialized,
-    googlePlacesLoaded
+    googlePlacesLoaded,
+    getValue: () => elementRef.current?.value ?? '',
+    setValue,
   };
 }
 
-// Default export for better module resolution
 export default usePlacesAutocomplete;
-

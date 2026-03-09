@@ -3,7 +3,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
-import AdCardOLX from '@/components/AdCardOLX';
+import LazyAdCard from '@/components/LazyAdCard';
 import Link from 'next/link';
 import { useState, useEffect } from 'react';
 
@@ -43,7 +43,7 @@ export default function FavoritesPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4 max-w-7xl">
+      <div className="container mx-auto px-4 max-w-[1400px]">
         <h1 className="text-3xl font-bold text-gray-900 mb-8">My Favorites</h1>
 
         {isLoading ? (
@@ -54,9 +54,9 @@ export default function FavoritesPage() {
         ) : (
           <>
             {data?.favorites && data.favorites.length > 0 ? (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-                {data.favorites.map((favorite: any) => (
-                  <AdCardOLX key={favorite.id} ad={favorite.ad} />
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6 lg:gap-8 items-stretch">
+                {data.favorites.map((favorite: any, index: number) => (
+                  <LazyAdCard key={favorite.id} ad={favorite.ad} variant="olx" priority={index < 6} eager={index < 8} />
                 ))}
               </div>
             ) : (

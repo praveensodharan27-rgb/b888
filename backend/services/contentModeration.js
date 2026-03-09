@@ -15,23 +15,35 @@
 
 const axios = require('axios');
 
-// Load TensorFlow.js Node.js (may fail on some Windows systems)
+// Load TensorFlow.js: prefer tfjs-node (native, fast), fallback to tfjs (pure JS, works on Windows when native binding fails)
 // Uses NSFWJS only - no Google API
 let tf = null;
 let nsfwjs = null;
-let tfLoadError = null;
+let tfBackend = 'none';
 
 try {
   tf = require('@tensorflow/tfjs-node');
+  tfBackend = 'tfjs-node';
   nsfwjs = require('nsfwjs');
-  console.log('✅ [MODERATION] TensorFlow.js and NSFWJS loaded successfully');
+  console.log('✅ [MODERATION] TensorFlow.js (Node/native) and NSFWJS loaded successfully');
 } catch (error) {
-  tfLoadError = error;
-  console.warn('⚠️ [MODERATION] TensorFlow.js Node.js failed to load:', error.message);
-  console.warn('⚠️ [MODERATION] NSFWJS will be unavailable. Content moderation disabled.');
-  console.warn('⚠️ [MODERATION] Ads will be approved without moderation.');
-  tf = null;
-  nsfwjs = null;
+  try {
+    tf = require('@tensorflow/tfjs');
+    // In Node without tfjs-node, use CPU backend (no native addon required)
+    if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+      require('@tensorflow/tfjs-backend-cpu');
+      tf.setBackend('cpu');
+    }
+    tfBackend = 'tfjs-cpu';
+    nsfwjs = require('nsfwjs');
+    console.log('✅ [MODERATION] TensorFlow.js (CPU fallback) and NSFWJS loaded – native binding failed, using pure JS (slower but works on Windows)');
+  } catch (fallbackError) {
+    console.warn('⚠️ [MODERATION] TensorFlow.js Node failed:', error.message);
+    console.warn('⚠️ [MODERATION] TensorFlow.js fallback failed:', fallbackError.message);
+    console.warn('⚠️ [MODERATION] Content moderation disabled. Ads will be auto-approved.');
+    tf = null;
+    nsfwjs = null;
+  }
 }
 
 // Configuration: Enable/disable moderation (default: enabled for production)
@@ -48,7 +60,8 @@ console.log('🔍 [MODERATION] Initializing Content Moderation Service (NSFWJS o
 console.log('🔍 [MODERATION] Configuration:', {
   MODERATION_ENABLED,
   MODERATION_FAIL_CLOSED: false, // Always fail-open
-  nsfwjsAvailable: !!(nsfwjs && tf)
+  nsfwjsAvailable: !!(nsfwjs && tf),
+  tfBackend: tfBackend
 });
 
 // Initialize NSFWJS model
@@ -89,7 +102,8 @@ console.log('🔍 [MODERATION] Final Status:', {
   available: nsfwModelLoaded,
   failClosed: false, // Always fail-open
   nsfwjsAvailable: !!(nsfwjs && tf),
-  nsfwModelLoaded: nsfwModelLoaded
+  nsfwModelLoaded: nsfwModelLoaded,
+  tfBackend: tfBackend
 });
 
 /**

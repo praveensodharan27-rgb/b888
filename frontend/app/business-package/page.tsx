@@ -6,7 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { FiBriefcase, FiCheckCircle, FiXCircle, FiCreditCard, FiCalendar, FiStar, FiTrendingUp, FiZap, FiChevronDown, FiHome, FiSearch, FiAward } from 'react-icons/fi';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { format } from 'date-fns';
 
 export default function BusinessPackagePage() {
@@ -60,7 +60,7 @@ export default function BusinessPackagePage() {
   useEffect(() => {
     const activated = searchParams.get('activated');
     if (activated === '1') {
-      toast.success('Business package activated successfully.');
+      toast.sellerPlusActivated();
       refetchStatus();
       // Clean URL (optional)
       router.replace('/business-package');
@@ -196,6 +196,10 @@ export default function BusinessPackagePage() {
 
   const hasActivePackage = packageStatus?.hasActivePackage;
   const activePackage = packageStatus?.package;
+  // Use root-level totals from API (correct for single or multiple packages)
+  const totalAdsAllowed = typeof packageStatus?.totalAdsAllowed === 'number' ? packageStatus.totalAdsAllowed : 0;
+  const adsUsed = typeof packageStatus?.adsUsed === 'number' ? packageStatus.adsUsed : 0;
+  const adsRemaining = typeof packageStatus?.adsRemaining === 'number' ? packageStatus.adsRemaining : Math.max(0, totalAdsAllowed - adsUsed);
 
   const packageIcons = {
     MAX_VISIBILITY: FiZap,
@@ -217,10 +221,10 @@ export default function BusinessPackagePage() {
 
   return (
     <div className="min-h-screen bg-white">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-7xl py-12">
-        {/* Active package banner */}
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-[1400px] py-16">
+        {/* Active package banner with Business Package ads count */}
         {hasActivePackage && activePackage ? (
-          <div className="mb-8 rounded-xl border border-green-200 bg-green-50 p-5">
+          <div className="mb-12 rounded-xl border border-green-200 bg-green-50 p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-extrabold text-green-800">Active Business Package</div>
@@ -233,11 +237,17 @@ export default function BusinessPackagePage() {
                     </span>
                   ) : null}
                 </div>
-                {typeof activePackage.adsUsed === 'number' && typeof activePackage.totalAdsAllowed === 'number' ? (
-                  <div className="mt-1 text-xs text-green-800">
-                    Ads used: {activePackage.adsUsed} / {activePackage.totalAdsAllowed}
+                {/* Only show ads remaining / used when user has ads left (hide "0 ads remaining" to avoid confusion) */}
+                {adsRemaining > 0 && (
+                  <div className="mt-2 flex items-center gap-3 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-sm font-bold text-white">
+                      {adsRemaining} ad{adsRemaining !== 1 ? 's' : ''} remaining
+                    </span>
+                    <span className="text-sm text-green-800">
+                      Used: {adsUsed} / {totalAdsAllowed}
+                    </span>
                   </div>
-                ) : null}
+                )}
               </div>
               <button
                 type="button"
@@ -253,165 +263,89 @@ export default function BusinessPackagePage() {
         {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
-            Choose the plan that fits your business
+            Flexible plans for every business
           </h1>
           <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-            Maximize your visibility and reach more customers with our tailored business packages.
+            Choose the perfect package to scale your operations with ease. No hidden fees, cancel any time.
           </p>
         </div>
 
         {/* Billing Period Toggle */}
-        <div className="flex justify-center items-center gap-4 mb-12">
-          <button
-            type="button"
-            onClick={() => setBillingPeriod('monthly')}
-            className={`px-6 py-2 rounded-lg font-semibold transition-colors ${
-              billingPeriod === 'monthly'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Monthly
-          </button>
-          <button
-            type="button"
-            onClick={() => setBillingPeriod('yearly')}
-            className={`px-6 py-2 rounded-lg font-semibold transition-colors relative ${
-              billingPeriod === 'yearly'
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Yearly
-            <span className="absolute -top-2 -right-2 bg-green-500 text-white text-xs font-bold px-2 py-0.5 rounded">
-              SAVE 20%
-            </span>
-          </button>
+        <div className="flex justify-center items-center mb-16">
+          <div className="inline-flex items-center bg-gray-100 rounded-full p-1">
+            <button
+              type="button"
+              onClick={() => setBillingPeriod('monthly')}
+              className={`px-8 py-2.5 rounded-full font-medium transition-all ${
+                billingPeriod === 'monthly'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Monthly
+            </button>
+            <button
+              type="button"
+              onClick={() => setBillingPeriod('yearly')}
+              className={`px-8 py-2.5 rounded-full font-medium transition-all flex items-center gap-2 ${
+                billingPeriod === 'yearly'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              Annual
+              <span className="bg-green-500 text-white text-xs font-bold px-2 py-0.5 rounded">
+                save 20%
+              </span>
+            </button>
+          </div>
         </div>
 
 
         {/* Package Cards */}
-        <div className="grid md:grid-cols-3 gap-8 mb-16">
+        <div className="grid md:grid-cols-3 gap-8 mb-20 max-w-6xl mx-auto">
           {packagesData?.map((pkg: any, index: number) => {
             const isPopular = pkg.type === 'SELLER_PLUS';
             const isBasic = pkg.type === 'MAX_VISIBILITY';
             const isEnterprise = pkg.type === 'SELLER_PRIME';
             const price = getPrice(pkg);
             const displayPrice = billingPeriod === 'yearly' ? price / 12 : price;
+            const displayPriceFormatted = Intl.NumberFormat('en-IN').format(Math.round(displayPrice));
 
             return (
               <div
                 key={pkg.type}
-                className={`bg-white rounded-xl shadow-lg border-2 overflow-hidden relative ${
+                className={`bg-white rounded-2xl overflow-hidden relative transition-all ${
                   isPopular 
-                    ? 'border-blue-500 transform scale-105 z-10' 
-                    : 'border-gray-200'
+                    ? 'border-2 border-primary-500 shadow-xl' 
+                    : 'border border-gray-200 shadow-md'
                 }`}
               >
                 {isPopular && (
-                  <div className="absolute top-0 left-0 right-0 bg-blue-500 text-white text-center py-2 text-sm font-bold">
+                  <div className="bg-primary-600 text-white text-center py-2.5 text-xs font-bold tracking-wide">
                     MOST POPULAR
                   </div>
                 )}
                 
-                <div className={`p-8 ${isPopular ? 'pt-12' : ''}`}>
+                <div className="p-8">
                   {/* Package Title */}
-                  <h3 className="text-2xl font-bold text-gray-900 mb-2">
-                    {isBasic ? 'Business Basic' : isPopular ? 'Business Pro' : 'Business Enterprise'}
-                  </h3>
-                  
-                  {/* Price */}
-                  <div className="mb-4">
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-4xl font-bold text-gray-900">
-                        ₹{displayPrice.toLocaleString('en-IN')}
+                  <div className="mb-6">
+                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">
+                      {isBasic ? 'STARTER' : isPopular ? 'PROFESSIONAL' : 'ENTERPRISE'}
+                    </h3>
+                    <div className="flex items-baseline gap-1 mb-4">
+                      <span className="text-5xl font-bold text-gray-900">
+                        ₹{displayPriceFormatted}
                       </span>
-                      <span className="text-gray-500 text-lg">/{billingPeriod === 'monthly' ? 'mo' : 'mo'}</span>
+                      <span className="text-gray-500 text-base">/mo</span>
                     </div>
-                    {billingPeriod === 'yearly' && (
-                      <p className="text-sm text-gray-500 mt-1">Billed annually</p>
-                    )}
-                  </div>
-                  
-                  {/* Description */}
-                  <p className="text-gray-600 mb-6">
-                    {isBasic ? 'Essential visibility for small businesses.' : 
-                     isPopular ? 'High visibility for growing brands.' : 
-                     'Top priority and maximum exposure.'}
-                  </p>
-
-                  {/* Features */}
-                  <div className="space-y-3 mb-8 min-h-[200px]">
-                    {isBasic ? (
-                      <>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Medium Visibility</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Category normal top</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Search results after Pro</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiXCircle className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                          <span className="text-gray-400 line-through">No homepage highlight</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiXCircle className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                          <span className="text-gray-400 line-through">No auto boost</span>
-                        </div>
-                      </>
-                    ) : isPopular ? (
-                      <>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">High Visibility</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Category top (below Enterprise)</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Search results first 20-30%</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Featured badge</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Limited boosts per month</span>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Top Priority Visibility</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Home page + category top</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Search results always first</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Featured / Verified Badge</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm">
-                          <FiCheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
-                          <span className="text-gray-700">Unlimited refresh / boost</span>
-                        </div>
-                      </>
-                    )}
+                    <p className="text-gray-600 text-sm leading-relaxed">
+                      {isBasic 
+                        ? 'Best for individual sellers starting to post ads.' 
+                        : isPopular 
+                        ? 'Ideal for active sellers and small businesses who need better visibility.' 
+                        : 'Perfect for dealers and large businesses who want maximum exposure.'}
+                    </p>
                   </div>
 
                   {/* Button */}
@@ -423,10 +357,10 @@ export default function BusinessPackagePage() {
                       handlePurchase(pkg.type);
                     }}
                     disabled={redirectingPackageType === pkg.type}
-                    className={`w-full py-3 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 ${
+                    className={`w-full py-3 rounded-lg font-semibold transition-all flex items-center justify-center gap-2 mb-8 ${
                       isPopular
-                        ? 'bg-blue-600 text-white hover:bg-blue-700'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        ? 'bg-primary-600 text-white hover:bg-primary-700 shadow-md'
+                        : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-gray-400'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     {redirectingPackageType === pkg.type ? (
@@ -435,124 +369,138 @@ export default function BusinessPackagePage() {
                         Redirecting...
                       </>
                     ) : (
-                      <>
-                        {isEnterprise ? 'Contact Sales' : `Select ${isBasic ? 'Basic' : 'Pro'}`}
-                      </>
+                      'Get Started'
                     )}
                   </button>
+
+                  {/* Features */}
+                  <div className="space-y-4">
+                    {isBasic ? (
+                      <>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Post limited ads</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Basic visibility in listings</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Standard seller support</span>
+                        </div>
+                      </>
+                    ) : isPopular ? (
+                      <>
+                        <div className="text-sm text-gray-500 mb-3">Everything in Starter, plus:</div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Higher ad posting limits</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Featured ads priority</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Business profile badge</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Better visibility in listings</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-sm text-gray-500 mb-3">Everything in Professional, plus:</div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Unlimited or high ad posting limits</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Top ads placement</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Sponsored ads visibility</span>
+                        </div>
+                        <div className="flex items-start gap-3 text-sm">
+                          <FiCheckCircle className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+                          <span className="text-gray-700">Priority customer support</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             );
           })}
         </div>
 
-        {/* Compare Business Plans Table */}
-        <div className="mb-16">
-          <h2 className="text-3xl font-bold text-gray-900 text-center mb-8">Compare Business Plans</h2>
-          <div className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900">Features</th>
-                    <th className="px-6 py-4 text-center text-sm font-semibold text-gray-900">Basic</th>
-                    <th className="px-6 py-4 text-center text-sm font-semibold text-gray-900">Pro</th>
-                    <th className="px-6 py-4 text-center text-sm font-semibold text-gray-900">Enterprise</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  <tr>
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">Visibility Level</td>
-                    <td className="px-6 py-4 text-sm text-center text-gray-600">Medium</td>
-                    <td className="px-6 py-4 text-sm text-center text-gray-600">High</td>
-                    <td className="px-6 py-4 text-sm text-center text-blue-600 font-semibold">Top Priority</td>
-                  </tr>
-                  <tr className="bg-gray-50">
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">Search Ranking</td>
-                    <td className="px-6 py-4 text-sm text-center text-gray-600">After Pro</td>
-                    <td className="px-6 py-4 text-sm text-center text-blue-600 font-semibold">First 20-30%</td>
-                    <td className="px-6 py-4 text-sm text-center text-blue-600 font-semibold">Always First</td>
-                  </tr>
-                  <tr>
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">Listing Position</td>
-                    <td className="px-6 py-4 text-sm text-center text-gray-600">Normal</td>
-                    <td className="px-6 py-4 text-sm text-center text-blue-600 font-semibold">Category Top</td>
-                    <td className="px-6 py-4 text-sm text-center text-blue-600 font-semibold">Home + Category Top</td>
-                  </tr>
-                  <tr className="bg-gray-50">
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">Badges</td>
-                    <td className="px-6 py-4 text-sm text-center text-gray-400">-</td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="inline-block bg-blue-100 text-blue-800 text-xs font-semibold px-3 py-1 rounded-full">Featured</span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className="inline-block bg-blue-100 text-blue-800 text-xs font-semibold px-3 py-1 rounded-full mr-1">Verified</span>
-                      <span className="inline-block bg-blue-100 text-blue-800 text-xs font-semibold px-3 py-1 rounded-full">Featured</span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">Boosts / Refresh</td>
-                    <td className="px-6 py-4 text-sm text-center text-gray-400">-</td>
-                    <td className="px-6 py-4 text-sm text-center text-blue-600 font-semibold">Limited</td>
-                    <td className="px-6 py-4 text-sm text-center text-blue-600 font-semibold">Unlimited</td>
-                  </tr>
-                </tbody>
-              </table>
+        {/* FAQ Section */}
+        <div className="mb-20 max-w-5xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-bold text-gray-900 mb-2">Frequently Asked Questions</h2>
+            <div className="w-12 h-1 bg-primary-600 mx-auto rounded-full"></div>
+          </div>
+          
+          <div className="grid md:grid-cols-2 gap-8">
+            {/* Left Column */}
+            <div className="space-y-6">
+              <div>
+                <h3 className="font-bold text-gray-900 mb-2">Can I change plans later?</h3>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  Yes, you can upgrade or downgrade your plan at any time. Changes are applied immediately and prorated for the billing cycle.
+                </p>
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 mb-2">Is there a free trial available?</h3>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  We offer a 14-day free trial for our Starter and Professional plans so you can experience the full power of our platform.
+                </p>
+              </div>
+            </div>
+            
+            {/* Right Column */}
+            <div className="space-y-6">
+              <div>
+                <h3 className="font-bold text-gray-900 mb-2">What payment methods do you accept?</h3>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  We accept all major credit cards, PayPal, and for Enterprise customers, we also support bank wire transfers and invoicing.
+                </p>
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 mb-2">Do you offer discounts for non-profits?</h3>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  Absolutely. We offer a 30% discount for registered non-profit organizations. Contact our support team to verify your status.
+                </p>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* FAQ Section */}
-        <div className="mb-16">
-          <h2 className="text-3xl font-bold text-gray-900 text-center mb-8">Frequently Asked Questions</h2>
-          <div className="max-w-3xl mx-auto space-y-4">
-            {[
-              {
-                question: 'Can I upgrade my visibility later?',
-                answer: 'Yes, you can upgrade your business package at any time. When you upgrade, your new package will be activated immediately and any remaining time from your current package will be prorated.'
-              },
-              {
-                question: 'What is a "Boost"?',
-                answer: 'A boost is a feature that moves your ad to the top of search results temporarily. Pro plans include limited boosts per month, while Enterprise plans include unlimited boosts.'
-              },
-              {
-                question: 'How does the "Verified" badge help?',
-                answer: 'The Verified badge shows that your business is authentic and trustworthy. It appears on all your ads and helps increase buyer confidence, leading to more inquiries and sales.'
-              }
-            ].map((faq, index) => (
-              <div key={index} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setOpenFaq(openFaq === index ? null : index)}
-                  className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-gray-50 transition-colors"
-                >
-                  <span className="font-semibold text-gray-900">{faq.question}</span>
-                  <FiChevronDown className={`w-5 h-5 text-gray-500 transition-transform ${openFaq === index ? 'rotate-180' : ''}`} />
-                </button>
-                {openFaq === index && (
-                  <div className="px-6 py-4 bg-gray-50 border-t border-gray-200">
-                    <p className="text-gray-700">{faq.answer}</p>
-                  </div>
-                )}
-              </div>
-            ))}
+        {/* CTA Banner */}
+        <div className="bg-gray-900 rounded-2xl p-12 flex flex-col md:flex-row items-center justify-between gap-6">
+          <div>
+            <h2 className="text-3xl font-bold text-white mb-2">Ready to transform your business?</h2>
+            <p className="text-gray-300 text-lg">Join over 10,000+ companies scaling with BizServices today.</p>
           </div>
-        </div>
-
-        {/* Trusted By Section */}
-        <div className="mb-16">
-          <h2 className="text-sm font-bold text-gray-500 uppercase tracking-wider text-center mb-8">
-            TRUSTED BY BUSINESSES EVERYWHERE
-          </h2>
-          <div className="flex justify-center items-center gap-8 flex-wrap">
-            {['Acme Corp', 'GlobalTech', 'Nebula', 'FoxRun'].map((company, index) => (
-              <div
-                key={index}
-                className="w-24 h-24 bg-gray-200 rounded-full flex items-center justify-center text-gray-500 text-sm font-semibold"
-              >
-                {company}
-              </div>
-            ))}
+          <div className="flex items-center gap-4 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => router.push('/business-package')}
+              className="bg-primary-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-primary-700 transition-colors whitespace-nowrap"
+            >
+              Start Free Trial
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push('/contact')}
+              className="bg-transparent border-2 border-gray-500 text-white px-8 py-3 rounded-lg font-semibold hover:border-gray-400 transition-colors whitespace-nowrap"
+            >
+              Contact Sales
+            </button>
           </div>
         </div>
       </div>

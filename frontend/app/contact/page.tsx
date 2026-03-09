@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { FiArrowRight, FiMail, FiMapPin, FiPhone } from 'react-icons/fi';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export default function ContactUs() {
   const [formData, setFormData] = useState({

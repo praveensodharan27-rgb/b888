@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 type BusinessPackageType = 'MAX_VISIBILITY' | 'SELLER_PLUS' | 'SELLER_PRIME';
 
@@ -267,7 +267,8 @@ export default function PaymentPage() {
 
       if (response.data?.success) {
         console.log('✅ Payment verified successfully');
-        toast.success('Payment Successful. Your Business Package is now active.');
+        // Don't toast here – show once on business-package?activated=1 to avoid duplicate
+        // toast.sellerPlusActivated();
         
         // Clear stored selection so refresh doesn't re-trigger
         try {
@@ -317,7 +318,7 @@ export default function PaymentPage() {
           key: razorpayOrder.key,
           amount: razorpayOrder.amount, // Amount in paise
           currency: razorpayOrder.currency || 'INR',
-          name: 'Sellit Business Package',
+          name: 'Sell Box Business Package',
           description: `Complete payment to activate your ${packageName}`,
           order_id: razorpayOrder.id,
           handler: function (response: any) {
@@ -520,7 +521,7 @@ export default function PaymentPage() {
         key: razorpayOrder.key,
         amount: razorpayOrder.amount,
         currency: razorpayOrder.currency || 'INR',
-        name: 'Sellit Business Package',
+        name: 'Sell Box Business Package',
         description: `Complete payment to activate your ${packageName}`,
         order_id: razorpayOrder.id,
         handler: function (response: any) {

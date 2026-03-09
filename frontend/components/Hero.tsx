@@ -264,7 +264,7 @@ export default function Hero() {
   }, [selectedIndex, search, trendingItems, suggestions, isFocused]);
 
   return (
-    <div className="relative w-full bg-slate-900 dark:bg-black">
+    <div className="relative w-full bg-slate-900 dark:bg-black overflow-hidden">
       {/* Background Image with Overlay */}
       <div 
         className="absolute inset-0 opacity-50 bg-cover bg-center"
@@ -274,19 +274,19 @@ export default function Hero() {
       ></div>
       
       {/* Content */}
-      <div className="relative max-w-[960px] mx-auto px-4 py-20 flex flex-col items-center justify-center min-h-[400px] text-center">
-        <h1 className="text-4xl md:text-5xl lg:text-6xl font-black text-white mb-4 tracking-tight drop-shadow-lg">
-          Find anything in <span className="text-blue-300">{currentLocation.name}</span>
+      <div className="relative max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-20 flex flex-col items-center justify-center min-h-[350px] sm:min-h-[400px] text-center">
+        <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-black text-white mb-3 sm:mb-4 tracking-tight drop-shadow-lg max-w-4xl">
+          Find anything in <span className="text-blue-300 break-words">{currentLocation.name}</span>
         </h1>
-        <h2 className="text-lg md:text-xl text-slate-200 mb-8 max-w-2xl font-medium drop-shadow-md">
+        <h2 className="text-base sm:text-lg md:text-xl text-slate-200 mb-6 sm:mb-8 max-w-2xl font-medium drop-shadow-md px-4">
           Buy and sell everything from cars to mobile phones right now!
         </h2>
         
         {/* Search Bar */}
         <form onSubmit={handleSearch} className="w-full max-w-3xl bg-white dark:bg-slate-800 rounded-lg p-2 shadow-2xl flex flex-col md:flex-row gap-2 backdrop-blur-sm">
           {/* Search Input */}
-          <div ref={searchRef} className="flex-1 flex items-center h-12 md:h-14 px-4 bg-slate-50 dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
-            <span className="material-symbols-outlined text-slate-400">search</span>
+          <div ref={searchRef} className="flex-1 flex items-center h-12 md:h-14 px-3 sm:px-4 bg-slate-50 dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all min-w-0">
+            <span className="material-symbols-outlined text-slate-400 flex-shrink-0">search</span>
             <input
               ref={inputRef}
               type="text"
@@ -301,7 +301,7 @@ export default function Hero() {
               onBlur={handleInputBlur}
               onKeyDown={handleKeyDown}
               placeholder="Search for cars, phones..."
-              className="w-full h-full bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white placeholder-slate-400 ml-2"
+              className="w-full h-full bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white placeholder-slate-400 ml-2 text-sm sm:text-base min-w-0"
             />
             {showDropdown && (
               <div 
@@ -433,24 +433,24 @@ export default function Hero() {
           </div>
           
           {/* Location Selector */}
-          <div className="flex-[0.5] flex items-center h-12 md:h-14 px-4 bg-slate-50 dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
-            <span className="material-symbols-outlined text-slate-400">location_on</span>
+          <div className="flex-1 md:flex-[0.5] flex items-center h-12 md:h-14 px-3 sm:px-4 bg-slate-50 dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all min-w-0">
+            <span className="material-symbols-outlined text-slate-400 flex-shrink-0">location_on</span>
             <input
               type="text"
               value={currentLocation.name}
               readOnly
-              className="w-full h-full bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white placeholder-slate-400 ml-2"
+              className="w-full h-full bg-transparent border-none focus:ring-0 text-slate-900 dark:text-white placeholder-slate-400 ml-2 text-sm sm:text-base truncate min-w-0"
             />
-            <span className="material-symbols-outlined text-slate-400 cursor-pointer">expand_more</span>
+            <span className="material-symbols-outlined text-slate-400 cursor-pointer flex-shrink-0">expand_more</span>
           </div>
           
           {/* Search Button */}
           <button
             type="submit"
-            className="h-12 md:h-14 px-8 bg-primary hover:bg-blue-600 text-white font-bold rounded shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2"
+            className="h-12 md:h-14 px-6 sm:px-8 bg-primary hover:bg-blue-600 text-white font-bold rounded shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center gap-2 w-full md:w-auto"
           >
-            <span className="material-symbols-outlined hidden md:block">search</span>
-            Search
+            <span className="material-symbols-outlined hidden sm:block">search</span>
+            <span className="text-sm sm:text-base">Search</span>
           </button>
         </form>
       </div>

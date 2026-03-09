@@ -4,7 +4,6 @@ import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import Link from 'next/link';
 import ImageWithFallback from './ImageWithFallback';
-import { dummyBanners } from '@/lib/dummyData';
 
 interface BannersProps {
   position: 'homepage' | 'category' | 'search';
@@ -29,7 +28,7 @@ export default function Banners({ position, categoryId, locationId }: BannersPro
     },
   });
 
-  const banners = (data && data.length > 0) ? data : (position === 'homepage' ? dummyBanners : []);
+  const banners = (data && data.length > 0) ? data : [];
 
   if (banners.length === 0) return null;
 

@@ -14,7 +14,7 @@ import {
   FiMonitor,
   FiBriefcase,
   FiBell,
-  FiShield
+  FiShield,
 } from 'react-icons/fi';
 
 const adminNavItems = [

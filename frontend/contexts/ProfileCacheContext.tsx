@@ -10,6 +10,7 @@ interface PublicUser {
   bio?: string;
   isVerified: boolean;
   createdAt?: string;
+  tags?: string[];
   _count?: {
     ads: number;
   };

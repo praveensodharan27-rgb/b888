@@ -7,7 +7,7 @@ import { FiUsers, FiPackage, FiClock, FiCheckCircle, FiDollarSign, FiActivity, F
 import Link from 'next/link';
 import ImageWithFallback from '../ImageWithFallback';
 import { clearAllCache } from '@/utils/clearCache';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export default function AdminStats() {
   const queryClient = useQueryClient();
@@ -39,7 +39,11 @@ export default function AdminStats() {
       const response = await api.get('/admin/active-users?limit=8');
       return response.data;
     },
-    refetchInterval: 10000, // Refetch every 10 seconds (more frequent for online status)
+    refetchInterval: 30000, // Refetch every 30 seconds (reduced to avoid 429 rate limit)
+    retry: (failureCount, error: any) => {
+      if (error?.response?.status === 429) return false; // Don't retry on rate limit
+      return failureCount < 3;
+    },
   });
 
   const activeUsersData = activeUsersResponse?.users || [];
@@ -137,9 +141,6 @@ export default function AdminStats() {
                   <div className={`p-3 rounded-lg bg-gradient-to-br ${gradients[index]} shadow-lg group-hover:scale-110 transition-transform`}>
                     <stat.icon className="w-6 h-6 text-white" />
                   </div>
-                  <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
-                    +12%
-                  </span>
                 </div>
                 <div>
                   <p className="text-gray-600 text-xs font-medium uppercase tracking-wide">{stat.title}</p>

@@ -2,31 +2,33 @@
 
 import { useState, Suspense, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useInfiniteAds } from '@/hooks/useInfiniteAds';
+import { useAdsPaginated } from '@/hooks/useAdsPaginated';
 import dynamic from 'next/dynamic';
-import AdCardOLX from '@/components/AdCardOLX';
+import LazyAdCard from '@/components/LazyAdCard';
+import SponsoredAdFeedCard from '@/components/SponsoredAdFeedCard';
 import EmptyState from '@/components/EmptyState';
+import AdsGridSkeleton from '@/components/ads/AdsGridSkeleton';
 import { useGoogleLocation } from '@/hooks/useGoogleLocation';
 import { useLocationPersistence } from '@/hooks/useLocationPersistence';
 
+/** Format location as "city, state" for display and API consistency */
+function formatLocationCityState(city?: string | null, state?: string | null): string | null {
+  const c = city?.trim();
+  const s = state?.trim();
+  if (c && s) return `${c}, ${s}`;
+  if (c) return c;
+  if (s) return s;
+  return null;
+}
+
 // Lazy load heavy components
-const Filters = dynamic(() => import('@/components/Filters'), {
-  loading: () => <div className="animate-pulse bg-gray-200 h-64 rounded-lg"></div>
+const AdsFilterSidebar = dynamic(() => import('@/components/ads/AdsFilterSidebar'), {
+  loading: () => <div className="animate-pulse bg-gray-200 h-64 rounded-xl"></div>
 });
-const AdvancedSearchBar = dynamic(() => import('@/components/AdvancedSearchBar'), {
-  loading: () => <div className="animate-pulse bg-gray-200 h-12 rounded-lg"></div>
-});
-const SmartFiltersPanel = dynamic(() => import('@/components/SmartFiltersPanel'), {
-  loading: () => <div className="animate-pulse bg-gray-200 h-96 rounded-lg"></div>
-});
-const FilterChips = dynamic(() => import('@/components/FilterChips'), {
+const FilterChips = dynamic(() => import('@/components/filters/FilterChips'), {
   loading: () => <div className="animate-pulse bg-gray-200 h-10 rounded-lg"></div>
 });
-const Banners = dynamic(() => import('@/components/Banners'), {
-  loading: () => null
-});
-import { useIntersectionObserver } from '@/hooks/useIntersectionObserver';
-import { dummyAds } from '@/lib/dummyData';
+const ServiceButtons = dynamic(() => import('@/components/ServiceButtons'), { ssr: false });
 
 function AdsPageContent() {
   const searchParams = useSearchParams();
@@ -42,6 +44,41 @@ function AdsPageContent() {
     radius?: string;
   } | null>(null);
   
+  // Listen for location changes from Navbar – update URL only (ads refetch via stable query key)
+  useEffect(() => {
+    const handleLocationChanged = (e: CustomEvent) => {
+      const detail = e.detail;
+      if (typeof window === 'undefined') return;
+      if (window.location.pathname !== '/ads') return;
+      if (isUpdatingUrlRef.current) return;
+      isUpdatingUrlRef.current = true;
+      const params = new URLSearchParams(searchParams.toString());
+      if (detail == null) {
+        params.delete('location');
+        params.delete('latitude');
+        params.delete('longitude');
+        params.delete('radius');
+        params.delete('city');
+        params.delete('state');
+      } else {
+        const slug = detail.slug ?? detail;
+        const loc = typeof slug === 'string' ? { slug } : detail;
+        params.set('location', loc.slug || '');
+        if (loc.latitude != null && loc.longitude != null) {
+          params.set('latitude', String(loc.latitude));
+          params.set('longitude', String(loc.longitude));
+          params.set('radius', '50');
+        }
+        if (loc.city) params.set('city', loc.city);
+        if (loc.state) params.set('state', loc.state);
+      }
+      router.replace(params.toString() ? `/ads?${params.toString()}` : '/ads', { scroll: false });
+      setTimeout(() => { isUpdatingUrlRef.current = false; }, 150);
+    };
+    window.addEventListener('locationChanged', handleLocationChanged as EventListener);
+    return () => window.removeEventListener('locationChanged', handleLocationChanged as EventListener);
+  }, [router, searchParams]);
+
   // Legacy location loading - now using hooks above
   useEffect(() => {
     // CRITICAL: Only run this on /ads page, not when navigating away
@@ -111,6 +148,8 @@ function AdsPageContent() {
   // This prevents infinite loops by not using useEffect to sync URL to state
   // Get individual search param values for dependency array (prevents infinite loops)
   const locationParam = searchParams.get('location');
+  const cityParam = searchParams.get('city');
+  const stateParam = searchParams.get('state');
   const latitudeParam = searchParams.get('latitude');
   const longitudeParam = searchParams.get('longitude');
   const radiusParam = searchParams.get('radius');
@@ -121,8 +160,14 @@ function AdsPageContent() {
   const searchParam = searchParams.get('search');
   const conditionParam = searchParams.get('condition');
   const sortParam = searchParams.get('sort');
+  const pageParam = searchParams.get('page');
+  const postedTimeParam = searchParams.get('postedTime');
   
+  // Serialize all search params so filters update when ANY param changes (brand, model, specs, etc.)
+  const searchParamsKey = searchParams.toString();
+
   const filters = useMemo(() => {
+    // Location priority: URL param > persisted (navbar) > Google API
     const locationFromUrl = locationParam || persistedLocation?.slug || persistedLocationState?.location || undefined;
     const categoryFromUrl = categoryParam || undefined;
     const subcategoryFromUrl = subcategoryParam || undefined;
@@ -132,25 +177,44 @@ function AdsPageContent() {
     const conditionFromUrl = conditionParam || undefined;
     const sortFromUrl = (sortParam || 'newest') as 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
     
-    // Priority: Google location (city/state) > URL params > persisted location
+    const dynamicFilters: any = {};
+    searchParams.forEach((value, key) => {
+      const standardFilters = ['page', 'limit', 'category', 'subcategory', 'location', 'city', 'state', 
+        'latitude', 'longitude', 'radius', 'minPrice', 'maxPrice', 'priceMin', 'priceMax', 
+        'search', 'condition', 'sort', 'postedTime'];
+      if (!standardFilters.includes(key)) {
+        dynamicFilters[key] = value;
+      }
+    });
+    
+    // Google location (from GPS/Places API)
     const cityFromGoogle = googleLocation?.city;
     const stateFromGoogle = googleLocation?.state;
     const latFromGoogle = googleLocation?.lat;
     const lngFromGoogle = googleLocation?.lng;
     
-    // Always include persisted location coordinates if available and location is set
+    // All India = show all ads, don't use city/state
+    const isAllIndia = locationFromUrl?.toLowerCase() === 'india' || locationFromUrl?.toLowerCase() === 'all-india';
+    
+    // Location-wise ads: URL city/state > Google API > none (when no explicit location)
+    const useGoogleForLocation = !isAllIndia && !locationFromUrl && (cityFromGoogle || stateFromGoogle);
+    // Format city/state as "city, state" for API consistency
+    const rawCity = cityParam || (useGoogleForLocation ? cityFromGoogle : undefined);
+    const rawState = stateParam || (useGoogleForLocation ? stateFromGoogle : undefined);
+    const cityForApi = rawCity?.trim() || undefined;
+    const stateForApi = rawState?.trim() || undefined;
+    
+    // Coordinates: URL > Google > persisted
     const latitudeFromUrlRaw =
       latitudeParam ||
       latFromGoogle ||
-      (locationFromUrl && (persistedLocation?.latitude || persistedLocationState?.latitude)) ||
+      (locationFromUrl && !isAllIndia && (persistedLocation?.latitude || persistedLocationState?.latitude)) ||
       undefined;
     const longitudeFromUrlRaw =
       longitudeParam ||
       lngFromGoogle ||
-      (locationFromUrl && (persistedLocation?.longitude || persistedLocationState?.longitude)) ||
+      (locationFromUrl && !isAllIndia && (persistedLocation?.longitude || persistedLocationState?.longitude)) ||
       undefined;
-
-    // Filters contract expects strings; normalize numbers from geolocation/persistence.
     const latitudeFromUrl =
       latitudeFromUrlRaw !== undefined && latitudeFromUrlRaw !== null && String(latitudeFromUrlRaw).trim() !== ''
         ? String(latitudeFromUrlRaw)
@@ -159,90 +223,75 @@ function AdsPageContent() {
       longitudeFromUrlRaw !== undefined && longitudeFromUrlRaw !== null && String(longitudeFromUrlRaw).trim() !== ''
         ? String(longitudeFromUrlRaw)
         : undefined;
-    const radiusFromUrl = radiusParam || (locationFromUrl && (persistedLocationState?.radius)) || '50';
+    const radiusFromUrl = radiusParam || (locationFromUrl && !isAllIndia && (persistedLocationState?.radius)) || '50';
     
+    // Location value for API:
+    // - Prefer explicit location slug from URL/persisted location
+    // - When only city/state are available, rely on separate city/state params (backend handles this path)
+    const locationForApi = isAllIndia ? undefined : locationFromUrl || undefined;
+
     const result = {
       limit: 20,
       category: categoryFromUrl,
       subcategory: subcategoryFromUrl,
-      location: locationFromUrl,
-      city: cityFromGoogle, // Add city from Google location
-      state: stateFromGoogle, // Add state from Google location
+      location: locationForApi,
+      city: cityForApi,
+      state: stateForApi,
       minPrice: minPriceFromUrl,
       maxPrice: maxPriceFromUrl,
+      priceMin: minPriceFromUrl,
+      priceMax: maxPriceFromUrl,
       search: searchFromUrl,
       condition: conditionFromUrl,
       sort: sortFromUrl,
-      latitude: latitudeFromUrl,
-      longitude: longitudeFromUrl,
+      postedTime: postedTimeParam || undefined,
+      page: pageParam ? parseInt(pageParam, 10) : 1,
+      latitude: isAllIndia ? undefined : latitudeFromUrl,
+      longitude: isAllIndia ? undefined : longitudeFromUrl,
       radius: radiusFromUrl,
+      ...dynamicFilters,
     };
-    
-    // Debug: Log filter changes (only if location is set)
-    if (result.location) {
-      console.log('🔍 Filters updated (with location):', {
-        location: result.location,
-        latitude: result.latitude,
-        longitude: result.longitude,
-        radius: result.radius,
-        hasCoordinates: !!(result.latitude && result.longitude),
-        allFilters: result
-      });
-    }
     
     return result;
   }, [
-    locationParam, latitudeParam, longitudeParam, radiusParam,
-    categoryParam, subcategoryParam, minPriceParam, maxPriceParam,
-    searchParam, conditionParam, sortParam,
-    persistedLocation, persistedLocationState, googleLocation // Include Google location in dependencies
-  ]); // Depend on individual params to detect changes
+    searchParamsKey,
+    locationParam,
+    cityParam,
+    stateParam,
+    latitudeParam,
+    longitudeParam,
+    radiusParam,
+    categoryParam,
+    subcategoryParam,
+    minPriceParam,
+    maxPriceParam,
+    searchParam,
+    conditionParam,
+    sortParam,
+    pageParam,
+    postedTimeParam,
+    persistedLocation?.slug,
+    persistedLocation?.latitude,
+    persistedLocation?.longitude,
+    persistedLocationState?.location,
+    persistedLocationState?.latitude,
+    persistedLocationState?.longitude,
+    persistedLocationState?.radius,
+    googleLocation?.city,
+    googleLocation?.state,
+    googleLocation?.lat,
+    googleLocation?.lng,
+  ]);
 
-  // Use infinite scroll (lazy loading) for better performance
-  const infiniteQuery = useInfiniteAds(filters);
+  // Paginated ads (single page)
+  const adsQuery = useAdsPaginated(filters);
+  const adsData = adsQuery.data
+    ? { ads: adsQuery.data.ads || [], pagination: adsQuery.data.pagination || { page: 1, limit: 20, total: 0, pages: 1 } }
+    : { ads: [], pagination: { page: 1, limit: 20, total: 0, pages: 1 } };
   
-  // Flatten infinite query pages
-  const adsData = infiniteQuery.data && infiniteQuery.data.pages && infiniteQuery.data.pages.length > 0
-    ? {
-        ads: infiniteQuery.data.pages.flatMap(page => (page.ads && Array.isArray(page.ads)) ? page.ads : []),
-        pagination: infiniteQuery.data.pages[infiniteQuery.data.pages.length - 1]?.pagination || { page: 1, limit: 20, total: 0, pages: 1 }
-      }
-    : { 
-        ads: [], 
-        pagination: { page: 1, limit: 20, total: 0, pages: 1 } 
-      };
+  const isLoading = adsQuery.isLoading;
+  const isError = adsQuery.isError;
   
-  const isLoading = infiniteQuery.isLoading || infiniteQuery.isFetchingNextPage;
-  const isError = infiniteQuery.isError;
-  const hasNextPage = infiniteQuery.hasNextPage;
-  const fetchNextPage = infiniteQuery.fetchNextPage;
-  
-  // Debug logging
-  useEffect(() => {
-    if (infiniteQuery.data) {
-      console.log('📊 Infinite Query Data:', {
-        pages: infiniteQuery.data.pages.length,
-        totalAds: adsData.ads.length,
-        hasNextPage,
-        isLoading,
-        isError
-      });
-    }
-  }, [infiniteQuery.data, adsData.ads.length, hasNextPage, isLoading, isError]);
-
-  // Intersection observer for infinite scroll
-  const { elementRef: loadMoreRef, isIntersecting } = useIntersectionObserver({
-    threshold: 0.1,
-    rootMargin: '200px',
-    triggerOnce: false
-  });
-
-  // Auto-load more when intersection occurs
-  useEffect(() => {
-    if (isIntersecting && hasNextPage && !isLoading) {
-      fetchNextPage();
-    }
-  }, [isIntersecting, hasNextPage, isLoading, fetchNextPage]);
 
   // Debounce timer ref for batching filter changes
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -257,6 +306,40 @@ function AdsPageContent() {
     };
   }, []);
 
+  // Normalize filter parameters for API (convert priceMin/priceMax to minPrice/maxPrice)
+  const normalizeFilters = useCallback((filters: any) => {
+    const normalized: any = { ...filters };
+    
+    // Normalize price filters: priceMin/priceMax -> minPrice/maxPrice
+    if (normalized.priceMin !== undefined && normalized.priceMin !== null && normalized.priceMin !== '') {
+      normalized.minPrice = normalized.priceMin;
+      delete normalized.priceMin;
+    }
+    if (normalized.priceMax !== undefined && normalized.priceMax !== null && normalized.priceMax !== '') {
+      normalized.maxPrice = normalized.priceMax;
+      delete normalized.priceMax;
+    }
+    
+    // Ensure minPrice/maxPrice are used (prefer over priceMin/priceMax)
+    if (normalized.minPrice === undefined && normalized.priceMin !== undefined) {
+      normalized.minPrice = normalized.priceMin;
+      delete normalized.priceMin;
+    }
+    if (normalized.maxPrice === undefined && normalized.priceMax !== undefined) {
+      normalized.maxPrice = normalized.priceMax;
+      delete normalized.priceMax;
+    }
+    
+    // Remove empty values
+    Object.keys(normalized).forEach(key => {
+      if (normalized[key] === '' || normalized[key] === null || normalized[key] === undefined) {
+        delete normalized[key];
+      }
+    });
+    
+    return normalized;
+  }, []);
+
   // Debounced filter change handler to batch API calls
   const handleFilterChange = useCallback((newFilters: any) => {
     // Update pending filters (accumulate changes)
@@ -267,7 +350,7 @@ function AdsPageContent() {
       clearTimeout(debounceTimerRef.current);
     }
     
-    // Set new timer to batch changes (300ms debounce)
+    // Short debounce so brand/model/spec filters feel instant; still batches rapid clicks
     debounceTimerRef.current = setTimeout(() => {
       if (!pendingFiltersRef.current) return;
       
@@ -278,7 +361,7 @@ function AdsPageContent() {
       isUpdatingUrlRef.current = true;
       
       // Merge with current filters from searchParams
-      const updatedFilters = { ...filters, ...newFiltersToApply };
+      let updatedFilters = { ...filters, ...newFiltersToApply };
       
       // IMPORTANT: If search keyword exists, remove category and subcategory filters (search overrides category)
       if (updatedFilters.search && updatedFilters.search.trim()) {
@@ -288,29 +371,47 @@ function AdsPageContent() {
       
       // IMPORTANT: Preserve persisted location unless explicitly cleared
       // Location should persist across filter changes, searches, etc.
-      if (persistedLocation?.slug && !newFiltersToApply.hasOwnProperty('location')) {
-        updatedFilters.location = persistedLocation.slug;
-        if (persistedLocation.latitude && persistedLocation.longitude) {
-          updatedFilters.latitude = String(persistedLocation.latitude);
-          updatedFilters.longitude = String(persistedLocation.longitude);
+      const locationSlug = persistedLocation?.slug || persistedLocationState?.location;
+      if (locationSlug && !newFiltersToApply.hasOwnProperty('location')) {
+        updatedFilters.location = locationSlug;
+        const lat = persistedLocation?.latitude ?? persistedLocationState?.latitude;
+        const lng = persistedLocation?.longitude ?? persistedLocationState?.longitude;
+        if (lat && lng) {
+          updatedFilters.latitude = String(lat);
+          updatedFilters.longitude = String(lng);
           updatedFilters.radius = '50';
         }
       }
       
+      // Normalize filters for API (convert priceMin/priceMax to minPrice/maxPrice)
+      const normalizedFilters = normalizeFilters(updatedFilters);
+      
       // Update URL with new filters - only include non-empty values
       const params = new URLSearchParams();
-      Object.entries(updatedFilters).forEach(([key, value]) => {
+      Object.entries(normalizedFilters).forEach(([key, value]) => {
         if (value && value !== '' && key !== 'limit') {
-          params.append(key, String(value));
+          // Handle array values (for multiselect filters like brand)
+          if (Array.isArray(value)) {
+            value.forEach(v => {
+              if (v !== undefined && v !== null && v !== '') {
+                params.append(key, String(v));
+              }
+            });
+          } else {
+            params.append(key, String(value));
+          }
         }
       });
       
       // Ensure persisted location is always in URL if available (unless explicitly cleared)
-      if (persistedLocation?.slug && !newFiltersToApply.hasOwnProperty('location') && !params.has('location')) {
-        params.set('location', persistedLocation.slug);
-        if (persistedLocation.latitude && persistedLocation.longitude) {
-          params.set('latitude', String(persistedLocation.latitude));
-          params.set('longitude', String(persistedLocation.longitude));
+      const locToPreserve = persistedLocation?.slug || persistedLocationState?.location;
+      if (locToPreserve && !newFiltersToApply.hasOwnProperty('location') && !params.has('location')) {
+        params.set('location', locToPreserve);
+        const lat = persistedLocation?.latitude ?? persistedLocationState?.latitude;
+        const lng = persistedLocation?.longitude ?? persistedLocationState?.longitude;
+        if (lat && lng) {
+          params.set('latitude', String(lat));
+          params.set('longitude', String(lng));
           params.set('radius', '50');
         }
       }
@@ -319,17 +420,33 @@ function AdsPageContent() {
       // Use replace instead of push to update URL immediately without adding to history
       router.replace(queryString ? `/ads?${queryString}` : '/ads', { scroll: false });
       
+      // When location is set via filter, persist to localStorage so it "locks"
+      if (newFiltersToApply.hasOwnProperty('location') && typeof window !== 'undefined') {
+        const locSlug = updatedFilters.location;
+        if (locSlug) {
+          const locName = locSlug === 'india' || locSlug === 'all-india' ? 'All India' : locSlug;
+          try {
+            localStorage.setItem('selected_location', JSON.stringify({ slug: locSlug, name: locName }));
+            if (updatedFilters.latitude && updatedFilters.longitude) {
+              localStorage.setItem('selected_location_coords', JSON.stringify({
+                latitude: Number(updatedFilters.latitude),
+                longitude: Number(updatedFilters.longitude),
+              }));
+            }
+          } catch (e) {
+            console.warn('Could not persist location to localStorage');
+          }
+        }
+      }
+      
       // Reset flag after a brief delay to allow URL update to complete
       setTimeout(() => {
         isUpdatingUrlRef.current = false;
       }, 100);
-    }, 200); // 200ms debounce for batching API calls (reduced for better UX)
-  }, [filters, persistedLocation, router]);
+    }, 100); // 100ms – instant filter feedback (brand, model, etc.) without double-firing
+  }, [filters, persistedLocation, persistedLocationState, router, normalizeFilters]);
 
   const handleRemoveFilter = (key: string) => {
-    // Remove the filter by setting it to empty string
-    // handleFilterChange will automatically exclude empty values from URL
-    // IMPORTANT: If location is explicitly removed, clear it from localStorage too
     if (key === 'location') {
       try {
         localStorage.removeItem('selected_location');
@@ -339,12 +456,13 @@ function AdsPageContent() {
         console.error('Error clearing location from localStorage:', error);
       }
     }
-    
+    // Removing brand also clears model (model depends on brand)
     if (key === 'price') {
-      // Price filter removes both min and max
-      handleFilterChange({ minPrice: '', maxPrice: '' });
+      handleFilterChange({ minPrice: '', maxPrice: '', page: 1 });
+    } else if (key === 'brand') {
+      handleFilterChange({ brand: '', model: '', page: 1 });
     } else {
-      handleFilterChange({ [key]: '' });
+      handleFilterChange({ [key]: '', page: 1 });
     }
   };
 
@@ -353,11 +471,16 @@ function AdsPageContent() {
     handleFilterChange({
       category: '',
       subcategory: '',
+      search: '',
       minPrice: '',
       maxPrice: '',
       condition: '',
-      search: '',
-      // Note: location is NOT cleared - it persists
+      brand: '',
+      model: '',
+      radius: '50',
+      postedTime: '',
+      sort: 'newest',
+      page: 1,
     });
   };
 
@@ -375,110 +498,272 @@ function AdsPageContent() {
     }
   };
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Banners at the top */}
-        <div className="mb-6">
-          <Banners position="search" />
-        </div>
+  // Dynamic location display: "city, state" when both present, else location name/slug
+  const locationDisplay = useMemo(() => {
+    const isAllIndia =
+      locationParam?.toLowerCase() === 'india' || locationParam?.toLowerCase() === 'all-india' ||
+      persistedLocation?.slug === 'india' || persistedLocation?.slug === 'all-india';
+    if (isAllIndia) return 'All India';
+    const formatted = formatLocationCityState(
+      cityParam || persistedLocation?.city,
+      stateParam || persistedLocation?.state
+    );
+    if (formatted) return formatted;
+    return locationParam || persistedLocation?.name || persistedLocation?.slug || 'All Locations';
+  }, [locationParam, cityParam, stateParam, persistedLocation?.name, persistedLocation?.slug, persistedLocation?.city, persistedLocation?.state]);
 
-        <div className="flex flex-col lg:flex-row gap-8">
-          {/* Smart Filters Panel */}
-          <aside className="lg:w-80 flex-shrink-0">
-            <SmartFiltersPanel
+  return (
+    <div className="min-h-screen bg-gray-50 overflow-x-hidden pb-8 sm:pb-12">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 w-full">
+        {/* Breadcrumbs */}
+        <nav className="mb-4 sm:mb-6 overflow-x-auto">
+          <ol className="flex items-center gap-2 text-xs sm:text-sm text-gray-600 whitespace-nowrap">
+            <li>
+              <a href="/" className="hover:text-blue-600 transition-colors font-medium">
+                Home
+              </a>
+            </li>
+            {categoryParam && (
+              <>
+                <li className="text-gray-400">/</li>
+                <li>
+                  <span className="capitalize font-medium text-gray-900">{categoryParam}</span>
+                </li>
+              </>
+            )}
+            {searchParam && !categoryParam && (
+              <>
+                <li className="text-gray-400">/</li>
+                <li>
+                  <span className="text-gray-900 font-semibold truncate max-w-[200px]">{searchParam}</span>
+                </li>
+              </>
+            )}
+          </ol>
+        </nav>
+
+        <div className="flex flex-col lg:flex-row gap-4 sm:gap-6 w-full min-w-0">
+          {/* Filter Sidebar - visible on all screens; id for scroll target */}
+          <aside
+            id="filters-sidebar"
+            className="lg:w-[260px] xl:w-[280px] flex-shrink-0 w-full space-y-4 sm:space-y-6 order-first lg:order-none"
+            aria-label="Filters"
+          >
+            <h2 className="text-sm sm:text-base font-semibold text-gray-800 px-0.5">Filters</h2>
+            <AdsFilterSidebar
               filters={filters}
               onFilterChange={handleFilterChange}
-              isExpanded={isFiltersExpanded}
-              onToggleExpand={() => setIsFiltersExpanded(!isFiltersExpanded)}
+              categorySlug={categoryParam || undefined}
+              subcategorySlug={subcategoryParam || undefined}
+              fallbackTotalCount={adsData.pagination?.total}
             />
           </aside>
 
-          <main className="flex-1">
-            {/* Results Header with Filter Chips */}
-            <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                  <div>
-                    <h1 className="text-3xl font-bold text-gray-900">All Ads</h1>
-                    <p className="text-gray-500 mt-1">
-                      {adsData.pagination?.total || adsData.ads.length} listings found
-                    </p>
-                  </div>
+          <main id="ads-results" className="flex-1 min-w-0 w-full">
+            {/* Results Header */}
+            <div className="mb-4 sm:mb-6 w-full">
+              {/* Service category chips - show when viewing services */}
+            {categoryParam === 'services' && (
+              <div className="mb-4 sm:mb-6">
+                <ServiceButtons />
+              </div>
+            )}
+            <div className="mb-3 sm:mb-4">
+                <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-gray-900 mb-1 break-words">
+                  {(() => {
+                    const parts: string[] = [];
+                    if (searchParam) parts.push(`"${searchParam}"`);
+                    else if (categoryParam) parts.push(categoryParam.charAt(0).toUpperCase() + categoryParam.slice(1));
+                    else parts.push('All Ads');
+                    if (subcategoryParam) parts.push(subcategoryParam.replace(/-/g, ' '));
+                    const main = parts.join(' ');
+                    return <>{main} in {locationDisplay}</>;
+                  })()}
+                </h1>
+                <p className="text-gray-500 text-xs sm:text-sm">
+                  {isLoading && adsData.ads.length === 0
+                    ? 'Loading...'
+                    : `${(adsData.pagination?.total ?? adsData.ads.length).toLocaleString()} ads found`}
+                </p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4 mb-4 w-full">
+                <div className="flex-1 min-w-0 w-full sm:w-auto flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => document.getElementById('filters-sidebar')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                    className="lg:hidden inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 bg-white text-xs sm:text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Filters
+                  </button>
+                  <FilterChips
+                    filters={filters}
+                    onRemove={handleRemoveFilter}
+                    onClearAll={handleClearAllFilters}
+                  />
+                </div>
+                
+                <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0 w-full sm:w-auto">
+                  <label className="text-xs sm:text-sm font-medium text-gray-700 whitespace-nowrap">Sort:</label>
                   <select
-                    value={filters.sort}
-                    onChange={(e) => handleFilterChange({ sort: e.target.value })}
-                    className="px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+                    value={filters.sort || 'newest'}
+                    onChange={(e) => handleFilterChange({ sort: e.target.value, page: 1 })}
+                    className="flex-1 sm:flex-none px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-xs sm:text-sm font-medium transition-colors cursor-pointer hover:border-blue-400"
                   >
                     <option value="newest">Newest First</option>
                     <option value="oldest">Oldest First</option>
                     <option value="price_low">Price: Low to High</option>
                     <option value="price_high">Price: High to Low</option>
                     <option value="featured">Featured</option>
-                    <option value="bumped">Recently Bumped</option>
                   </select>
                 </div>
-
-                {/* Filter Chips */}
-                <FilterChips
-                  filters={filters}
-                  onRemove={handleRemoveFilter}
-                  onClearAll={handleClearAllFilters}
-                />
               </div>
             </div>
 
             {isLoading && adsData.ads.length === 0 ? (
-              <div className="text-center py-12">
-                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-                <p className="mt-4 text-gray-500">Loading ads...</p>
-              </div>
+              <AdsGridSkeleton
+                count={12}
+                variant={categoryParam === 'services' ? 'service' : 'default'}
+              />
             ) : isError && adsData.ads.length === 0 ? (
-              <div className="text-center py-12 bg-white rounded-lg shadow">
+              <div className="text-center py-12 bg-white rounded-xl shadow-sm border border-gray-100">
                 <p className="text-red-500 mb-4">Failed to load ads. Please try again.</p>
                 <button
                   onClick={() => window.location.reload()}
-                  className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700"
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
                 >
                   Retry
                 </button>
               </div>
             ) : adsData.ads.length === 0 ? (
-              <div className="bg-white rounded-lg shadow-sm p-8">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                 <EmptyState
                   title="No ads found"
                   message="We couldn't find any ads matching your criteria. Try adjusting your filters or clearing them to see more results."
-                  icon="search"
+                  icon="filter"
                   actionLabel="Clear All Filters"
                   onAction={handleClearAllFilters}
+                  className="py-20 px-6"
                 />
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-                  {adsData.ads.map((ad: any, index: number) => (
-                    <AdCardOLX key={ad.id} ad={ad} />
-                  ))}
+                <div
+                  className={`grid gap-4 sm:gap-5 lg:gap-6 mb-6 sm:mb-8 w-full ${
+                    categoryParam === 'services'
+                      ? 'grid-cols-1'
+                      : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+                  }`}
+                >
+                  {adsData.ads.map((ad: any, index: number) => {
+                    if (ad?._type === 'sponsored') {
+                      return (
+                        <SponsoredAdFeedCard
+                          key={`sp-${ad.id}-${index}`}
+                          ad={ad}
+                        />
+                      );
+                    }
+                    return (
+                      <LazyAdCard
+                        key={`${ad.id}-${index}`}
+                        ad={ad}
+                        variant={categoryParam === 'services' ? 'service' : 'ognox'}
+                        priority={index < 6}
+                        eager={index < 8}
+                      />
+                    );
+                  })}
                 </div>
 
-                {/* Lazy Loading - Infinite Scroll Trigger */}
-                <div ref={loadMoreRef} className="py-8">
-                  {hasNextPage && (
-                    <div className="text-center">
-                      {isLoading && (
-                        <div className="flex items-center justify-center gap-2 text-gray-500">
-                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600"></div>
-                          <span>Loading more ads...</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {!hasNextPage && adsData.ads.length > 0 && (
-                    <div className="text-center text-gray-500 py-4">
-                      <p>No more ads to load</p>
-                    </div>
-                  )}
-                </div>
+                {/* Pagination */}
+                {adsData.pagination && adsData.pagination.pages > 1 && (
+                  <div className="flex items-center justify-center gap-2 mt-8 w-full overflow-x-auto scrollbar-hide pb-4">
+                    <button
+                      onClick={() => {
+                        const currentPage = adsData.pagination?.page || 1;
+                        if (currentPage > 1) {
+                          handleFilterChange({ page: currentPage - 1 });
+                        }
+                      }}
+                      disabled={!adsData.pagination || adsData.pagination.page <= 1}
+                      className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-gray-600"
+                    >
+                      ←
+                    </button>
+                    
+                    {(() => {
+                      const currentPage = adsData.pagination?.page || 1;
+                      const totalPages = adsData.pagination.pages;
+                      const pages: (number | string)[] = [];
+                      
+                      // Always show first page
+                      pages.push(1);
+                      
+                      // Show pages around current page
+                      if (currentPage > 3) {
+                        pages.push('...');
+                      }
+                      
+                      for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
+                        if (i !== 1 && i !== totalPages) {
+                          pages.push(i);
+                        }
+                      }
+                      
+                      // Show last page if not already included
+                      if (totalPages > 1) {
+                        if (currentPage < totalPages - 2) {
+                          pages.push('...');
+                        }
+                        pages.push(totalPages);
+                      }
+                      
+                      // Remove duplicates and sort
+                      const uniquePages = Array.from(new Set(pages));
+                      
+                      return uniquePages.map((page, index) => {
+                        if (page === '...') {
+                          return (
+                            <span key={`ellipsis-${index}`} className="px-2 text-gray-400">
+                              ...
+                            </span>
+                          );
+                        }
+                        
+                        const pageNum = page as number;
+                        const isActive = pageNum === currentPage;
+                        
+                        return (
+                          <button
+                            key={pageNum}
+                            onClick={() => handleFilterChange({ page: pageNum })}
+                            className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 ${
+                              isActive
+                                ? 'bg-blue-600 text-white shadow-sm'
+                                : 'border border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-blue-200'
+                            }`}
+                          >
+                            {pageNum}
+                          </button>
+                        );
+                      });
+                    })()}
+                    
+                    <button
+                      onClick={() => {
+                        const currentPage = adsData.pagination?.page || 1;
+                        if (currentPage < (adsData.pagination?.pages || 1)) {
+                          handleFilterChange({ page: currentPage + 1 });
+                        }
+                      }}
+                      disabled={!adsData.pagination || adsData.pagination.page >= adsData.pagination.pages}
+                      className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-gray-600"
+                    >
+                      →
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </main>

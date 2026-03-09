@@ -698,30 +698,17 @@ router.post('/verify-reset-otp',
       }
 
       const { email, phone, code } = req.body;
-
-      // Verify OTP without marking as used (we'll mark it when password is reset)
       const normalizedEmail = email ? email.trim().toLowerCase() : null;
       const normalizedPhone = phone ? phone.trim().replace(/\D/g, '') : null;
 
-      const otp = await prisma.oTP.findFirst({
-        where: {
-          OR: [
-            normalizedEmail ? { email: normalizedEmail, code } : {},
-            normalizedPhone ? { phone: normalizedPhone, code } : {}
-          ].filter(condition => Object.keys(condition).length > 0),
-          used: false,
-          expiresAt: { gt: new Date() }
-        },
-        orderBy: { createdAt: 'desc' }
-      });
-
-      if (!otp) {
-        return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+      const result = await verifyOTP(normalizedEmail, normalizedPhone, code, { markAsUsed: false });
+      if (!result.valid) {
+        return res.status(400).json({ success: false, message: result.message });
       }
 
-      res.json({ 
-        success: true, 
-        message: 'OTP verified successfully. You can now reset your password.' 
+      res.json({
+        success: true,
+        message: 'OTP verified successfully. You can now reset your password.'
       });
     } catch (error) {
       console.error('Verify reset OTP error:', error);
@@ -746,16 +733,16 @@ router.post('/reset-password',
       }
 
       const { email, phone, code, newPassword } = req.body;
+      const normalizedEmail = email ? email.trim().toLowerCase() : null;
+      const normalizedPhone = phone ? phone.trim().replace(/\D/g, '') : null;
 
       // Verify OTP first
-      const otpResult = await verifyOTP(email, phone, code);
+      const otpResult = await verifyOTP(normalizedEmail, normalizedPhone, code);
       if (!otpResult.valid) {
         return res.status(400).json({ success: false, message: otpResult.message });
       }
 
       // Find user
-      const normalizedEmail = email ? email.trim().toLowerCase() : null;
-      const normalizedPhone = phone ? phone.trim().replace(/\D/g, '') : null;
 
       const whereClause = {};
       if (normalizedEmail && normalizedPhone) {

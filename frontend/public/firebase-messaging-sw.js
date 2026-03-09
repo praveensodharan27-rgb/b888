@@ -25,7 +25,7 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage((payload) => {
   console.log('[firebase-messaging-sw.js] Received background message ', payload);
   
-  const notificationTitle = payload.notification?.title || 'SellIt';
+  const notificationTitle = payload.notification?.title || 'Sell Box';
   const notificationOptions = {
     body: payload.notification?.body || 'You have a new notification',
     icon: payload.notification?.icon || '/logo.png',

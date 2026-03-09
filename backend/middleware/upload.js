@@ -93,35 +93,67 @@ const validateImageFormat = (file) => {
   };
 };
 
-const WATERMARK_TEXT = 'B888';
-// Apply watermark to an image buffer (bottom-right, semi-transparent) using Jimp
-const applyWatermark = async (buffer) => {
-  const image = await Jimp.read(buffer);
-  const width = image.getWidth();
+// Sell Box logo for watermark – try multiple paths so it works in any repo layout
+const LOGO_CANDIDATES = [
+  path.join(__dirname, '../../frontend/public/logo.png'),
+  path.join(__dirname, '../public/logo.png'),
+  path.join(__dirname, '../uploads/logo.png'),
+];
+const LOGO_PATH = LOGO_CANDIDATES.find((p) => fs.existsSync(p)) || LOGO_CANDIDATES[0];
+
+/** Watermark opacity (0 = invisible, 1 = opaque). Requirement: semi-transparent ~0.2 */
+const WATERMARK_OPACITY = 0.2;
+
+/** Max width for product images (keeps aspect ratio). Prevents huge files and keeps images sharp. */
+const MAX_IMAGE_WIDTH = 1200;
+/** Compression quality 85–90% for sharp display without excessive file size. */
+const IMAGE_QUALITY = 88;
+
+/**
+ * Apply Sell Box logo watermark and resize/quality for product images (server-side).
+ * - Resize to max width 1200px (height auto) to maintain high resolution without huge files.
+ * - Output as WebP or high-quality JPEG at 85–90% quality.
+ * - Logo at bottom-right, semi-transparent (opacity ~0.2).
+ * - Applied to all ad image uploads (local, S3, Cloudinary).
+ */
+const applyWatermark = async (buffer, mimeType) => {
+  let image = await Jimp.read(buffer);
+  let width = image.getWidth();
   const height = image.getHeight();
-  // Choose a (larger) font size based on image size (use built-in fonts)
-  const minSide = Math.min(width, height);
-  const font =
-    minSide > 800
-      ? await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE)
-      : await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
 
-  const textWidth = Jimp.measureText(font, WATERMARK_TEXT);
-  const textHeight = Jimp.measureTextHeight(font, WATERMARK_TEXT, textWidth);
+  if (width > MAX_IMAGE_WIDTH) {
+    image = image.resize(MAX_IMAGE_WIDTH, Jimp.AUTO);
+    width = image.getWidth();
+  }
 
-  // Position bottom-right with extra padding for readability
-  const padding = Math.max(Math.round(Math.min(width, height) * 0.02), 12);
-  const x = Math.max(width - textWidth - padding, 0);
-  const y = Math.max(height - textHeight - padding, 0);
+  const mt = (mimeType || '').toLowerCase();
+  let outputMime = Jimp.MIME_JPEG;
+  if (mt.includes('png')) outputMime = Jimp.MIME_PNG;
+  else if (mt.includes('webp')) outputMime = Jimp.MIME_WEBP;
+  else if (mt.includes('jpeg') || mt.includes('jpg')) outputMime = Jimp.MIME_JPEG;
 
-  // Draw text only (white, semi-transparent), no background
-  const textImage = new Jimp(textWidth, textHeight, 0x00000000);
-  textImage.print(font, 0, 0, WATERMARK_TEXT);
-  // Make it lightly transparent so it sits on the image without a box
-  textImage.opacity(0.7);
+  if (outputMime === Jimp.MIME_JPEG || outputMime === Jimp.MIME_WEBP) {
+    image.quality(IMAGE_QUALITY);
+  }
 
-  image.composite(textImage, x, y);
-  return image.getBufferAsync(Jimp.MIME_PNG);
+  if (!fs.existsSync(LOGO_PATH)) {
+    return image.getBufferAsync(outputMime);
+  }
+
+  let logo = await Jimp.read(LOGO_PATH);
+  const minSide = Math.min(width, image.getHeight());
+  const logoSize = Math.min(Math.round(minSide * 0.15), 80);
+
+  logo = logo.resize(logoSize, Jimp.AUTO);
+  logo.opacity(WATERMARK_OPACITY);
+
+  const padding = Math.max(Math.round(minSide * 0.02), 8);
+  const x = Math.max(width - logo.getWidth() - padding, 0);
+  const y = Math.max(image.getHeight() - logo.getHeight() - padding, 0);
+
+  image.composite(logo, x, y);
+
+  return image.getBufferAsync(outputMime);
 };
 
 // Generate category-based filename
@@ -280,8 +312,25 @@ const uploadImages = (req, res, next) => {
             }
             
             const outputPath = path.join(adsUploadsDir, filename);
-            const watermarked = await applyWatermark(file.buffer);
-            fs.writeFileSync(outputPath, watermarked);
+
+            // Apply watermark; if it fails, gracefully fall back to original buffer
+            let outputBuffer;
+            try {
+              outputBuffer = await applyWatermark(file.buffer, file.mimetype);
+            } catch (wmErr) {
+              (req.log || logger).warn(
+                {
+                  requestId: req.id,
+                  err: wmErr?.message,
+                  filename,
+                  reason: 'Watermark failed, using original image buffer',
+                },
+                'Watermark processing error – falling back to original image'
+              );
+              outputBuffer = file.buffer;
+            }
+
+            fs.writeFileSync(outputPath, outputBuffer);
             
             // Generate alt text
             const altText = categoryInfo.category
@@ -362,7 +411,7 @@ const uploadImages = (req, res, next) => {
         
         const uploadPromises = req.files.map((file, index) => {
           return new Promise((resolve, reject) => {
-            applyWatermark(file.buffer)
+            applyWatermark(file.buffer, file.mimetype)
               .then((processedBuffer) => {
                 // Generate category-based public_id for Cloudinary
                 let publicId = `ads/${crypto.randomBytes(16).toString('hex')}`;
@@ -445,7 +494,7 @@ const uploadImages = (req, res, next) => {
             filename = `${crypto.randomBytes(16).toString('hex')}.${ext}`;
           }
           
-          const watermarked = await applyWatermark(file.buffer);
+          const watermarked = await applyWatermark(file.buffer, file.mimetype);
           const result = await s3Client
             .upload({
               Bucket: process.env.S3_BUCKET_NAME,

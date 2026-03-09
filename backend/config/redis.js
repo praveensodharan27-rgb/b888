@@ -6,8 +6,10 @@ let redisGaveUp = false;
 const REDIS_BACKGROUND_RETRY_MS = 2 * 60 * 1000; // retry connection every 2 min when gave up
 let backgroundRetryTimer = null;
 
-// Redis configuration
-const redisConfig = {
+// Redis configuration - REDIS_URL takes precedence when set
+const redisConfig = process.env.REDIS_URL
+  ? process.env.REDIS_URL
+  : {
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379', 10),
   password: process.env.REDIS_PASSWORD || undefined,

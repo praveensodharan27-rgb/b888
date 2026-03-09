@@ -3,15 +3,16 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { FiMapPin, FiBriefcase, FiGlobe, FiCheckCircle, FiPackage, FiUsers, FiTrendingUp, FiFileText, FiEdit3, FiUserPlus, FiX, FiCalendar, FiFolder, FiVolume2, FiCamera, FiPlus, FiShoppingBag, FiSettings, FiArrowLeft } from 'react-icons/fi';
+import { FiMapPin, FiBriefcase, FiGlobe, FiCheckCircle, FiPackage, FiUsers, FiTrendingUp, FiFileText, FiEdit3, FiUserPlus, FiX, FiCalendar, FiFolder, FiVolume2, FiCamera, FiPlus, FiShoppingBag, FiSettings, FiArrowLeft, FiStar } from 'react-icons/fi';
 import Link from 'next/link';
 import Image from 'next/image';
 import FollowButton from '@/components/FollowButton';
 import FollowersModal from '@/components/FollowersModal';
 import { userService } from '@/src/application/services/UserService';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
-import { useQuery } from '@tanstack/react-query';
+import toast from '@/lib/toast';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
 
 export default function ProfilePage() {
   // ALL HOOKS MUST BE CALLED BEFORE ANY CONDITIONAL RETURNS
@@ -23,6 +24,9 @@ export default function ProfilePage() {
   const [editingLocation, setEditingLocation] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<string>('');
   const [savingLocation, setSavingLocation] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
 
   // Fetch suggested users using service
   const { data: suggestedUsers = [] } = useQuery({
@@ -70,6 +74,32 @@ export default function ProfilePage() {
     }
   }, [user, selectedLocation]);
 
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please select an image file (JPG, PNG, etc.)');
+      return;
+    }
+    const maxMb = 5;
+    if (file.size > maxMb * 1024 * 1024) {
+      toast.error(`Image must be under ${maxMb}MB`);
+      return;
+    }
+    setUploadingAvatar(true);
+    try {
+      await userService.updateAvatar(file);
+      await queryClient.invalidateQueries({ queryKey: ['auth', 'me'] });
+      await queryClient.invalidateQueries({ queryKey: ['user-profile', user?.id] });
+      toast.success('Profile photo updated');
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Failed to update photo');
+    } finally {
+      setUploadingAvatar(false);
+      e.target.value = '';
+    }
+  };
+
   const handleSaveLocation = async () => {
     if (!selectedLocation) {
       toast.error('Please select a location');
@@ -112,9 +142,13 @@ export default function ProfilePage() {
   const freeAdsLimit = profileData?.freeAdsLimit || 5;
   const freeAdsPercentage = freeAdsLimit > 0 ? Math.round((freeAdsUsed / freeAdsLimit) * 100) : 0;
 
+  // Seller rating & reviews (UI only, uses backend fields if present)
+  const sellerRating = typeof profileData?.sellerRating === 'number' ? profileData.sellerRating : 0;
+  const totalReviews = typeof profileData?.reviewCount === 'number' ? profileData.reviewCount : 0;
+
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4 max-w-7xl">
+      <div className="container mx-auto px-4 max-w-[1400px]">
         {/* Back Button */}
         <Link
           href="/"
@@ -130,28 +164,54 @@ export default function ProfilePage() {
             {/* Profile Card */}
             <div className="bg-white rounded-2xl shadow-sm p-6">
               <div className="flex flex-col items-center text-center">
-              {/* Profile Image with Status Badge */}
-                <div className="relative mb-4">
-                  {user.avatar ? (
-                    <Image
-                      src={user.avatar}
-                      alt={user.name}
-                      width={120}
-                      height={120}
-                      priority
-                      className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg"
-                    />
-                  ) : (
-                    <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-4xl font-bold border-4 border-white shadow-lg">
-                      {user.name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  
+              {/* Profile Image with Status Badge + Change option */}
+                <div className="relative mb-4 group">
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={handleAvatarChange}
+                    disabled={uploadingAvatar}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => avatarInputRef.current?.click()}
+                    disabled={uploadingAvatar}
+                    className="relative block rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                  >
+                    {user.avatar ? (
+                      <Image
+                        src={user.avatar}
+                        alt={user.name}
+                        width={120}
+                        height={120}
+                        priority
+                        className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg"
+                      />
+                    ) : (
+                      <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-4xl font-bold border-4 border-white shadow-lg">
+                        {user.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    {uploadingAvatar && (
+                      <div className="absolute inset-0 rounded-full bg-black/50 flex items-center justify-center border-4 border-white shadow-lg">
+                        <div className="animate-spin rounded-full h-8 w-8 border-2 border-white border-t-transparent" />
+                      </div>
+                    )}
+                    {!uploadingAvatar && (
+                      <div className="absolute inset-0 rounded-full bg-black/0 group-hover:bg-black/40 flex items-center justify-center border-4 border-white shadow-lg transition-colors">
+                        <span className="opacity-0 group-hover:opacity-100 flex flex-col items-center gap-1 text-white text-xs font-medium transition-opacity">
+                          <FiCamera className="w-6 h-6" />
+                          Change photo
+                        </span>
+                      </div>
+                    )}
+                  </button>
                   {/* ACTIVE Badge */}
                   <div className="absolute -bottom-1 -right-1 bg-blue-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg">
                     ACTIVE
                   </div>
-
                   {/* Verification Badge */}
                   {user.isVerified && (
                     <div className="absolute top-0 right-0 w-8 h-8 bg-blue-600 rounded-full border-2 border-white flex items-center justify-center shadow-lg">
@@ -180,6 +240,49 @@ export default function ProfilePage() {
               </div>
             </div>
 
+            {/* Seller Rating Summary */}
+            <div className="bg-white rounded-2xl shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Seller Rating</h3>
+                {totalReviews > 0 && (
+                  <span className="text-xs font-medium text-gray-500">
+                    {totalReviews} review{totalReviews !== 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-4 mb-3">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-bold text-gray-900">
+                    {totalReviews > 0 ? sellerRating.toFixed(1) : '—'}
+                  </span>
+                  <span className="text-xs text-gray-500 uppercase tracking-wide">/ 5.0</span>
+                </div>
+                <div className="flex items-center gap-0.5">
+                  {Array.from({ length: 5 }).map((_, idx) => {
+                    const filled = sellerRating >= idx + 1;
+                    const half = !filled && sellerRating > idx && sellerRating < idx + 1;
+                    return (
+                      <FiStar
+                        key={idx}
+                        className={`w-4 h-4 ${
+                          filled
+                            ? 'text-yellow-400 fill-current'
+                            : half
+                            ? 'text-yellow-300'
+                            : 'text-gray-200'
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+              <p className="text-xs text-gray-500">
+                {totalReviews > 0
+                  ? 'Based on recent buyer feedback.'
+                  : 'No reviews yet. Once buyers rate you, your average rating will appear here.'}
+              </p>
+            </div>
+
             {/* Free Ads Usage */}
             <div className="bg-white rounded-2xl shadow-sm p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Free Ads Usage</h3>
@@ -188,19 +291,19 @@ export default function ProfilePage() {
                   <span className="text-2xl font-bold text-gray-900">{freeAdsPercentage}%</span>
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div 
+                  <div
                     className="bg-blue-600 h-2 rounded-full transition-all"
                     style={{ width: `${freeAdsPercentage}%` }}
                   />
-          </div>
-        </div>
+                </div>
+              </div>
               <p className="text-sm text-gray-600 mt-2">
                 {freeAdsUsed} / {freeAdsLimit} ads used this month
               </p>
-          </div>
+            </div>
 
-            {/* Business Packages */}
-            {profileData?.businessPackage && (profileData.businessPackage.allPackages?.length > 0 || profileData.businessPackage.activePackages?.length > 0) && (
+            {/* Business Packages - hidden on profile/settings (kanikaruthu) */}
+            {false && profileData?.businessPackage && (profileData.businessPackage.allPackages?.length > 0 || profileData.businessPackage.activePackages?.length > 0) && (
               <div className="bg-white rounded-2xl shadow-sm p-6">
                 <div className="flex items-center gap-2 mb-4">
                   <FiFolder className="w-5 h-5 text-blue-600" />
@@ -257,139 +360,232 @@ export default function ProfilePage() {
               <div className="relative z-10">
                 <div className="text-4xl font-bold mb-2">{totalAds} Ads</div>
                 <p className="text-blue-50 text-sm">
-                  Combine free and premium credits to reach more buyers.
+                  Use free and promoted listings to reach more buyers.
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Right Column - Welcome & Content */}
+          {/* Right Column - Tabs: Overview / Reviews */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Welcome Section */}
-            <div className="bg-white rounded-2xl shadow-sm p-8">
-              <h2 className="text-2xl font-bold text-gray-900 mb-4">Welcome to my profile</h2>
-              <div className="space-y-4 text-gray-600 leading-relaxed">
-                <p>
-                  {user.bio || `I'm an active buyer and seller since early ${user.createdAt ? new Date(user.createdAt).getFullYear() : '2024'}, specializing in vintage electronics and high-quality home furniture. I pride myself on quick response times and smooth experiences.`}
-                </p>
-                <p>
-                  I'm open to questions, reasonable offers, ship items within 24-48 hours, and only conduct verified transactions for safety.
-                </p>
-              </div>
-        </div>
-
-            {/* People You May Know */}
-        {suggestedUsers.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-sm p-8">
-            <h2 className="text-xl font-bold text-gray-900 mb-6">People You May Know</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {suggestedUsers.map((suggestedUser) => (
-                <div key={suggestedUser.id} className="border border-gray-200 rounded-xl p-4 hover:border-blue-300 transition-colors">
-                      <div className="flex flex-col items-center text-center mb-4">
-                    {suggestedUser.avatar ? (
-                      <img
-                        src={suggestedUser.avatar}
-                        alt={suggestedUser.name}
-                        className="w-16 h-16 rounded-full object-cover mb-3"
-                      />
-                    ) : (
-                      <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-xl font-bold mb-3">
-                        {suggestedUser.name.charAt(0).toUpperCase()}
-                      </div>
-                    )}
-                        <h3 className="font-semibold text-gray-900 mb-1">
-                      {suggestedUser.name}
-                    </h3>
-                    {suggestedUser.isVerified && (
-                          <span className="flex items-center justify-center gap-1 text-xs text-blue-600 mb-2">
-                        <FiCheckCircle className="w-3 h-3" />
-                        Verified
-                      </span>
-                    )}
-                        <p className="text-xs text-gray-500 mb-3">
-                          {suggestedUser.bio || 'Active Seller'}
-                        </p>
-                      </div>
-                      <div className="flex flex-col gap-2">
-                  <FollowButton
-                    userId={suggestedUser.id}
-                    className="w-full"
-                  />
-                        <Link
-                          href={`/user/${suggestedUser.id}`}
-                          className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium text-center"
-                        >
-                          View Profile
-                        </Link>
-                      </div>
+            {/* Tabs header */}
+            <div className="bg-white rounded-2xl shadow-sm">
+              <div className="px-6">
+                <div className="flex gap-6 border-b border-gray-200">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('overview')}
+                    className={`py-3 px-1 text-sm font-semibold border-b-2 transition-colors ${
+                      activeTab === 'overview'
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('reviews')}
+                    className={`py-3 px-1 text-sm font-semibold border-b-2 transition-colors ${
+                      activeTab === 'reviews'
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    Reviews
+                  </button>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-            {/* Quick Actions Section */}
-            <div className="bg-white rounded-2xl shadow-sm p-8">
-              <h2 className="text-xl font-bold text-gray-900 mb-6">Quick Actions</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Link
-            href="/my-ads"
-                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
-                >
-                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
-                    <FiPackage className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">My Ads</h3>
-                    <p className="text-sm text-gray-600">Manage your listings</p>
-            </div>
-          </Link>
-
-          <Link
-                  href="/orders"
-                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
-                >
-                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
-                    <FiShoppingBag className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">Orders</h3>
-                    <p className="text-sm text-gray-600">View order history</p>
-            </div>
-          </Link>
-
-          <Link
-                  href="/settings"
-                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
-                >
-                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
-                    <FiSettings className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">Settings</h3>
-                    <p className="text-sm text-gray-600">Account preferences</p>
-            </div>
-          </Link>
-
-          <Link
-                  href="#about"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    const aboutSection = document.getElementById('about-section');
-                    aboutSection?.scrollIntoView({ behavior: 'smooth' });
-                  }}
-                  className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
-                >
-                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
-                    <FiBriefcase className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">About</h3>
-                    <p className="text-sm text-gray-600">Your profile information</p>
-                  </div>
-                </Link>
               </div>
             </div>
+
+            {/* Overview Tab */}
+            {activeTab === 'overview' && (
+              <>
+                {/* Welcome Section */}
+                <div className="bg-white rounded-2xl shadow-sm p-8">
+                  <h2 className="text-2xl font-bold text-gray-900 mb-4">Welcome to my profile</h2>
+                  <div className="space-y-4 text-gray-600 leading-relaxed">
+                    <p>
+                      {user.bio ||
+                        `I'm an active buyer and seller since early ${
+                          user.createdAt ? new Date(user.createdAt).getFullYear() : '2024'
+                        }, focused on smooth transactions and quick responses.`}
+                    </p>
+                    <p>
+                      I&apos;m open to questions, reasonable offers, and prefer safe, verified payments for both buyers and
+                      sellers.
+                    </p>
+                  </div>
+                </div>
+
+                {/* People You May Know */}
+                {suggestedUsers.length > 0 && (
+                  <div className="bg-white rounded-2xl shadow-sm p-8">
+                    <h2 className="text-xl font-bold text-gray-900 mb-6">People You May Know</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {suggestedUsers.map((suggestedUser) => (
+                        <div
+                          key={suggestedUser.id}
+                          className="border border-gray-200 rounded-xl p-4 hover:border-blue-300 transition-colors"
+                        >
+                          <div className="flex flex-col items-center text-center mb-4">
+                            {suggestedUser.avatar ? (
+                              <img
+                                src={suggestedUser.avatar}
+                                alt={suggestedUser.name}
+                                className="w-16 h-16 rounded-full object-cover mb-3"
+                              />
+                            ) : (
+                              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white text-xl font-bold mb-3">
+                                {suggestedUser.name.charAt(0).toUpperCase()}
+                              </div>
+                            )}
+                            <h3 className="font-semibold text-gray-900 mb-1">{suggestedUser.name}</h3>
+                            {suggestedUser.isVerified && (
+                              <span className="flex items-center justify-center gap-1 text-xs text-blue-600 mb-2">
+                                <FiCheckCircle className="w-3 h-3" />
+                                Verified
+                              </span>
+                            )}
+                            <p className="text-xs text-gray-500 mb-3">
+                              {suggestedUser.bio || 'Active seller on the marketplace'}
+                            </p>
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <FollowButton userId={suggestedUser.id} className="w-full" />
+                            <Link
+                              href={`/user/${suggestedUser.id}`}
+                              className="w-full px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium text-center"
+                            >
+                              View Profile
+                            </Link>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Quick Actions Section */}
+                <div className="bg-white rounded-2xl shadow-sm p-8">
+                  <h2 className="text-xl font-bold text-gray-900 mb-6">Quick Actions</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Link
+                      href="/my-ads"
+                      className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                    >
+                      <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                        <FiPackage className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">My Ads</h3>
+                        <p className="text-sm text-gray-600">Manage your listings</p>
+                      </div>
+                    </Link>
+
+                    <Link
+                      href="/orders"
+                      className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                    >
+                      <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                        <FiShoppingBag className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">Orders</h3>
+                        <p className="text-sm text-gray-600">View order history</p>
+                      </div>
+                    </Link>
+
+                    <Link
+                      href="/settings"
+                      className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                    >
+                      <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                        <FiSettings className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">Settings</h3>
+                        <p className="text-sm text-gray-600">Account preferences</p>
+                      </div>
+                    </Link>
+
+                    <Link
+                      href="#about"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        const aboutSection = document.getElementById('about-section');
+                        aboutSection?.scrollIntoView({ behavior: 'smooth' });
+                      }}
+                      className="flex items-center gap-4 p-4 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all group"
+                    >
+                      <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-600 transition-colors">
+                        <FiBriefcase className="w-6 h-6 text-blue-600 group-hover:text-white transition-colors" />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">About</h3>
+                        <p className="text-sm text-gray-600">Your profile information</p>
+                      </div>
+                    </Link>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Reviews Tab */}
+            {activeTab === 'reviews' && (
+              <div className="bg-white rounded-2xl shadow-sm p-8">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Reviews</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Buyer feedback about your communication, delivery, and overall experience.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-3xl font-bold text-gray-900">
+                        {totalReviews > 0 ? sellerRating.toFixed(1) : '—'}
+                      </span>
+                      <span className="text-xs text-gray-500 uppercase tracking-wide">/ 5.0</span>
+                    </div>
+                    <div className="flex items-center gap-0.5">
+                      {Array.from({ length: 5 }).map((_, idx) => {
+                        const filled = sellerRating >= idx + 1;
+                        const half = !filled && sellerRating > idx && sellerRating < idx + 1;
+                        return (
+                          <FiStar
+                            key={idx}
+                            className={`w-4 h-4 ${
+                              filled
+                                ? 'text-yellow-400 fill-current'
+                                : half
+                                ? 'text-yellow-300'
+                                : 'text-gray-200'
+                            }`}
+                          />
+                        );
+                      })}
+                    </div>
+                    <span className="text-xs text-gray-500">
+                      {totalReviews > 0
+                        ? `${totalReviews} review${totalReviews !== 1 ? 's' : ''}`
+                        : 'No reviews yet'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="border-t border-dashed border-gray-200 pt-8">
+                  <div className="text-center py-10">
+                    <FiStar className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                    <h3 className="text-lg font-semibold text-gray-900 mb-1">No reviews yet</h3>
+                    <p className="text-sm text-gray-600 max-w-md mx-auto">
+                      Once buyers start rating your transactions, reviews will appear here. Keep responding quickly and
+                      providing great service to earn a high rating.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* About Section */}
             <div id="about-section" className="bg-white rounded-2xl shadow-sm p-8">
@@ -407,7 +603,7 @@ export default function ProfilePage() {
                 <div>
                   <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Bio</h3>
                   <p className="text-gray-700 leading-relaxed">
-                    {user.bio || `Welcome to my SellIt profile! I'm an active member of the marketplace community, passionate about finding great deals and connecting with buyers and sellers. I believe in honest transactions, clear communication, and building trust within our community.`}
+                    {user.bio || `Welcome to my Sell Box profile! I'm an active member of the marketplace community, passionate about finding great deals and connecting with buyers and sellers. I believe in honest transactions, clear communication, and building trust within our community.`}
                   </p>
                 </div>
 

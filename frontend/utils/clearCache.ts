@@ -1,109 +1,54 @@
-import { getQueryClient } from '@/lib/queryClient';
 import api from '@/lib/api';
 
-/**
- * Utility function to clear all application cache
- * This clears:
- * - React Query cache (all queries)
- * - localStorage items used by the app
- * - Backend server cache (optional)
- */
-export const clearAllCache = async (clearBackendCache = false) => {
-  if (typeof window === 'undefined') return;
+// Clear browser-side caches and optionally backend cache
+export async function clearAllCache(clearBackend = false): Promise<void> {
+  // Clear local/session storage
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.clear();
+    } catch (error) {
+      console.warn('Failed to clear localStorage:', error);
+    }
 
-  try {
-    // 1. Clear React Query cache
-    const queryClient = getQueryClient();
-    queryClient.clear(); // Clear all cached queries
-    queryClient.invalidateQueries(); // Invalidate all queries to force refetch
-    console.log('✅ React Query cache cleared');
+    try {
+      sessionStorage.clear();
+    } catch (error) {
+      console.warn('Failed to clear sessionStorage:', error);
+    }
 
-    // 2. Clear localStorage items
-    const keysToRemove = [
-      'userLocation',
-      'locationPermission',
-      'recentSearches',
-      'sellit_comparison_items',
-      'splash_screen_shown',
-      'authQuotes', // Session auth quotes
-      // Add any other localStorage keys you use
-    ];
-
-    keysToRemove.forEach((key) => {
+    // Clear Cache Storage (if supported)
+    if ('caches' in window) {
       try {
-        localStorage.removeItem(key);
-        console.log(`✅ Cleared localStorage: ${key}`);
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map((name) => caches.delete(name)));
       } catch (error) {
-        console.error(`❌ Error clearing ${key}:`, error);
-      }
-    });
-
-    // 3. Clear backend cache (optional)
-    if (clearBackendCache) {
-      try {
-        await api.post('/admin/cache/clear');
-        console.log('✅ Backend cache cleared');
-      } catch (error) {
-        console.warn('⚠️ Could not clear backend cache (may require admin auth):', error);
+        console.warn('Failed to clear Cache Storage:', error);
       }
     }
 
-    console.log('✅ All cache cleared successfully');
-    return true;
-  } catch (error) {
-    console.error('❌ Error clearing cache:', error);
-    return false;
+    // Clear IndexedDB (best-effort)
+    if (typeof indexedDB !== 'undefined' && 'databases' in indexedDB) {
+      try {
+        const databases = await (indexedDB as any).databases();
+        if (Array.isArray(databases)) {
+          await Promise.all(
+            databases
+              .filter((db: { name?: string }) => db.name)
+              .map((db: { name?: string }) => indexedDB.deleteDatabase(db.name as string))
+          );
+        }
+      } catch (error) {
+        console.warn('Failed to clear IndexedDB:', error);
+      }
+    }
   }
-};
 
-/**
- * Clear only location-related cache
- */
-export const clearLocationCache = () => {
-  if (typeof window === 'undefined') return;
-
-  localStorage.removeItem('userLocation');
-  localStorage.removeItem('locationPermission');
-  console.log('Location cache cleared');
-};
-
-/**
- * Clear only search-related cache
- */
-export const clearSearchCache = () => {
-  if (typeof window === 'undefined') return;
-
-  const queryClient = getQueryClient();
-  queryClient.invalidateQueries({ queryKey: ['search'] });
-  queryClient.invalidateQueries({ queryKey: ['search-autocomplete'] });
-  queryClient.invalidateQueries({ queryKey: ['popular-searches'] });
-  localStorage.removeItem('recentSearches');
-  console.log('✅ Search cache cleared');
-};
-
-/**
- * Clear only React Query cache (without localStorage)
- */
-export const clearReactQueryCache = () => {
-  if (typeof window === 'undefined') return;
-
-  const queryClient = getQueryClient();
-  queryClient.clear();
-  queryClient.invalidateQueries();
-  console.log('✅ React Query cache cleared');
-};
-
-/**
- * Clear backend cache only (requires admin auth)
- */
-export const clearBackendCache = async () => {
-  try {
-    await api.post('/admin/cache/clear');
-    console.log('✅ Backend cache cleared');
-    return true;
-  } catch (error) {
-    console.error('❌ Error clearing backend cache:', error);
-    return false;
+  // Clear backend cache if requested
+  if (clearBackend) {
+    try {
+      await api.post('/admin/cache/clear');
+    } catch (error) {
+      console.warn('Failed to clear backend cache:', error);
+    }
   }
-};
-
+}

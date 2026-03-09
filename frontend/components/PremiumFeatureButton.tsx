@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { FiStar, FiTrendingUp, FiRefreshCw } from 'react-icons/fi';
 import dynamic from 'next/dynamic';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { useQueryClient } from '@tanstack/react-query';
 
 const PaymentModal = dynamic(() => import('@/components/PaymentModal'), {

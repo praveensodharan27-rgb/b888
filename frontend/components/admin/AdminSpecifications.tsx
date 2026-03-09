@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { FiPlus, FiEdit, FiTrash2, FiChevronDown, FiChevronRight, FiX } from 'react-icons/fi';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 interface Specification {
   id: string;
@@ -370,73 +370,6 @@ export default function AdminSpecifications({
                         <h5 className="font-medium">Dropdown Options</h5>
                         {/* Add Option button removed */}
                       </div>
-
-                      {/* Option Form - Removed */}
-                      {false && editingOption && editingOption.specId === spec.id && (
-                        <div className="mb-4 p-3 bg-white rounded border">
-                          <div className="flex justify-between items-center mb-2">
-                            <h6 className="font-medium text-sm">
-                              {editingOption.option ? 'Edit Option' : 'Create Option'}
-                            </h6>
-                            <button
-                              onClick={() => setEditingOption(null)}
-                              className="text-gray-500 hover:text-gray-700"
-                            >
-                              <FiX className="w-4 h-4" />
-                            </button>
-                          </div>
-                          <form onSubmit={handleOptionSubmit} className="space-y-2">
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="block text-xs font-medium mb-1">Value *</label>
-                                <input
-                                  type="text"
-                                  name="value"
-                                  defaultValue={editingOption.option?.value || ''}
-                                  required
-                                  className="w-full px-3 py-1.5 border rounded text-sm"
-                                  placeholder="e.g., red, blue"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-xs font-medium mb-1">Label (optional)</label>
-                                <input
-                                  type="text"
-                                  name="label"
-                                  defaultValue={editingOption.option?.label || ''}
-                                  className="w-full px-3 py-1.5 border rounded text-sm"
-                                  placeholder="e.g., Red, Blue"
-                                />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium mb-1">Order</label>
-                              <input
-                                type="number"
-                                name="order"
-                                defaultValue={editingOption.option?.order || 0}
-                                min="0"
-                                className="w-full px-3 py-1.5 border rounded text-sm"
-                              />
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                type="submit"
-                                className="px-3 py-1 text-sm bg-primary-600 text-white rounded hover:bg-primary-700"
-                              >
-                                {editingOption.option ? 'Update' : 'Create'} Option
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEditingOption(null)}
-                                className="px-3 py-1 text-sm bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </form>
-                        </div>
-                      )}
 
                       {/* Options List */}
                       <div className="space-y-2">

@@ -10,7 +10,7 @@ import { QueryClient } from '@tanstack/react-query';
 let queryClientInstance: QueryClient | undefined;
 
 function makeQueryClient() {
-  return new QueryClient({
+  const client = new QueryClient({
     defaultOptions: {
       queries: {
         // Data is considered fresh for 1 minute (increased for better performance)
@@ -37,6 +37,17 @@ function makeQueryClient() {
           // Suppress 404 errors for neighborhoods (may not exist for all states)
           if (status === 404 && url.includes('/locations/neighborhoods')) {
             return false; // Don't throw, let queryFn handle it
+          }
+          
+          // Suppress 401 errors - token expired/invalid, handled by clearing token
+          // Components (useIsFavorite, useLocationPersistence, useAuth) handle gracefully
+          if (status === 401) {
+            return false;
+          }
+
+          // Suppress 429 - rate limited; UI shows "Too many requests, try again later"
+          if (status === 429) {
+            return false;
           }
           
           // Suppress geocoding API key errors (backend config issue, frontend handles gracefully)
@@ -69,59 +80,25 @@ function makeQueryClient() {
         retry: 1,
       },
     },
-    // Suppress console errors for expected failures
-    logger: {
-      log: (...args) => {
-        // Only log in development
-        if (process.env.NODE_ENV === 'development') {
-          console.log(...args);
-        }
-      },
-      warn: (...args) => {
-        // Only warn in development
-        if (process.env.NODE_ENV === 'development') {
-          console.warn(...args);
-        }
-      },
-      error: (error: any) => {
-        // Suppress expected errors from React Query
-        const status = error?.response?.status;
-        const url = error?.config?.url || '';
-        const errorMessage = error?.response?.data?.message || '';
-        
-        // Don't log 404 errors for neighborhoods (may not exist for all states)
-        if (status === 404 && url.includes('/locations/neighborhoods')) {
-          // Suppress - handled gracefully in queryFn
-          return;
-        }
-        
-        // Don't log geocoding API key errors (backend config issue)
-        if (status === 400 && url.includes('/geocoding/') && 
-            (errorMessage.includes('referrer restrictions') || 
-             errorMessage.includes('referer restrictions') ||
-             errorMessage.includes('API key'))) {
-          // Suppress - handled gracefully in queryFn
-          return;
-        }
-        
-        // Don't log empty 400 responses
-        if (status === 400) {
-          const errorData = error?.response?.data || {};
-          const hasKeys = errorData && typeof errorData === 'object' && Object.keys(errorData).length > 0;
-          const hasMessage = hasKeys && (errorData.message || errorData.error);
-          const hasValidationErrors = hasKeys && Array.isArray(errorData.errors) && errorData.errors.length > 0;
-          
-          if (!hasMessage && !hasValidationErrors) {
-            // Empty response - suppress logging
-            return;
-          }
-        }
-        
-        // Log other errors normally
-        console.error(error);
-      },
-    },
   });
+
+  // Initialize critical query caches to prevent undefined errors
+  // This ensures queries always have a valid initial value
+  if (typeof window !== 'undefined') {
+    // Initialize categories query cache
+    const categoriesCache = client.getQueryData(['categories']);
+    if (categoriesCache === undefined || categoriesCache === null) {
+      client.setQueryData(['categories'], []);
+    }
+
+    // Initialize categories with-subcategories query cache
+    const categoriesWithSubCache = client.getQueryData(['categories', 'with-subcategories']);
+    if (categoriesWithSubCache === undefined || categoriesWithSubCache === null) {
+      client.setQueryData(['categories', 'with-subcategories'], []);
+    }
+  }
+
+  return client;
 }
 
 export function getQueryClient() {

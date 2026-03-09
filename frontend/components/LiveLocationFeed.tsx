@@ -16,6 +16,7 @@ interface LiveLocationFeedProps {
 export default function LiveLocationFeed({ radius = 50, limit = 20 }: LiveLocationFeedProps) {
   const { latitude, longitude, error: geoError, loading: geoLoading } = useGeolocation();
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['ads', 'location-feed', latitude, longitude, radius],

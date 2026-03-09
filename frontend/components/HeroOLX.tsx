@@ -1,9 +1,8 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { FiSearch } from 'react-icons/fi';
-
 interface HeroOLXProps {
   onLocationChange?: (location: {
     latitude?: number;
@@ -22,6 +21,23 @@ const BASE_EXAMPLE_SEARCHES = [
 ];
 
 const ANIMATED_WORDS = ['your city', 'your love', 'your place'];
+
+const HERO_CATEGORY_DEFAULTS = [
+  { slug: 'electronics-appliances', subSlug: 'laptops', name: 'LAPTOP', icon: 'laptop_mac' },
+  { slug: 'mobiles', subSlug: 'mobile-phones', name: 'MOBILE', icon: 'smartphone' },
+  { slug: 'vehicles', subSlug: 'cars', name: 'CAR', icon: 'directions_car' },
+  { slug: 'services', subSlug: undefined, name: 'SERVICE', icon: 'build' },
+  { slug: 'jobs', subSlug: undefined, name: 'JOB', icon: 'work' },
+  { slug: 'properties', subSlug: undefined, name: 'PROPERTY', icon: 'home' },
+];
+
+const CATEGORY_ICON_MAP: Record<string, string> = {
+  mobiles: 'smartphone', electronics: 'smartphone', 'electronics-appliances': 'laptop',
+  laptops: 'laptop', vehicles: 'directions_car', cars: 'directions_car', bikes: 'two_wheeler',
+  properties: 'home', 'for-rent-houses-apartments': 'apartment', 'for-sale-houses-apartments': 'home',
+  furniture: 'chair', fashion: 'watch', jewellery: 'diamond', pets: 'pets', books: 'menu_book',
+  jobs: 'work', sports: 'sports_soccer', services: 'build',
+};
 
 export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
   const router = useRouter();
@@ -117,7 +133,6 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
     if (!search.trim()) {
       return; // Don't navigate if search is empty
     }
-
     // Check for persisted location from localStorage
     try {
       const storedLocation = localStorage.getItem('selected_location');
@@ -270,10 +285,20 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
     };
   }, [search, currentExampleIndex]);
 
+  // Hero category buttons: Laptop, Mobile, Car, Service, Job, Property
+  const heroCategories = useMemo(() => HERO_CATEGORY_DEFAULTS, []);
+
+  const handleCategoryClick = (slug: string, subSlug?: string) => {
+    const params = new URLSearchParams();
+    params.set('category', slug);
+    if (subSlug) params.set('subcategory', subSlug);
+    router.push(`/ads?${params.toString()}`);
+  };
+
   return (
-    <div className="relative w-full h-[350px] md:h-[400px] overflow-hidden">
-      {/* Dark blurred background with bokeh effect */}
-      <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+    <div className="relative w-full min-h-[340px] md:min-h-[400px] overflow-hidden">
+      {/* Dark blue gradient background */}
+      <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-blue-950 to-indigo-950">
         <div className="absolute inset-0 opacity-30">
           {/* Bokeh lights effect */}
           <div className="absolute top-20 left-10 w-32 h-32 bg-yellow-400 rounded-full blur-3xl opacity-20 animate-pulse"></div>
@@ -283,22 +308,48 @@ export default function HeroOLX({ onLocationChange }: HeroOLXProps = {}) {
         </div>
       </div>
 
-      {/* Content */}
-      <div className="relative z-10 h-full flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8">
-        {/* Heading */}
-        <div className="text-center">
-          <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-white mb-3 md:mb-4">
-            Find anything in{' '}
-            <span className="inline-block min-w-[200px] text-left">
-              <span className="text-yellow-400">{currentWord}</span>
-              <span className={`inline-block w-0.5 h-8 md:h-10 bg-yellow-400 ml-1 align-middle ${showCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
-                {' '}
+      {/* Content - all centered, width aligned with main content */}
+      <div className="relative z-10 min-h-[340px] md:min-h-[400px] flex flex-col items-center justify-center px-4 sm:px-6 lg:px-8 py-6">
+        <div className="w-full max-w-[1400px] mx-auto flex flex-col items-center justify-center gap-6 md:gap-8">
+          {/* Heading - centered */}
+          <div className="flex flex-col items-center justify-center text-center">
+            <h1 className="font-display text-5xl md:text-6xl lg:text-7xl font-bold text-white mb-3 md:mb-4 tracking-tight">
+              Find anything in{' '}
+              <span className="inline-block min-w-[200px] text-left">
+                <span className="text-yellow-400">{currentWord}</span>
+                <span className={`inline-block w-0.5 h-8 md:h-10 bg-yellow-400 ml-1 align-middle ${showCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
+                  {' '}
+                </span>
               </span>
-            </span>
-          </h1>
-          <p className="text-lg md:text-xl text-gray-200">
-            Buy and sell cars, properties, and more near you
-          </p>
+            </h1>
+            <p className="text-lg md:text-xl text-slate-200">
+              Buy and sell cars, properties, and more near you
+            </p>
+          </div>
+
+          {/* 6 Category cards - glassmorphism style, centered row */}
+          <div className="w-full flex justify-center overflow-x-auto scrollbar-hide">
+            <div className="grid grid-cols-6 gap-2 sm:gap-3 md:gap-4 place-items-center min-w-0 max-w-2xl mx-auto">
+              {heroCategories.map((cat) => (
+                <button
+                  key={`${cat.slug}-${cat.subSlug || ''}-${cat.name}`}
+                  type="button"
+                  onClick={() => handleCategoryClick(cat.slug, cat.subSlug)}
+                  className="group flex flex-col items-center justify-center gap-2 py-4 px-3 min-h-[calc(5rem+1px)] rounded-2xl border border-white/[0.15] bg-white/[0.05] hover:bg-white/[0.1] hover:border-white/25 transition-all duration-300 w-full max-w-[79px] md:max-w-[91px]"
+                >
+                  <span
+                    className="material-symbols-outlined flex items-center justify-center text-[28px] md:text-[30px] text-[#4499FF] group-hover:text-yellow-400 transition-all duration-300 group-hover:drop-shadow-[0_0_12px_rgba(250,204,21,0.8)] group-hover:scale-110"
+                    style={{ fontVariationSettings: "'FILL' 1" }}
+                  >
+                    {cat.icon}
+                  </span>
+                  <span className="text-[11px] md:text-xs font-semibold text-white/95 uppercase tracking-widest text-center leading-tight">
+                    {cat.name}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { FiCopy, FiShare2, FiUsers, FiDollarSign, FiCheck } from 'react-icons/fi';
 import { useState } from 'react';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export default function ReferralDashboard() {
   const [copied, setCopied] = useState(false);

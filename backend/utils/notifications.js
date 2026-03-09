@@ -1,17 +1,13 @@
 const nodemailer = require('nodemailer');
 const twilio = require('twilio');
+const { notificationQueue } = require('../src/queues/notification.queue');
 
-// Send Email Notification
-const sendEmail = async (to, subject, htmlContent, textContent) => {
+// --- LOW-LEVEL DIRECT SEND HELPERS (no queue, used by worker & fallback) ---
+
+const sendEmailImmediate = async (to, subject, htmlContent, textContent) => {
   try {
-    // Check if SMTP is configured
     if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-      console.warn('⚠️  SMTP not configured. Email will not be sent.');
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`📧 [DEV MODE] Email would be sent to: ${to}`);
-        console.log(`   Subject: ${subject}`);
-        return { success: true, mode: 'development' };
-      }
+      console.warn('⚠️  SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env');
       return { success: false, message: 'SMTP not configured' };
     }
 
@@ -23,30 +19,47 @@ const sendEmail = async (to, subject, htmlContent, textContent) => {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
       },
-      tls: {
-        rejectUnauthorized: false
-      }
+      tls: { rejectUnauthorized: false }
     });
 
-    const mailOptions = {
-      from: `"SellIt" <${process.env.SMTP_USER}>`,
-      to: to,
-      subject: subject,
+    const info = await transporter.sendMail({
+      from: `"${process.env.SMTP_FROM_NAME || 'SellIt'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+      to,
+      subject,
       html: htmlContent,
       text: textContent
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Email sent successfully to ${to}`);
+    });
+    console.log(`✅ Email sent to ${to} (ID: ${info.messageId})`);
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error('❌ Email sending failed:', error.message);
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`📧 [DEV MODE] Email would be sent to: ${to}`);
-      return { success: true, mode: 'development' };
-    }
     return { success: false, error: error.message };
   }
+};
+
+// Retry config for BullMQ OTP/notification jobs
+const JOB_RETRY_OPTIONS = {
+  attempts: parseInt(process.env.OTP_JOB_RETRY_ATTEMPTS || '3', 10),
+  backoff: {
+    type: 'exponential',
+    delay: parseInt(process.env.OTP_JOB_RETRY_DELAY_MS || '2000', 10)
+  },
+  removeOnComplete: { count: 100 }
+};
+
+// High-level email API used by the rest of the app:
+// 1) Try queue (async worker)
+// 2) If enqueue fails, fall back to direct send
+const sendEmail = async (to, subject, htmlContent, textContent) => {
+  if (notificationQueue) {
+    try {
+      await notificationQueue.add('sendMail', { to, subject, html: htmlContent, text: textContent }, JOB_RETRY_OPTIONS);
+      return { success: true, queued: true };
+    } catch (queueError) {
+      console.warn('⚠️  Failed to queue email job, falling back to direct send:', queueError.message);
+    }
+  }
+  return sendEmailImmediate(to, subject, htmlContent, textContent);
 };
 
 // Format phone number to E.164 format for Twilio
@@ -80,63 +93,51 @@ const formatPhoneForTwilio = (phone) => {
   return `+91${digits}`;
 };
 
-// Send SMS Notification
-const sendSMS = async (phone, message) => {
+// Low-level SMS sender (no queue)
+const sendSMSImmediate = async (phone, message) => {
   try {
     if (!phone) {
       console.warn('⚠️  No phone number provided for SMS');
       return { success: false, message: 'No phone number provided' };
     }
-
-    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
-      console.warn('⚠️  Twilio not configured. SMS will not be sent.');
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`📱 [DEV MODE] SMS would be sent to: ${phone}`);
-        console.log(`   Message: ${message}`);
-        return { success: true, mode: 'development' };
-      }
+    if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
+      console.warn('⚠️  Twilio not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER in .env');
       return { success: false, message: 'Twilio not configured' };
     }
 
-    // Format phone number to E.164 format
     const formattedPhone = formatPhoneForTwilio(phone);
-    console.log(`📱 Formatting phone: ${phone} -> ${formattedPhone}`);
-
     const client = twilio(
       process.env.TWILIO_ACCOUNT_SID,
       process.env.TWILIO_AUTH_TOKEN
     );
-
-    console.log(`📤 Sending SMS to ${formattedPhone}...`);
-    console.log(`   From: ${process.env.TWILIO_PHONE_NUMBER}`);
-    console.log(`   Message: ${message.substring(0, 50)}...`);
 
     const result = await client.messages.create({
       body: message,
       from: process.env.TWILIO_PHONE_NUMBER,
       to: formattedPhone
     });
-
-    console.log(`✅ SMS sent successfully!`);
-    console.log(`   To: ${formattedPhone}`);
-    console.log(`   Message SID: ${result.sid}`);
-    console.log(`   Status: ${result.status}`);
+    console.log(`✅ SMS sent to ${formattedPhone} (SID: ${result.sid})`);
     return { success: true, sid: result.sid, status: result.status };
   } catch (error) {
-    console.error('❌ SMS sending failed!');
-    console.error(`   Error: ${error.message}`);
-    console.error(`   Code: ${error.code || 'N/A'}`);
-    console.error(`   Phone: ${phone}`);
-    if (error.moreInfo) {
-      console.error(`   More Info: ${error.moreInfo}`);
-    }
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`📱 [DEV MODE] SMS would be sent to: ${phone}`);
-      console.log(`   Message: ${message}`);
-      return { success: true, mode: 'development' };
+    console.error('❌ SMS sending failed:', error.message, error.code ? `(code: ${error.code})` : '');
+    if (error.code === 21608) {
+      console.warn('   💡 Twilio trial: verify recipient at https://console.twilio.com/us1/develop/phone-numbers/manage/verified');
     }
     return { success: false, error: error.message, code: error.code };
   }
+};
+
+// High-level SMS API used by rest of the app (queue + fallback)
+const sendSMS = async (phone, message) => {
+  if (notificationQueue) {
+    try {
+      await notificationQueue.add('sendSMS', { phone, message }, JOB_RETRY_OPTIONS);
+      return { success: true, queued: true };
+    } catch (queueError) {
+      console.warn('⚠️  Failed to queue SMS job, falling back to direct send:', queueError.message);
+    }
+  }
+  return sendSMSImmediate(phone, message);
 };
 
 // Send Ad Approval Notification (Email + SMS)
@@ -485,6 +486,8 @@ const sendOfferUpdateNotification = async (offerDetails) => {
 module.exports = {
   sendEmail,
   sendSMS,
+  sendEmailImmediate,
+  sendSMSImmediate,
   sendAdApprovalNotification,
   sendOfferUpdateNotification
 };

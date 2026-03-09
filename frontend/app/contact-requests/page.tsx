@@ -6,8 +6,9 @@ import { useEffect, useState } from 'react';
 import { FiArrowLeft, FiCheck, FiX, FiUser, FiCheckCircle } from 'react-icons/fi';
 import Link from 'next/link';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import ImageWithFallback from '@/components/ImageWithFallback';
+import { getAdUrl } from '@/lib/directory';
 
 interface ContactRequest {
   id: string;
@@ -245,7 +246,7 @@ export default function ContactRequestsPage() {
                   {/* Related Ad */}
                   {request.ad && (
                     <Link
-                      href={`/ads/${request.ad.id}`}
+                      href={getAdUrl(request.ad)}
                       className="flex-shrink-0 hidden md:block"
                     >
                       {request.ad.images?.[0] && (

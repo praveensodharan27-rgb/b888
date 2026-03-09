@@ -71,6 +71,7 @@ model User {
   paymentOrders     PaymentOrder[]
   paymentRecords    PaymentRecord[]
   creditTransactions CreditTransaction[]
+  notificationHistory NotificationHistory[]
 
   // Promotion credits: balance (current), lifetime used for reporting
   creditsBalance    Int                 @default(0)
@@ -127,18 +128,22 @@ model Business {
 }
 
 model OTP {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  email     String?
-  phone     String?
-  code      String
-  expiresAt DateTime
-  used      Boolean  @default(false)
-  createdAt DateTime @default(now())
-  userId    String?  @db.ObjectId
-  user      User?    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  email           String?
+  phone           String?
+  hash            String    // bcrypt hash of OTP (never store plaintext)
+  expiresAt       DateTime
+  used            Boolean   @default(false)
+  failedAttempts  Int       @default(0)
+  lockedUntil     DateTime? // lockout after max failed attempts
+  createdAt       DateTime  @default(now())
+  userId          String?   @db.ObjectId
+  user            User?     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@index([email, code])
-  @@index([phone, code])
+  @@index([email])
+  @@index([phone])
+  @@index([email, createdAt])
+  @@index([phone, createdAt])
   @@map("otps")
 }
 
@@ -258,6 +263,7 @@ model Ad {
   latitude         Float?           // Geo-location latitude
   longitude        Float?           // Geo-location longitude
   adExpiryDate     DateTime?        // Ad expiry timestamp
+  lastExpiryNotificationSent DateTime? // Track when last expiry notification was sent
   category         Category         @relation(fields: [categoryId], references: [id])
   location         Location?        @relation(fields: [locationId], references: [id])
   subcategory      Subcategory?     @relation(fields: [subcategoryId], references: [id])
@@ -1098,4 +1104,52 @@ model DirectorySlugRedirect {
   createdAt DateTime @default(now())
 
   @@map("directory_slug_redirects")
+}
+
+// Notification History - Track all notifications sent to users
+model NotificationHistory {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  eventType   String   // ad_created, ad_approved, ad_rejected, ad_expiring_soon, ad_expired, package_purchased, payment_success, invoice_generated, offer_received, offer_accepted, offer_rejected
+  
+  // Related entities
+  adId        String?  @db.ObjectId
+  orderId     String?  @db.ObjectId
+  invoiceId   String?  @db.ObjectId
+  offerId     String?  @db.ObjectId
+  
+  // Delivery status
+  emailSent   Boolean  @default(false)
+  smsSent     Boolean  @default(false)
+  emailStatus String   @default("pending") // pending, delivered, failed, bounced
+  smsStatus   String   @default("pending") // pending, delivered, failed
+  
+  // Metadata (JSON field for additional data)
+  metadata    Json?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([eventType])
+  @@index([adId])
+  @@index([createdAt])
+  @@map("notification_history")
+}
+
+// Category/subcategory brands and models (e.g. cars, mobiles) — used for post-ad brand→model dropdown
+model SubcategoryBrands {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  categorySlug     String
+  subcategorySlug  String
+  brands           Json     // [{ name: string, models: string[] }]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([categorySlug, subcategorySlug])
+  @@index([categorySlug])
+  @@index([subcategorySlug])
+  @@map("subcategory_brands")
 }

@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react';
 import { getSocket } from '@/lib/socket';
 import api from '@/lib/api';
 import { useAuth } from './useAuth';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export interface Notification {
   id: string;
@@ -45,11 +45,24 @@ export const useNotifications = () => {
     queryKey: ['notifications'],
     queryFn: async () => {
       if (!isAuthenticated) return { notifications: [], unreadCount: 0 };
-      const response = await api.get('/user/notifications?limit=50');
-      return response.data;
+      try {
+        const response = await api.get('/user/notifications?limit=50');
+        return response.data;
+      } catch (err: unknown) {
+        // 401 / 429 / timeout / network: return empty so UI doesn't throw
+        const e = err as { response?: { status?: number }; code?: string; message?: string };
+        const status = e?.response?.status;
+        const isTimeout = e?.code === 'ECONNABORTED' || (typeof e?.message === 'string' && e.message.toLowerCase().includes('timeout'));
+        const isNetwork = e?.code === 'ERR_NETWORK' || (typeof e?.message === 'string' && e.message.toLowerCase().includes('network'));
+        if (status === 401 || status === 429 || isTimeout || isNetwork) {
+          return { notifications: [], unreadCount: 0 };
+        }
+        throw err;
+      }
     },
     enabled: isAuthenticated,
-    refetchInterval: 30000, // Refetch every 30 seconds
+    refetchInterval: 30000,
+    retry: false, // Don't retry on 401
   });
 
   const notifications = notificationsData?.notifications || [];
@@ -92,18 +105,27 @@ export const useNotifications = () => {
   };
 
   // Play sound when new notifications arrive (detected via polling)
+  // Also invalidate My Ads when ad_approved/ad_rejected so the list refreshes
   useEffect(() => {
     if (!isAuthenticated) return;
     
-    // Only play sound if unread count increased (new notifications)
-    if (unreadCount > previousUnreadCountRef.current && previousUnreadCountRef.current > 0) {
+    // Only run if unread count increased (new notifications)
+    if (unreadCount > previousUnreadCountRef.current && previousUnreadCountRef.current >= 0) {
       const newNotifications = notifications.filter(n => !n.isRead);
       const hasOfferNotification = newNotifications.some(n => n.type === 'offer_update');
-      
+      const hasAdStatusNotification = newNotifications.some(n => n.type === 'ad_approved' || n.type === 'ad_rejected');
+
+      // Refresh My Ads when ad status changes (approval/rejection)
+      if (hasAdStatusNotification) {
+        queryClient.invalidateQueries({ queryKey: ['user', 'ads'] });
+      }
+
       // Play sound based on notification type
-      playNotificationSound(hasOfferNotification ? 'offer' : 'default');
+      if (previousUnreadCountRef.current > 0) {
+        playNotificationSound(hasOfferNotification ? 'offer' : 'default');
+      }
     }
-    
+
     // Update previous count
     previousUnreadCountRef.current = unreadCount;
   }, [unreadCount, notifications, isAuthenticated]);
@@ -152,8 +174,15 @@ export const useNotifications = () => {
     if (!socket) return;
 
     const handleNotification = (notification: Notification) => {
+      // Realtime listener is only relevant for unread notifications
+      if (notification.isRead) return;
       // Invalidate notifications query to refresh
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
+
+      // When ad is approved/rejected, refresh My Ads so the list shows updated status
+      if (notification.type === 'ad_approved' || notification.type === 'ad_rejected') {
+        queryClient.invalidateQueries({ queryKey: ['user', 'ads'] });
+      }
 
       // Play sound based on notification type
       const soundType = notification.type === 'offer_update' ? 'offer' : 'default';

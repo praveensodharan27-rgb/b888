@@ -8,7 +8,8 @@ import Pagination from '@/components/Pagination';
 import dynamic from 'next/dynamic';
 
 const BannersDynamic = dynamic(() => import('@/components/Banners'), {
-  loading: () => null
+  ssr: false,
+  loading: () => <div className="mb-6 min-h-[120px]" aria-hidden />,
 });
 
 interface CategoryPageClientProps {

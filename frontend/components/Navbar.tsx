@@ -1,21 +1,28 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useAuth } from '@/hooks/useAuth';
-import { FiMenu, FiX, FiUser, FiLogOut, FiHeart, FiPlus, FiSettings, FiShoppingBag, FiGrid, FiBriefcase, FiGlobe, FiBarChart2, FiMapPin, FiSearch, FiCheck, FiMessageCircle } from 'react-icons/fi';
+import { FiMenu, FiX, FiUser, FiLogOut, FiHeart, FiPlus, FiSettings, FiShoppingBag, FiGrid, FiBriefcase, FiGlobe, FiBarChart2, FiMapPin, FiSearch, FiChevronDown, FiMessageCircle, FiShield, FiRefreshCw } from 'react-icons/fi';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useComparison } from '@/hooks/useComparison';
-import { useQuery } from '@tanstack/react-query';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
+import { useGooglePlaces } from '@/hooks/useGooglePlaces';
+import PlaceAutocompleteInputFirefox from './PlaceAutocompleteInputFirefox';
+import { getCurrentPosition, isPermissionDenied } from '@/utils/geolocation';
+import { parseLocationSlug, isLocationSlugValid, parsedSlugToLocationData } from '@/lib/locationSlug';
 import NotificationIcon from './NotificationIcon';
 import ImageWithFallback from './ImageWithFallback';
-import LoginModal from './LoginModal';
-import SignupModal from './SignupModal';
+import { useAuthModal } from '@/contexts/AuthModalContext';
 import CategoryChips from './CategoryChips';
 import Translator from './Translator';
+import { NAVBAR_CONTAINER_CLASS } from '@/lib/layoutConstants';
+import { useQueryClient } from '@tanstack/react-query';
+import { clearAllCache } from '@/utils/clearCache';
+import toast from '@/lib/toast';
 // Google Places API for location selection
 
 declare global {
@@ -30,15 +37,15 @@ interface UserLocation {
   address?: string;
 }
 
-// Logo component
+// Logo component - smaller on mobile for better fit
 function LogoImage() {
   return (
     <Image
-      src="/logo.png"
-      alt="SellIt Logo"
-      width={180}
-      height={50}
-      className="h-12 md:h-14 w-auto object-contain"
+      src="/logo.png?v=7"
+      alt="Sell Box"
+      width={200}
+      height={56}
+      className="h-10 sm:h-12 md:h-16 w-auto object-contain max-w-[140px] sm:max-w-[180px] md:max-w-[200px]"
       priority
     />
   );
@@ -46,55 +53,40 @@ function LogoImage() {
 
 export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth();
+  const { openLoginModal, openSignupModal } = useAuthModal();
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [isClearingCache, setIsClearingCache] = useState(false);
   const { count: comparisonCount, mounted: comparisonMounted } = useComparison();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [loginModalOpen, setLoginModalOpen] = useState(false);
-  const [signupModalOpen, setSignupModalOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState('');
   const [locationSearchQuery, setLocationSearchQuery] = useState('');
   const [showLocationDropdown, setShowLocationDropdown] = useState(false);
-  const [selectedState, setSelectedState] = useState<string | null>(null);
-  const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  const [selectedState, setSelectedState] = useState('');
+  const [selectedCity, setSelectedCity] = useState('');
   
-  // Debug: Log state changes (throttled to prevent spam)
-  useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      console.log('📍 Location State:', {
-        selectedLocation,
-        locationSearchQuery,
-        selectedState,
-        selectedCity,
-        showLocationDropdown
-      });
-    }, 100);
-    return () => clearTimeout(timeoutId);
-  }, [selectedLocation, locationSearchQuery, selectedState, selectedCity, showLocationDropdown]);
   const locationSearchRef = useRef<HTMLDivElement | null>(null);
-  const locationInputRef = useRef<HTMLInputElement | null>(null);
+  const locationButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mobileLocationRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
   
-  // Google Places API state
-  const [googlePlacesLoaded, setGooglePlacesLoaded] = useState(false);
+  // Google Places API - loaded by GooglePlacesLoader in AppClientRoot
+  const { googlePlacesLoaded } = useGooglePlaces();
   const [locationInputValue, setLocationInputValue] = useState('');
   const [selectedPlaceLocation, setSelectedPlaceLocation] = useState<UserLocation | null>(null);
-  const autocompleteRef = useRef<any>(null);
-  const observerRef = useRef<MutationObserver | null>(null);
-  const handleFocusRef = useRef<(() => void) | null>(null);
-  const [inputMounted, setInputMounted] = useState(false);
 
   // Search bar text animation state
   const [searchText, setSearchText] = useState('');
   const [searchPlaceholder, setSearchPlaceholder] = useState('');
   const [currentSearchExampleIndex, setCurrentSearchExampleIndex] = useState(0);
   const [showSearchCursor, setShowSearchCursor] = useState(true);
+  const [showSearchSuggestions, setShowSearchSuggestions] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTypewriterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const searchCursorIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -107,360 +99,18 @@ export default function Navbar() {
     'Post your ad in minutes'
   ];
 
-  // Fetch states (lightweight, cached)
-  const { data: statesData, isLoading: statesLoading, error: statesError } = useQuery({
-    queryKey: ['locations', 'states'],
-    queryFn: async () => {
-      try {
-        const response = await api.get('/locations/states');
-        console.log('📊 States API Response:', response.data);
-        const states = response.data?.states || response.data || [];
-        console.log('✅ States loaded:', states.length);
-        return Array.isArray(states) ? states : [];
-      } catch (error: any) {
-        // Handle network errors gracefully - don't break the UI
-        const isNetworkError = !error.response && error.message;
-        if (isNetworkError) {
-          console.warn('⚠️ Network error fetching states (backend may not be running):', error.message);
-        } else {
-          console.error('❌ Error fetching states:', error.response?.status || error.message);
-        }
-        // Return empty array - Navbar will work without states
-        return [];
-      }
-    },
-    staleTime: 30 * 60 * 1000, // Cache for 30 minutes
-    retry: false, // Don't retry network errors (prevents console spam)
-    refetchOnWindowFocus: false, // Don't refetch on window focus to avoid repeated errors
-  });
-
-  const states = Array.isArray(statesData) ? statesData : [];
-  
-  // Debug states (use length instead of array to prevent infinite loop)
-  useEffect(() => {
-    if (states.length > 0 || statesError) {
-      console.log('📋 States:', {
-        count: states.length,
-        loading: statesLoading,
-        error: statesError,
-        data: states.slice(0, 5) // First 5 for debugging
-      });
-    }
-  }, [states.length, statesLoading, statesError]); // Use states.length instead of states array
-
-  // Fetch cities for selected state (dynamic loading)
-  const { data: citiesData, isLoading: citiesLoading, error: citiesError } = useQuery({
-    queryKey: ['locations', 'cities', selectedState],
-    queryFn: async () => {
-      if (!selectedState) {
-        console.log('⏭️ No state selected, skipping cities fetch');
-        return { cities: [], indexed: {} };
-      }
-      try {
-        const url = `/locations/states/${encodeURIComponent(selectedState)}/cities`;
-        console.log('🌆 Fetching cities for state:', selectedState, 'URL:', url);
-        const response = await api.get(url);
-        console.log('📊 Cities API Response:', response.data);
-        const cities = response.data?.cities || [];
-        const indexed = response.data?.indexed || {};
-        console.log('✅ Cities loaded:', cities.length, 'Indexed keys:', Object.keys(indexed).length);
-        console.log('🔍 Sample indexed structure:', {
-          firstKey: Object.keys(indexed)[0],
-          firstValue: indexed[Object.keys(indexed)[0]]?.slice(0, 1),
-          citiesType: typeof cities[0],
-          indexedType: typeof indexed[Object.keys(indexed)[0]]
-        });
-        return {
-          cities: Array.isArray(cities) ? cities : [],
-          indexed: indexed && typeof indexed === 'object' && !Array.isArray(indexed) ? indexed : {}
-        };
-      } catch (error: any) {
-        // Handle network errors gracefully - don't break the UI
-        const isNetworkError = !error.response && error.message;
-        if (isNetworkError) {
-          console.warn('⚠️ Network error fetching cities (backend may not be running):', error.message);
-        } else {
-          console.error('❌ Error fetching cities:', error.response?.status || error.message);
-        }
-        // Return empty arrays - Navbar will work without cities
-        return { cities: [], indexed: {} };
-      }
-    },
-    enabled: !!selectedState,
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-    retry: 2,
-    refetchOnWindowFocus: false,
-  });
-
-  const cities = Array.isArray(citiesData?.cities) ? citiesData.cities : [];
-  const citiesIndexed = citiesData?.indexed || {};
-  
-  // Build indexed structure from cities array if indexed is empty (fallback)
-  const effectiveIndexed = useMemo(() => {
-    if (citiesIndexed && typeof citiesIndexed === 'object' && !Array.isArray(citiesIndexed) && Object.keys(citiesIndexed).length > 0) {
-      return citiesIndexed;
-    }
-    // Fallback: Build indexed structure from cities array
-    const indexed: { [key: string]: any[] } = {};
-    cities.forEach(city => {
-      const cityObj = typeof city === 'string' ? { name: city, city: city } : city;
-      const cityName = cityObj?.name || cityObj?.city || '';
-      if (cityName) {
-        const firstLetter = cityName.charAt(0).toUpperCase();
-        if (!indexed[firstLetter]) {
-          indexed[firstLetter] = [];
-        }
-        indexed[firstLetter].push(cityObj);
-      }
-    });
-    return indexed;
-  }, [citiesIndexed, cities]);
-  
-  // Debug: Log cities data structure
-  useEffect(() => {
-    if (selectedState && citiesData) {
-      console.log('🔍 Cities Data Structure Check:', {
-        citiesLength: cities.length,
-        citiesSample: cities.slice(0, 2),
-        indexedKeys: Object.keys(citiesIndexed),
-        effectiveIndexedKeys: Object.keys(effectiveIndexed),
-        indexedStructure: Object.keys(citiesIndexed).reduce((acc: any, key) => {
-          acc[key] = Array.isArray(citiesIndexed[key]) ? citiesIndexed[key].length : 0;
-          return acc;
-        }, {}),
-        citiesIndexedType: typeof citiesIndexed,
-        isIndexedObject: citiesIndexed && typeof citiesIndexed === 'object' && !Array.isArray(citiesIndexed)
-      });
-    }
-  }, [selectedState, citiesData, cities.length, citiesIndexed, effectiveIndexed]);
-  
-  // Debug cities (use useMemo for indexed keys to prevent infinite loop)
-  const indexedKeysString = useMemo(() => {
-    return Object.keys(effectiveIndexed).sort().join(',');
-  }, [effectiveIndexed]);
-  
-  useEffect(() => {
-    if (selectedState && (cities.length > 0 || citiesError)) {
-      console.log('🌆 Cities for', selectedState, ':', {
-        count: cities.length,
-        loading: citiesLoading,
-        error: citiesError,
-        indexedKeys: Object.keys(citiesIndexed),
-        effectiveIndexedKeys: Object.keys(effectiveIndexed),
-        indexedStructure: Object.keys(effectiveIndexed).reduce((acc: any, key) => {
-          acc[key] = Array.isArray(effectiveIndexed[key]) ? effectiveIndexed[key].length : 0;
-          return acc;
-        }, {}),
-        sampleCities: cities.slice(0, 3),
-        sampleIndexed: effectiveIndexed[Object.keys(effectiveIndexed)[0]]?.slice(0, 2) || []
-      });
-    }
-  }, [selectedState, cities.length, citiesLoading, citiesError, indexedKeysString, effectiveIndexed]); // Use memoized indexed keys string
-
-  // Fetch local areas for selected city (dynamic loading)
-  const { data: areasData } = useQuery({
-    queryKey: ['locations', 'areas', selectedCity, selectedState],
-    queryFn: async () => {
-      if (!selectedCity) return { areas: [] };
-      const url = `/locations/cities/${encodeURIComponent(selectedCity)}/areas${selectedState ? `?state=${encodeURIComponent(selectedState)}` : ''}`;
-      const response = await api.get(url);
-      return { areas: response.data.areas || [] };
-    },
-    enabled: !!selectedCity,
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-  });
-
-  const localAreas = areasData?.areas || [];
-
-  // Combine cities and local areas for search
-  const locations = [...cities, ...localAreas];
-
-  // Debounced search for better performance
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-
-  // Enhanced location filtering with debouncing and state-wise search
-  useEffect(() => {
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-
-    const query = locationSearchQuery.trim().toLowerCase();
-    
-    if (!query) {
-      setSearchResults([]);
-      setIsSearching(false);
-      return;
-    }
-
-    if (query.length < 2) {
-      setSearchResults([]);
-      setIsSearching(false);
-      return;
-    }
-
-    setIsSearching(true);
-    
-    // Debounce search for better performance
-    searchTimeoutRef.current = setTimeout(async () => {
-      try {
-        let filtered = [];
-        
-        // If state is selected, search within that state's cities AND local areas
-        if (selectedState) {
-          try {
-            const response = await api.get(`/locations/states/${encodeURIComponent(selectedState)}/cities?q=${encodeURIComponent(query)}`);
-            // When searching, API returns full location objects (cities + areas)
-            filtered = Array.isArray(response.data?.cities) ? response.data.cities : [];
-            console.log('State search results (cities + areas):', filtered.length, filtered);
-          } catch (stateError: any) {
-            // If state-specific search fails, fallback to global search
-            console.warn('State search failed, falling back to global search:', stateError.message);
-            try {
-              const response = await api.get(`/locations/mobile/search?q=${encodeURIComponent(query)}&limit=20`);
-              filtered = Array.isArray(response.data?.locations) ? response.data.locations : [];
-              console.log('Fallback global search results:', filtered.length, filtered);
-            } catch (fallbackError: any) {
-              console.error('Both state and global search failed:', fallbackError.message);
-              filtered = [];
-            }
-          }
-        } else {
-          // Global search using API endpoint - returns both cities and local areas
-          try {
-            const response = await api.get(`/locations/mobile/search?q=${encodeURIComponent(query)}&limit=20`);
-            filtered = Array.isArray(response.data?.locations) ? response.data.locations : [];
-            console.log('Global search results (cities + areas):', filtered.length, filtered);
-          } catch (searchError: any) {
-            // If mobile/search endpoint fails, fallback to regular search
-            console.warn('Mobile search endpoint failed, trying fallback:', searchError.message);
-            try {
-              // Fallback: Use /locations/list with query parameter
-              const fallbackResponse = await api.get(`/locations/list?limit=20`);
-              const allLocations = Array.isArray(fallbackResponse.data?.locations) ? fallbackResponse.data.locations : [];
-              // Filter in client-side
-              const searchLower = query.toLowerCase();
-              filtered = allLocations.filter((loc: any) => {
-                const name = (loc.name || '').toLowerCase();
-                const city = (loc.city || '').toLowerCase();
-                const state = (loc.state || '').toLowerCase();
-                const neighbourhood = (loc.neighbourhood || '').toLowerCase();
-                return name.includes(searchLower) || 
-                       city.includes(searchLower) || 
-                       state.includes(searchLower) || 
-                       neighbourhood.includes(searchLower);
-              }).slice(0, 20);
-              console.log('Fallback search results:', filtered.length);
-            } catch (fallbackError: any) {
-              console.error('Both mobile search and fallback failed:', fallbackError.message);
-              filtered = [];
-            }
-          }
-        }
-        
-        setSearchResults(filtered.slice(0, 20));
-      } catch (error: any) {
-        console.error('Search error:', error);
-        console.error('Error details:', {
-          message: error.message,
-          response: error.response,
-          status: error.response?.status,
-          url: error.config?.url
-        });
-        setSearchResults([]);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 300); // 300ms debounce for API calls
-
-    return () => {
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-      }
-    };
-  }, [locationSearchQuery, selectedState]); // Removed locations to prevent infinite loop
-
-  // Use search results if query exists, otherwise show hierarchical navigation
-  // Sort results: Cities first (no neighbourhood or name matches city), then local areas (OLX-style)
-  const filteredLocations = useMemo(() => {
-    if (locationSearchQuery.trim().length < 2 || !Array.isArray(searchResults)) {
-      return [];
-    }
-    
-    // Sort to prioritize cities over local areas (OLX-style behavior)
-    return [...searchResults].sort((a, b) => {
-      // A location is a city if it has no neighbourhood field or the neighbourhood is null/empty
-      // A location is a local area if it has a non-empty neighbourhood field
-      const aIsCity = !a.neighbourhood || a.neighbourhood === null || a.neighbourhood === '';
-      const bIsCity = !b.neighbourhood || b.neighbourhood === null || b.neighbourhood === '';
-      
-      // Cities come first, then local areas
-      if (aIsCity && !bIsCity) return -1;
-      if (!aIsCity && bIsCity) return 1;
-      
-      // Within same type, sort alphabetically
-      return (a.name || '').localeCompare(b.name || '');
-    });
-  }, [locationSearchQuery, searchResults]);
-  
-  // Debug: Log search state (removed filteredLocations from deps to prevent infinite loop)
-  useEffect(() => {
-    if (locationSearchQuery.trim().length >= 2) {
-      console.log('🔍 Search Debug:', {
-        query: locationSearchQuery,
-        resultsCount: searchResults.length,
-        filteredCount: filteredLocations.length,
-        isSearching,
-        selectedState
-      });
-    }
-  }, [locationSearchQuery, searchResults, isSearching, selectedState]); // Removed filteredLocations to prevent infinite loop
-
-  // Get selected location name for display - use useMemo to prevent recalculation
-  // Use cities and localAreas directly instead of locations array to prevent infinite loop
-  const currentSelectedLocation = useMemo(() => {
-    const allLocations = [...cities, ...localAreas];
-    return allLocations.find((loc: any) => loc.slug === selectedLocation);
-  }, [cities, localAreas, selectedLocation]); // Use cities and localAreas instead of locations array
-
-  // Get location display text in OLX style (compact breadcrumb format)
-  const locationDisplayText = useMemo(() => {
-    if (!currentSelectedLocation) {
-      return 'All India';
-    }
-    
-    // OLX-style display: Show name with context (City, State or Area, City, State)
-    const { name, city, state, neighbourhood } = currentSelectedLocation;
-    
-    // If it's a neighbourhood, show: "Area, City, State"
-    if (neighbourhood && name === neighbourhood) {
-      return `${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`;
-    }
-    
-    // If it's a city, show: "City, State"
-    if (city && name === city) {
-      return `${name}${state ? `, ${state}` : ''}`;
-    }
-    
-    // Otherwise show just the name
-    return name || 'All India';
-  }, [currentSelectedLocation]);
+  // Location: Google only – no states/cities API
+  // Single source of truth for navbar location button label
+  const locationDisplayLabel = useMemo(() => {
+    const fromInput = (locationInputValue || locationSearchQuery || '').trim();
+    return fromInput || 'All India';
+  }, [locationInputValue, locationSearchQuery]);
   
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Allow any page to open the login modal (e.g. ad details -> chat click)
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const handler = () => {
-      setSignupModalOpen(false);
-      setLoginModalOpen(true);
-    };
-    window.addEventListener('openLoginModal', handler as EventListener);
-    return () => {
-      window.removeEventListener('openLoginModal', handler as EventListener);
-    };
-  }, []);
+  // openLoginModal/openSignupModal events are handled by AuthModalProvider
 
   // CRITICAL: Load persisted location on mount AND on every navigation
   // This ensures location is always loaded from localStorage
@@ -474,28 +124,23 @@ export default function Navbar() {
     const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
     const isHomePage = pathname === '/';
     
-    if (isAdDetailsPage || isOnAdDetailsPageFlag) {
-      console.log('🛡️ Ad Details Page: Skipping location load to prevent redirect', { isAdDetailsPage, isOnAdDetailsPageFlag });
-      return; // Exit early - don't process location on ad details page
-    }
+    if (isAdDetailsPage || isOnAdDetailsPageFlag) return;
     
     if (isHomePage) {
-      console.log('🛡️ Home Page: Skipping location redirect - user can stay on home page');
       // On home page, just load location state but don't redirect
-      // Location will be used for filtering products on home page
       const storedLocation = localStorage.getItem('selected_location');
       if (storedLocation) {
         try {
           const locationData = JSON.parse(storedLocation);
-          setLocationSearchQuery(locationData.name || 'All India');
-          setSelectedLocation(locationData.slug);
-          if (locationData.state) setSelectedState(locationData.state);
-          if (locationData.city) setSelectedCity(locationData.city);
+          const label = locationData.name || 'All India';
+          setLocationSearchQuery(label);
+          setLocationInputValue(label);
+          setSelectedLocation(locationData.slug || '');
         } catch (error) {
           console.error('Error loading location on home page:', error);
         }
       }
-      return; // Exit early - don't redirect from home page
+      return;
     }
     
     const loadPersistedLocation = async () => {
@@ -504,11 +149,6 @@ export default function Navbar() {
         const storedLocation = localStorage.getItem('selected_location');
         const storedCoords = localStorage.getItem('selected_location_coords');
         
-        console.log('📍 Loading persisted location from localStorage:', {
-          hasStoredLocation: !!storedLocation,
-          hasStoredCoords: !!storedCoords,
-        });
-        
         if (storedLocation) {
           const locationData = JSON.parse(storedLocation);
           let coords = null;
@@ -516,18 +156,25 @@ export default function Navbar() {
             coords = JSON.parse(storedCoords);
           }
           
-          console.log('✅ Found persisted location:', {
-            slug: locationData.slug,
-            name: locationData.name,
-            hasCoords: !!(coords && coords.latitude && coords.longitude),
-          });
-          
           // Check if URL has a different location (user explicitly selected new location)
           const locationFromUrl = searchParams.get('location');
           if (locationFromUrl && locationFromUrl !== locationData.slug) {
-            // URL has different location - user selected new location, save it
-            console.log('📍 URL has different location, updating localStorage:', locationFromUrl);
             setSelectedLocation(locationFromUrl);
+            // Skip API for synthetic "All India" slugs - they don't exist in DB
+            const locLower = locationFromUrl?.toLowerCase?.() || '';
+            const isAllIndiaSlug = locLower === 'india' || locLower === 'all-india';
+            if (isAllIndiaSlug) {
+              setLocationSearchQuery('All India');
+              setLocationInputValue('All India');
+              return;
+            }
+            // Skip API for comma-separated display formats (e.g. "ernakulam,-kerala,-india")
+            if (locationFromUrl.includes(',') || locationFromUrl.includes(', ')) {
+              const displayName = locationFromUrl.replace(/,\s*-/g, ', ').replace(/^-|,\s*$/g, '').trim();
+              setLocationSearchQuery(displayName || locationFromUrl);
+              localStorage.setItem('selected_location', JSON.stringify({ slug: locationFromUrl, name: displayName || locationFromUrl }));
+              return;
+            }
             api.get(`/locations/${locationFromUrl}`)
               .then((response) => {
                 const location = response.data?.location;
@@ -542,20 +189,16 @@ export default function Navbar() {
                       neighbourhood: location.neighbourhood,
                     };
                     localStorage.setItem('selected_location', JSON.stringify(newLocationData));
-                    console.log('✅ Saved new location to localStorage:', newLocationData);
                     if (location.latitude && location.longitude) {
                       localStorage.setItem('selected_location_coords', JSON.stringify({
                         latitude: location.latitude,
                         longitude: location.longitude,
                       }));
-                      console.log('✅ Saved coordinates to localStorage');
                     }
                   } catch (error) {
                     console.error('❌ Error saving location to localStorage:', error);
                   }
                   
-                  if (location.state) setSelectedState(location.state);
-                  if (location.city) setSelectedCity(location.city);
                   const { name, city, state, neighbourhood } = location;
                   if (neighbourhood && name === neighbourhood) {
                     setLocationSearchQuery(`${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`);
@@ -573,14 +216,22 @@ export default function Navbar() {
           }
           
           // Use persisted location from localStorage
+          // Skip API for synthetic "All India" slugs - they don't exist in DB
+          const slugLower = (locationData.slug || '').toLowerCase();
+          const isAllIndiaSlug = slugLower === 'india' || slugLower === 'all-india';
+          if (isAllIndiaSlug) {
+            const label = locationData.name || 'All India';
+            setLocationSearchQuery(label);
+            setLocationInputValue(label);
+            setSelectedLocation(locationData.slug);
+            return;
+          }
           if (!coords || !coords.latitude || !coords.longitude) {
             // Fetch coordinates if missing
             try {
               const response = await api.get(`/locations/${locationData.slug}`);
               const location = response.data?.location;
               if (location) {
-                if (location.state) setSelectedState(location.state);
-                if (location.city) setSelectedCity(location.city);
                 
                 // Update localStorage with coordinates
                 if (location.latitude && location.longitude) {
@@ -609,18 +260,18 @@ export default function Navbar() {
                 }
                 
                 const { name, city, state, neighbourhood } = location;
-                if (neighbourhood && name === neighbourhood) {
-                  setLocationSearchQuery(`${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`);
-                } else if (city && name === city) {
-                  setLocationSearchQuery(`${name}${state ? `, ${state}` : ''}`);
-                } else {
-                  setLocationSearchQuery(name);
-                }
+                const displayText = neighbourhood && name === neighbourhood
+                  ? `${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`
+                  : city && name === city ? `${name}${state ? `, ${state}` : ''}` : name || '';
+                setLocationSearchQuery(displayText);
+                setLocationInputValue(displayText);
                 setSelectedLocation(locationData.slug);
               }
             } catch (error) {
               // Use stored data even if fetch fails
-              setLocationSearchQuery(locationData.name || 'All India');
+              const label = locationData.name || 'All India';
+              setLocationSearchQuery(label);
+              setLocationInputValue(label);
               setSelectedLocation(locationData.slug);
               
               // CRITICAL: Never redirect from ad details page or home page
@@ -641,7 +292,9 @@ export default function Navbar() {
             // We have coordinates, use stored data directly
             if (locationData.state) setSelectedState(locationData.state);
             if (locationData.city) setSelectedCity(locationData.city);
-            setLocationSearchQuery(locationData.name || 'All India');
+            const label = locationData.name || 'All India';
+            setLocationSearchQuery(label);
+            setLocationInputValue(label);
             setSelectedLocation(locationData.slug);
             
             // CRITICAL: Never redirect from ad details page or home page
@@ -666,6 +319,24 @@ export default function Navbar() {
           if (locationFromUrl) {
             // URL has location but no localStorage - save it
             setSelectedLocation(locationFromUrl);
+            // Skip API for synthetic "All India" slugs
+            const locLower = locationFromUrl?.toLowerCase?.() || '';
+            const isAllIndiaSlug = locLower === 'india' || locLower === 'all-india';
+            if (isAllIndiaSlug) {
+              setLocationSearchQuery('All India');
+              setLocationInputValue('All India');
+              localStorage.setItem('selected_location', JSON.stringify({ slug: locationFromUrl, name: 'All India' }));
+              return;
+            }
+            // Skip API for comma-separated display formats
+            if (locationFromUrl.includes(',') || locationFromUrl.includes(', ')) {
+              const displayName = locationFromUrl.replace(/,\s*-/g, ', ').trim();
+              const label = displayName || locationFromUrl;
+              setLocationSearchQuery(label);
+              setLocationInputValue(label);
+              localStorage.setItem('selected_location', JSON.stringify({ slug: locationFromUrl, name: label }));
+              return;
+            }
             api.get(`/locations/${locationFromUrl}`)
               .then((response) => {
                 const location = response.data?.location;
@@ -689,8 +360,6 @@ export default function Navbar() {
                     console.error('Error saving location:', error);
                   }
                   
-                  if (location.state) setSelectedState(location.state);
-                  if (location.city) setSelectedCity(location.city);
                   const { name, city, state, neighbourhood } = location;
                   if (neighbourhood && name === neighbourhood) {
                     setLocationSearchQuery(`${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`);
@@ -708,16 +377,12 @@ export default function Navbar() {
             // No location anywhere - show "All India"
             setLocationSearchQuery('All India');
             setSelectedLocation('');
-            setSelectedState(null);
-            setSelectedCity(null);
           }
         }
       } catch (error) {
         console.error('Error loading persisted location:', error);
         setLocationSearchQuery('All India');
         setSelectedLocation('');
-        setSelectedState(null);
-        setSelectedCity(null);
       }
     };
     
@@ -755,6 +420,21 @@ export default function Navbar() {
       
       // URL has new location - fetch and save it
       setSelectedLocation(locationFromUrl);
+      // Skip API for synthetic "All India" slugs
+      const locLower = locationFromUrl?.toLowerCase?.() || '';
+      const isAllIndiaSlug = locLower === 'india' || locLower === 'all-india';
+      if (isAllIndiaSlug) {
+        setLocationSearchQuery('All India');
+        localStorage.setItem('selected_location', JSON.stringify({ slug: locationFromUrl, name: 'All India' }));
+        return;
+      }
+      // Skip API for comma-separated display formats
+      if (locationFromUrl.includes(',') || locationFromUrl.includes(', ')) {
+        const displayName = locationFromUrl.replace(/,\s*-/g, ', ').trim();
+        setLocationSearchQuery(displayName || locationFromUrl);
+        localStorage.setItem('selected_location', JSON.stringify({ slug: locationFromUrl, name: displayName || locationFromUrl }));
+        return;
+      }
       api.get(`/locations/${locationFromUrl}`)
         .then((response) => {
           const location = response.data?.location;
@@ -779,8 +459,6 @@ export default function Navbar() {
               console.error('Error saving location:', error);
             }
             
-            if (location.state) setSelectedState(location.state);
-            if (location.city) setSelectedCity(location.city);
             const { name, city, state, neighbourhood } = location;
             if (neighbourhood && name === neighbourhood) {
               setLocationSearchQuery(`${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`);
@@ -797,407 +475,77 @@ export default function Navbar() {
     }
   }, [searchParams.get('location'), mounted, selectedLocation]); // Only respond to location URL param changes
 
-  // Load Google Places API script
-  useEffect(() => {
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-    if (!apiKey) {
-      console.warn('⚠️ Google Maps API key not found. Google Places autocomplete will not work.');
-          return;
-        }
-
-    // Check if script is already loaded
-    if (window.google && window.google.maps && window.google.maps.places) {
-      console.log('✅ Google Places API already loaded');
-      setGooglePlacesLoaded(true);
-      return;
-    }
-
-    // Check if script is already in the DOM
-    const existingScript = document.querySelector(
-      'script[src*="maps.googleapis.com/maps/api/js"]'
-    ) as HTMLScriptElement;
-    
-    if (existingScript) {
-      if (existingScript.onload !== null || window.google) {
-        const checkLoaded = setInterval(() => {
-          if (window.google && window.google.maps && window.google.maps.places) {
-            console.log('✅ Google Places API loaded from existing script');
-            setGooglePlacesLoaded(true);
-            clearInterval(checkLoaded);
-          }
-        }, 100);
-        
-        existingScript.addEventListener('load', () => {
-          console.log('✅ Google Places API loaded from existing script (load event)');
-          setGooglePlacesLoaded(true);
-          clearInterval(checkLoaded);
-        });
-        
-        setTimeout(() => {
-          clearInterval(checkLoaded);
-        }, 5000);
-      } else {
-        existingScript.addEventListener('load', () => {
-          console.log('✅ Google Places API loaded from existing script');
-          setGooglePlacesLoaded(true);
-        });
-        existingScript.addEventListener('error', () => {
-          console.error('❌ Existing Google Places API script failed to load');
-        });
-      }
-      return;
-    }
-
-    // Load Google Places API script
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
-    script.async = true;
-    script.defer = true;
-    
-    script.onload = () => {
-      const checkGoogleMaps = setInterval(() => {
-        if (window.google && window.google.maps && window.google.maps.places) {
-          console.log('✅ Google Places API loaded successfully in Navbar');
-          setGooglePlacesLoaded(true);
-          clearInterval(checkGoogleMaps);
-        }
-      }, 50);
-      
-      setTimeout(() => {
-        clearInterval(checkGoogleMaps);
-        if (window.google && window.google.maps && window.google.maps.places) {
-          console.log('✅ Google Places API loaded successfully in Navbar (delayed check)');
-          setGooglePlacesLoaded(true);
-        } else {
-          console.warn('⚠️ Google Places API script loaded but Google Maps not initialized');
-        }
-      }, 3000);
-    };
-    
-    script.onerror = () => {
-      console.error('❌ Failed to load Google Places API - check API key restrictions');
-    };
-    
-    document.head.appendChild(script);
-  }, []);
-
-  // Initialize Google Places Autocomplete
-  const initializeAutocomplete = useCallback(() => {
-    if (!window.google || !window.google.maps || !window.google.maps.places || !locationInputRef.current) {
-      console.warn('⚠️ Cannot initialize autocomplete - missing requirements');
-      return;
-    }
-
-    // Clear existing autocomplete if any
-    if (autocompleteRef.current) {
-      try {
-        window.google.maps.event.clearInstanceListeners(autocompleteRef.current);
-      } catch (e) {
-        console.warn('Could not clear instance listeners:', e);
-      }
-    }
+  // Handle place selection from Google Places (PlaceAutocompleteElement)
+  const handlePlaceSelect = useCallback((result: { latitude: number; longitude: number; address: string; city?: string; state?: string }) => {
+    const { latitude: lat, longitude: lng, address, city = '', state = '' } = result;
+    setShowLocationDropdown(false);
+    setSelectedPlaceLocation({ latitude: lat, longitude: lng, address });
+    setLocationInputValue(address);
+    setLocationSearchQuery(address);
+    const slug = address.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    setSelectedLocation(slug);
 
     try {
-      // Create autocomplete instance
-      const autocomplete = new window.google.maps.places.Autocomplete(
-        locationInputRef.current,
-        {
-          types: ['(cities)'], // Restrict to cities
-          fields: ['place_id', 'geometry', 'formatted_address', 'address_components'],
-          componentRestrictions: { country: 'in' }, // Restrict to India
-        }
-      );
-
-      autocompleteRef.current = autocomplete;
-
-      // Function to ensure dropdown z-index is set and styled properly
-      const ensureDropdownZIndex = () => {
-        try {
-          const pacContainer = document.querySelector('.pac-container') as HTMLElement;
-          if (pacContainer) {
-            pacContainer.style.zIndex = '99999';
-            pacContainer.style.position = 'absolute';
-            pacContainer.style.overflow = 'visible';
-            pacContainer.style.borderRadius = '0.5rem';
-            pacContainer.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)';
-            pacContainer.style.marginTop = '4px';
-            // Ensure parent containers don't clip
-            let parent = pacContainer.parentElement;
-            while (parent) {
-              const computedStyle = window.getComputedStyle(parent);
-              if (computedStyle.overflow === 'hidden' || computedStyle.overflowY === 'hidden') {
-                parent.style.overflow = 'visible';
-                parent.style.overflowY = 'visible';
-              }
-              parent = parent.parentElement;
-            }
-          }
-        } catch (error) {
-          console.warn('Error styling dropdown:', error);
-        }
+      const locationData = {
+        slug,
+        name: address,
+        city,
+        state,
+        latitude: lat,
+        longitude: lng,
       };
+      localStorage.setItem('selected_location', JSON.stringify(locationData));
+      localStorage.setItem('selected_location_coords', JSON.stringify({ latitude: lat, longitude: lng }));
+      localStorage.setItem('google_location_data', JSON.stringify({ city, state, lat, lng, address }));
 
-      // Set z-index immediately
-      ensureDropdownZIndex();
+      const locationPayload = { latitude: lat, longitude: lng, address, city, state, slug };
+      const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
+      const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
 
-      // Watch for dropdown appearance using MutationObserver
-      const observer = new MutationObserver(() => {
-        ensureDropdownZIndex();
-      });
-      observerRef.current = observer;
-
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-      });
-
-      // Also set z-index on input focus
-      const handleFocus = () => {
-        ensureDropdownZIndex();
-        setTimeout(ensureDropdownZIndex, 100);
-        setTimeout(ensureDropdownZIndex, 300);
-      };
-      handleFocusRef.current = handleFocus;
-
-      if (locationInputRef.current) {
-        locationInputRef.current.addEventListener('focus', handleFocus);
-      }
-
-      console.log('✅ Google Places Autocomplete initialized in Navbar');
-
-      // Handle place selection
-      try {
-        autocomplete.addListener('place_changed', () => {
-          const place = autocomplete.getPlace();
-          
-          if (place.geometry && place.geometry.location) {
-            const lat = place.geometry.location.lat();
-            const lng = place.geometry.location.lng();
-            const address = place.formatted_address || place.name || '';
-
-            // Extract city and state from address_components
-            let city = '';
-            let state = '';
-            
-            if (place.address_components) {
-              for (const component of place.address_components) {
-                if (component.types.includes('locality')) {
-                  city = component.long_name;
-                }
-                if (component.types.includes('administrative_area_level_1')) {
-                  state = component.long_name;
-                }
-              }
-            }
-
-            // Update location state
-            setSelectedPlaceLocation({
-              latitude: lat,
-              longitude: lng,
-              address: address,
-            });
-
-            // Update input value
-            setLocationInputValue(address);
-
-            // Save to localStorage (both old format and new Google location format)
-            try {
-              const locationData = {
-                slug: address.toLowerCase().replace(/\s+/g, '-'),
-                name: address,
-                city: city,
-                state: state,
-                latitude: lat,
-                longitude: lng,
-              };
-              localStorage.setItem('selected_location', JSON.stringify(locationData));
-              localStorage.setItem('selected_location_coords', JSON.stringify({
-                latitude: lat,
-                longitude: lng,
-              }));
-              
-              // Also save to Google location format
-              const googleLocationData = {
-                city: city,
-                state: state,
-                lat: lat,
-                lng: lng,
-                address: address,
-              };
-              localStorage.setItem('google_location_data', JSON.stringify(googleLocationData));
-              
-              // CRITICAL: Never redirect from ad details page (/ads/[id])
-              // Ad details page must remain stable - location changes should not affect it
-              const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
-              const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
-              
-              if (isAdDetailsPage || isOnAdDetailsPageFlag) {
-                // On ad details page: Just save location silently, don't redirect
-                console.log('🛡️ Ad Details Page: Google Places location changed but not redirecting');
-                // Still dispatch event for other components, but don't navigate
-                window.dispatchEvent(new CustomEvent('locationChanged', {
-                  detail: { 
-                    latitude: lat, 
-                    longitude: lng, 
-                    address,
-                    city: city,
-                    state: state
-                  }
-                }));
-                return; // Exit early - don't navigate away from ad details page
-              }
-              
-              // Only update URL if we're not on home page - stay on home page and just update products
-              if (pathname !== '/') {
-                // On other pages, navigate to ads page with location
-                const newParams = new URLSearchParams(searchParams.toString());
-                newParams.set('latitude', lat.toString());
-                newParams.set('longitude', lng.toString());
-                newParams.set('radius', '50');
-                if (city) newParams.set('city', city);
-                if (state) newParams.set('state', state);
-                router.push(`/ads?${newParams.toString()}`, { scroll: false });
-              } else {
-                // On home page, just save location - products will update automatically
-                // Trigger a custom event to notify home page components with full location data
-                window.dispatchEvent(new CustomEvent('locationChanged', {
-                  detail: { 
-                    latitude: lat, 
-                    longitude: lng, 
-                    address,
-                    city: city,
-                    state: state
-                  }
-                }));
-              }
-              
-              console.log('✅ Location saved from Google Places:', address);
-            } catch (error) {
-              console.error('Error saving location:', error);
-            }
-          }
-        });
-      } catch (error) {
-        console.error('❌ Error adding place_changed listener:', error);
-      }
-    } catch (error) {
-      console.error('❌ Error creating Autocomplete:', error);
-    }
-  }, [searchParams, router]);
-
-  // Detect when input is mounted
-  useEffect(() => {
-    if (locationInputRef.current) {
-      setInputMounted(true);
-    }
-    
-    const observer = new MutationObserver(() => {
-      if (locationInputRef.current && !inputMounted) {
-        setInputMounted(true);
-      }
-    });
-    
-    if (locationSearchRef.current) {
-      observer.observe(locationSearchRef.current, {
-        childList: true,
-        subtree: true,
-      });
-    }
-    
-    const checkInterval = setInterval(() => {
-      if (locationInputRef.current && !inputMounted) {
-        setInputMounted(true);
-      }
-    }, 100);
-    
-    return () => {
-      observer.disconnect();
-      clearInterval(checkInterval);
-    };
-  }, [inputMounted]);
-
-  // Initialize autocomplete when both Google Places is loaded AND input is mounted
-  useEffect(() => {
-    if (!googlePlacesLoaded) {
+      if (isAdDetailsPage || isOnAdDetailsPageFlag) {
+        window.dispatchEvent(new CustomEvent('locationChanged', { detail: locationPayload }));
         return;
       }
-      
-    if (!locationInputRef.current) {
-      return;
-    }
 
-    if (!window.google || !window.google.maps || !window.google.maps.places) {
-      return;
-    }
-
-    // Clear existing autocomplete if any before reinitializing
-    if (autocompleteRef.current) {
-      try {
-        window.google.maps.event.clearInstanceListeners(autocompleteRef.current);
-        autocompleteRef.current = null;
-      } catch (e) {
-        console.warn('Could not clear existing autocomplete:', e);
+      window.dispatchEvent(new CustomEvent('locationChanged', { detail: locationPayload }));
+      if (pathname === '/ads') {
+        const newParams = new URLSearchParams(searchParams.toString());
+        newParams.set('latitude', lat.toString());
+        newParams.set('longitude', lng.toString());
+        newParams.set('radius', '50');
+        if (city) newParams.set('city', city);
+        if (state) newParams.set('state', state);
+        newParams.set('location', slug);
+        router.push(`/ads?${newParams.toString()}`, { scroll: false });
       }
+    } catch (error) {
+      console.error('Error saving location:', error);
     }
-
-    const initTimeout = setTimeout(() => {
-      console.log('🔧 Initializing autocomplete in Navbar (input rendered, API loaded)');
-      initializeAutocomplete();
-    }, 100);
-
-    return () => {
-      clearTimeout(initTimeout);
-      try {
-        if (autocompleteRef.current && typeof window !== 'undefined' && window.google && window.google.maps && window.google.maps.event) {
-          window.google.maps.event.clearInstanceListeners(autocompleteRef.current);
-        }
-        if (observerRef.current) {
-          observerRef.current.disconnect();
-          observerRef.current = null;
-        }
-        if (locationInputRef.current && handleFocusRef.current) {
-          locationInputRef.current.removeEventListener('focus', handleFocusRef.current);
-          handleFocusRef.current = null;
-        }
-      } catch (error) {
-        console.warn('Error during cleanup:', error);
-      }
-    };
-  }, [googlePlacesLoaded, inputMounted, initializeAutocomplete]);
+  }, [pathname, searchParams, router]);
 
   // Load persisted location from localStorage and auto-detect if not found
   useEffect(() => {
     if (!mounted) return;
     
-    // Helper function to set default "India" location
-    const setDefaultIndiaLocation = () => {
-      // Only set if no location is already set
-      if (!locationInputValue && !localStorage.getItem('selected_location')) {
-        const indiaLocation = {
-          slug: 'india',
-          name: 'India',
-          city: null,
-          state: null,
-          neighbourhood: null,
-        };
-        
-        // Save to localStorage
-        localStorage.setItem('selected_location', JSON.stringify(indiaLocation));
-        
-        // Update UI
-        setLocationInputValue('India');
-        setLocationSearchQuery('India');
-        setSelectedLocation('india');
-        
-        console.log('✅ Set default location: India');
-      }
-    };
+    // Hidden: No hardcoded default location - user selects from dropdown
     
     const loadLocation = async () => {
       try {
         // Priority 1: Check URL params
         const locationFromUrl = searchParams.get('location');
         if (locationFromUrl) {
+          // Validate before API – invalid slug: skip API and don't clear (useLocationPersistence may clear)
+          if (!isLocationSlugValid(locationFromUrl)) {
+            return;
+          }
+          const parsed = parseLocationSlug(locationFromUrl);
+          if (!parsed) return;
+          // Synthetic (All India) – no API call
+          if (parsed.name === 'All India') {
+            setLocationInputValue('All India');
+            localStorage.setItem('selected_location', JSON.stringify({ slug: parsed.slug, name: 'All India' }));
+            return;
+          }
           try {
             const response = await api.get(`/locations/${encodeURIComponent(locationFromUrl)}`);
             const locData = response.data?.location;
@@ -1217,16 +565,26 @@ export default function Navbar() {
                   longitude: locData.longitude,
                 }));
               }
-              return; // Found location from URL, exit early
+              return;
             }
-          } catch (error) {
-            console.warn('Invalid location in URL, clearing it.');
+            // API 200 but no location (edge case) – use parsed, keep URL
+            const fallback = parsedSlugToLocationData(parsed);
+            setLocationInputValue(fallback.name);
+            localStorage.setItem('selected_location', JSON.stringify({ slug: fallback.slug, name: fallback.name, city: fallback.city, state: fallback.state }));
+            return;
+          } catch (error: any) {
+            // 404 or network – use parsed data so UI shows location and we don't clear URL
+            if (error?.response?.status === 404 || !error?.response) {
+              const fallback = parsedSlugToLocationData(parsed);
+              setLocationInputValue(fallback.name);
+              localStorage.setItem('selected_location', JSON.stringify({ slug: fallback.slug, name: fallback.name, city: fallback.city, state: fallback.state }));
+            }
+            return;
           }
         }
 
         // Priority 2: Check localStorage
         const storedLocation = localStorage.getItem('selected_location');
-        const storedCoords = localStorage.getItem('selected_location_coords');
         
         if (storedLocation) {
           const locationData = JSON.parse(storedLocation);
@@ -1236,355 +594,233 @@ export default function Navbar() {
           }
         }
 
-        // Priority 3: Check user profile (if logged in)
-        if (isAuthenticated && user) {
-          try {
-            const userResponse = await api.get('/user/profile');
-            const userLocation = userResponse.data?.user?.preferredLocation;
-            if (userLocation) {
-              setLocationInputValue(userLocation.name || userLocation.city || '');
-              const locationToStore = {
-                slug: userLocation.slug,
-                name: userLocation.name,
-                city: userLocation.city,
-                state: userLocation.state,
-                neighbourhood: userLocation.neighbourhood,
-              };
-              localStorage.setItem('selected_location', JSON.stringify(locationToStore));
-              if (userLocation.latitude && userLocation.longitude) {
-                localStorage.setItem('selected_location_coords', JSON.stringify({
-                  latitude: userLocation.latitude,
-                  longitude: userLocation.longitude,
-                }));
-              }
-              return; // Found location in user profile, exit early
-            }
-          } catch (error) {
-            console.log('No user profile location found');
-          }
-        }
-
-        // Priority 4: Auto-detect location if not found and geolocation is available
+        // Priority 3: Auto-detect DISABLED for performance
+        // Location detection now only runs when user clicks "Detect Location" button
+        // This prevents:
+        // - Geolocation timeout errors on page load
+        // - Reverse geocoding 403 errors
+        // - Delayed page interactions
+        const ENABLE_AUTO_LOCATION_DETECT = false;
         const hasTriedAutoDetect = localStorage.getItem('location_auto_detect_attempted');
-        if (!hasTriedAutoDetect && typeof window !== 'undefined' && 'geolocation' in navigator) {
+        if (ENABLE_AUTO_LOCATION_DETECT && !hasTriedAutoDetect && typeof window !== 'undefined' && 'geolocation' in navigator) {
           localStorage.setItem('location_auto_detect_attempted', 'true');
-          try {
-            navigator.geolocation.getCurrentPosition(
-              async (position) => {
-                const { latitude, longitude } = position.coords;
-                // Validate coordinates before sending
-                if (typeof latitude !== 'number' || typeof longitude !== 'number' || 
-                    isNaN(latitude) || isNaN(longitude) || 
-                    latitude < -90 || latitude > 90 || 
-                    longitude < -180 || longitude > 180) {
-                  console.warn('Invalid geolocation coordinates received, skipping API call.');
-                  return;
-                }
-                try {
-                  const response = await api.post('/geocoding/detect-location', {
-                    latitude,
-                    longitude,
-                  });
-                  if (response.data?.success && response.data?.nearestLocation) {
-                    const nearestLocation = response.data.nearestLocation;
-                    const detectedLocation = response.data.detectedLocation;
-                    
-                    // Fetch full location details
-                    try {
-                      const locResponse = await api.get(`/locations/${encodeURIComponent(nearestLocation.slug)}`);
-                      const locData = locResponse.data?.location;
-                      if (locData) {
-                        const locationData = {
-                          slug: locData.slug,
-                          name: locData.name,
-                          city: locData.city || detectedLocation?.city,
-                          state: locData.state || detectedLocation?.state,
-                          neighbourhood: locData.neighbourhood || detectedLocation?.neighbourhood,
-                          latitude: locData.latitude || latitude,
-                          longitude: locData.longitude || longitude,
-                        };
-                        
-                        // Save to localStorage
-                        localStorage.setItem('selected_location', JSON.stringify({
-                          slug: locationData.slug,
-                          name: locationData.name,
-                          city: locationData.city,
-                          state: locationData.state,
-                          neighbourhood: locationData.neighbourhood,
-                        }));
-                        localStorage.setItem('selected_location_coords', JSON.stringify({
-                          latitude: locationData.latitude,
-                          longitude: locationData.longitude,
-                        }));
-                        
-                        // Update UI
-                        setLocationInputValue(locationData.name);
-                        
-                        // Update location state to match handleLocationChange behavior
-                        if (locationData.state) setSelectedState(locationData.state);
-                        if (locationData.city) setSelectedCity(locationData.city);
-                        setSelectedLocation(locationData.slug);
-                        
-                        // Set location search query to display text
-                        const { name, city, state, neighbourhood } = locationData;
-                        if (neighbourhood && name === neighbourhood) {
-                          setLocationSearchQuery(`${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`);
-                        } else if (city && name === city) {
-                          setLocationSearchQuery(`${name}${state ? `, ${state}` : ''}`);
-                        } else {
-                          setLocationSearchQuery(name);
-                        }
-                        
-                        // Save to user profile if logged in (async, don't block)
-                        if (isAuthenticated) {
-                          api.put('/user/profile', {
-                            preferredLocation: locationData,
-                          }).catch(() => {
-                            // User might not be logged in, ignore
-                          });
-                        }
-                        
-                        // Update URL if on appropriate page (but not ad details page)
-                        const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
-                        const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
-                        
-                        if (!isAdDetailsPage && !isOnAdDetailsPageFlag) {
-                          const newParams = pathname === '/ads' 
-                            ? new URLSearchParams(searchParams.toString())
-                            : new URLSearchParams();
-                          newParams.set('location', locationData.slug);
-                          if (locationData.latitude && locationData.longitude) {
-                            newParams.set('latitude', String(locationData.latitude));
-                            newParams.set('longitude', String(locationData.longitude));
-                            newParams.set('radius', '50');
-                          }
-                          router.push(`/ads?${newParams.toString()}`, { scroll: false });
-                        }
-                        
-                        console.log('✅ Auto-detected location:', locationData.name);
+          getCurrentPosition()
+            .then(async ({ latitude, longitude }) => {
+              try {
+                const response = await api.post('/geocoding/detect-location', {
+                  latitude,
+                  longitude,
+                });
+                if (response.data?.success && response.data?.nearestLocation) {
+                  const nearestLocation = response.data.nearestLocation;
+                  const detectedLocation = response.data.detectedLocation;
+
+                  try {
+                    const locResponse = await api.get(`/locations/${encodeURIComponent(nearestLocation.slug)}`);
+                    const locData = locResponse.data?.location;
+                    if (locData) {
+                      const locationData = {
+                        slug: locData.slug,
+                        name: locData.name,
+                        city: locData.city || detectedLocation?.city,
+                        state: locData.state || detectedLocation?.state,
+                        neighbourhood: locData.neighbourhood || detectedLocation?.neighbourhood,
+                        latitude: locData.latitude || latitude,
+                        longitude: locData.longitude || longitude,
+                      };
+
+                      localStorage.setItem('selected_location', JSON.stringify({
+                        slug: locationData.slug,
+                        name: locationData.name,
+                        city: locationData.city,
+                        state: locationData.state,
+                        neighbourhood: locationData.neighbourhood,
+                      }));
+                      localStorage.setItem('selected_location_coords', JSON.stringify({
+                        latitude: locationData.latitude,
+                        longitude: locationData.longitude,
+                      }));
+
+                      const { name, city, state, neighbourhood } = locationData;
+                      const displayText = neighbourhood && name === neighbourhood
+                        ? `${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`
+                        : city && name === city ? `${name}${state ? `, ${state}` : ''}` : name || '';
+                      setLocationInputValue(displayText);
+                      setLocationSearchQuery(displayText);
+                      setSelectedLocation(locationData.slug);
+
+                      if (isAuthenticated) {
+                        api.put('/user/profile', { preferredLocation: locationData }).catch(() => {});
                       }
-                    } catch (error) {
-                      console.warn('Could not fetch location details:', error);
+
+                      const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
+                      const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
+
+                      if (!isAdDetailsPage && !isOnAdDetailsPageFlag) {
+                        const newParams = pathname === '/ads'
+                          ? new URLSearchParams(searchParams.toString())
+                          : new URLSearchParams();
+                        newParams.set('location', locationData.slug);
+                        if (locationData.latitude && locationData.longitude) {
+                          newParams.set('latitude', String(locationData.latitude));
+                          newParams.set('longitude', String(locationData.longitude));
+                          newParams.set('radius', '50');
+                        }
+                        router.push(`/ads?${newParams.toString()}`, { scroll: false });
+                      }
                     }
+                  } catch (error) {
+                    console.warn('Could not fetch location details:', error);
                   }
-                } catch (apiError: any) {
-                  if (apiError.response?.status !== 400) {
-                    console.log('Auto-detection failed (optional):', apiError?.message || 'Unknown error');
-                  }
-                  // Set default "India" location when API call fails
-                  setDefaultIndiaLocation();
                 }
-              },
-              (error) => {
-                console.log('Geolocation permission denied or failed (optional):', error.message);
-                // Set default "India" location when geolocation fails
-                setDefaultIndiaLocation();
-              },
-              {
-                timeout: 5000,
-                maximumAge: 600000,
-                enableHighAccuracy: false,
+              } catch (apiError: any) {
+                if (apiError.response?.status !== 400) {
+                  console.log('Auto-detection failed (optional):', apiError?.message || 'Unknown error');
+                }
               }
-            );
-          } catch (geolocationError) {
-            console.log('Geolocation not available (optional):', geolocationError);
-            // Set default "India" location when geolocation is not available
-            setDefaultIndiaLocation();
-          }
-        } else {
-          // No auto-detection attempted, set default "India" location
-          setDefaultIndiaLocation();
+            })
+            .catch((err: { code?: number; message?: string }) => {
+              const code = err?.code ?? 2;
+              if (isPermissionDenied(code)) {
+                console.log('Geolocation permission denied (optional):', err?.message);
+              } else {
+                localStorage.removeItem('location_auto_detect_attempted');
+                console.log('Geolocation failed (optional, retry allowed):', err?.message);
+              }
+            });
         }
       } catch (error) {
         console.error('Error loading location:', error);
-        // Set default "India" location on error
-        setDefaultIndiaLocation();
       }
     };
     
     loadLocation();
   }, [mounted, isAuthenticated, user, searchParams]);
 
-  const handleLocationChange = async (locationSlug: string) => {
+  // Clear location (All India)
+  const handleLocationChange = (locationSlug: string) => {
     if (locationSlug) {
-      const allLocations = [...cities, ...localAreas];
-      const location = allLocations.find((loc: any) => loc.slug === locationSlug);
-      
-      if (location) {
-      // Prepare location data for persistence
-        const locationData = {
-          slug: location.slug,
-          name: location.name,
-          city: location.city,
-          state: location.state,
-          neighbourhood: location.neighbourhood,
-          latitude: location.latitude,
-          longitude: location.longitude,
-      };
-      
-      // Fetch full location details if coordinates are missing
-      if (!locationData.latitude || !locationData.longitude) {
-        try {
-          const response = await api.get(`/locations/${locationSlug}`);
-          const locData = response.data?.location;
-          if (locData) {
-              locationData.latitude = locData.latitude;
-              locationData.longitude = locData.longitude;
-          }
-        } catch (error) {
-          console.error('Error fetching location coordinates:', error);
-        }
-      }
-      
-      // CRITICAL: Save to localStorage FIRST - this is the source of truth
-      try {
-        const locationToStore = {
-          slug: locationData.slug,
-          name: locationData.name,
-          city: locationData.city,
-          state: locationData.state,
-          neighbourhood: locationData.neighbourhood,
-        };
-        
-        localStorage.setItem('selected_location', JSON.stringify(locationToStore));
-        console.log('✅ [Navbar handleLocationChange] Saved location to localStorage:', locationToStore);
-        
-        // Verify it was saved
-        const verifySaved = localStorage.getItem('selected_location');
-        if (verifySaved) {
-          console.log('✅ [Navbar handleLocationChange] Verified location saved:', JSON.parse(verifySaved));
-    } else {
-          console.error('❌ [Navbar handleLocationChange] Location save failed - not found in localStorage!');
-        }
-        
-        if (locationData.latitude && locationData.longitude) {
-          const coordsToStore = {
-            latitude: locationData.latitude,
-            longitude: locationData.longitude,
-          };
-          localStorage.setItem('selected_location_coords', JSON.stringify(coordsToStore));
-          console.log('✅ [Navbar handleLocationChange] Saved coordinates to localStorage:', coordsToStore);
-          
-          // Verify coordinates were saved
-          const verifyCoords = localStorage.getItem('selected_location_coords');
-          if (verifyCoords) {
-            console.log('✅ [Navbar handleLocationChange] Verified coordinates saved:', JSON.parse(verifyCoords));
-          }
-        }
-        
-        // Try to save to user profile if logged in (async, don't block)
-        api.put('/user/profile', {
-          preferredLocation: locationData,
-        }).catch(() => {
-          // User might not be logged in, ignore
-        });
-      } catch (error) {
-        console.error('❌ Error saving location to localStorage:', error);
-      }
-      
-        // Set location search query to display text (OLX style)
-      const { name, city, state, neighbourhood } = location;
-      if (neighbourhood && name === neighbourhood) {
-          setLocationSearchQuery(`${name}${city ? `, ${city}` : ''}${state ? `, ${state}` : ''}`);
-      } else if (city && name === city) {
-          setLocationSearchQuery(`${name}${state ? `, ${state}` : ''}`);
-        } else {
-          setLocationSearchQuery(name);
-      }
-      
-        // Set state and city if location has them
-        if (location.state) setSelectedState(location.state);
-        if (location.city) setSelectedCity(location.city);
-      setSelectedLocation(locationSlug);
-      
-      // CRITICAL: Never redirect from ad details page (/ads/[id])
-      // Ad details page must remain stable - location changes should not affect it
-      const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
-      const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
-      
-      if (isAdDetailsPage || isOnAdDetailsPageFlag) {
-        // On ad details page: Just save location silently, don't redirect
-        console.log('🛡️ Ad Details Page: Location changed but not redirecting');
-        return; // Exit early - don't navigate away from ad details page
-      }
-      
-      // Update URL immediately - navigate to /ads page with location filter
-      // Preserve other params if already on /ads page, otherwise start fresh with location
-      const newParams = pathname === '/ads' 
-        ? new URLSearchParams(searchParams.toString())
-        : new URLSearchParams();
-      newParams.set('location', locationSlug);
-      // Add coordinates to URL for backend radius filtering
-      if (locationData.latitude && locationData.longitude) {
-        newParams.set('latitude', String(locationData.latitude));
-        newParams.set('longitude', String(locationData.longitude));
-        newParams.set('radius', '50'); // Default 50km radius
-      }
-      // Navigate to /ads page when location is selected (but not from ad details page)
+      setShowLocationDropdown(false);
+      return;
+    }
+    // Clear location
+    setLocationSearchQuery('All India');
+    setLocationInputValue('All India');
+    setSelectedLocation('');
+    setSelectedPlaceLocation(null);
+    try {
+      localStorage.removeItem('selected_location');
+      localStorage.removeItem('selected_location_coords');
+      localStorage.removeItem('google_location_data');
+      api.put('/user/profile', { preferredLocation: null }).catch(() => {});
+    } catch (error) {
+      console.error('❌ Error clearing location from localStorage:', error);
+    }
+    // Notify home page and other consumers to clear location filter
+    window.dispatchEvent(new CustomEvent('locationChanged', { detail: null }));
+    const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
+    const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
+    if (!isAdDetailsPage && !isOnAdDetailsPageFlag && pathname !== '/') {
+      const newParams = new URLSearchParams(searchParams.toString());
+      newParams.delete('location');
+      newParams.delete('latitude');
+      newParams.delete('longitude');
+      newParams.delete('radius');
+      newParams.delete('city');
+      newParams.delete('state');
       router.push(`/ads?${newParams.toString()}`, { scroll: false });
-      }
-    } else {
-      // Clear location
-      setLocationSearchQuery('All India');
-      setSelectedState(null);
-      setSelectedCity(null);
-      setSelectedLocation('');
-      
-      // Remove from localStorage
-      try {
-        localStorage.removeItem('selected_location');
-        localStorage.removeItem('selected_location_coords');
-        console.log('✅ Cleared location from localStorage');
-        
-        // Clear from user profile if logged in (async, don't block)
-        api.put('/user/profile', { preferredLocation: null }).catch(() => {
-          // User might not be logged in, ignore
-        });
-      } catch (error) {
-        console.error('❌ Error clearing location from localStorage:', error);
-      }
-      
-      // CRITICAL: Never redirect from ad details page
-      const isAdDetailsPage = pathname.match(/^\/ads\/[^/]+$/);
-      const isOnAdDetailsPageFlag = typeof window !== 'undefined' && sessionStorage.getItem('is_on_ad_details_page') === 'true';
-      if (!isAdDetailsPage && !isOnAdDetailsPageFlag) {
-        // Remove location from URL - preserve other params
-        const newParams = new URLSearchParams(searchParams.toString());
-        newParams.delete('location');
-        newParams.delete('latitude');
-        newParams.delete('longitude');
-        newParams.delete('radius');
-        router.push(`/ads?${newParams.toString()}`, { scroll: false });
-      }
     }
     setShowLocationDropdown(false);
   };
 
   // Custom location search handler - no Google Places needed
 
-  // Handle hover for user menu
-  const handleMouseEnter = () => {
-    setUserMenuOpen(true);
-  };
+  // Close user menu on outside click or ESC key (but NOT on mouse leave)
+  useEffect(() => {
+    if (!userMenuOpen) return;
 
-  const handleMouseLeave = () => {
-    setUserMenuOpen(false);
-  };
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (userMenuRef.current && target && !userMenuRef.current.contains(target)) {
+        setUserMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setUserMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [userMenuOpen]);
+
+  // Update dropdown position when open (for portal) - keeps it aligned with trigger, prevents cut-off
+  const updateDropdownPosition = useCallback(() => {
+    const dropdownWidth = Math.min(420, (typeof window !== 'undefined' ? window.innerWidth : 420) - 32);
+    const dropdownHeight = 380;
+    if (typeof window === 'undefined') return;
+    if (!locationButtonRef.current) {
+      // Fallback: position below navbar (top-left) so dropdown always shows
+      setDropdownPosition({ top: 72, left: 16 });
+      return;
+    }
+    const rect = locationButtonRef.current.getBoundingClientRect();
+    let left = rect.left;
+    if (left + dropdownWidth > window.innerWidth - 16) {
+      left = Math.max(16, window.innerWidth - dropdownWidth - 16);
+    }
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const top = spaceBelow >= dropdownHeight ? rect.bottom + 8 : Math.max(8, rect.top - dropdownHeight - 8);
+    setDropdownPosition({ top: Math.max(8, Math.min(top, window.innerHeight - dropdownHeight - 16)), left });
+  }, []);
+
+  useEffect(() => {
+    if (showLocationDropdown) {
+      updateDropdownPosition();
+      const handleResize = () => updateDropdownPosition();
+      const handleScroll = () => updateDropdownPosition();
+      window.addEventListener('resize', handleResize);
+      window.addEventListener('scroll', handleScroll, true); // capture phase to catch scroll in any container
+      return () => {
+        window.removeEventListener('resize', handleResize);
+        window.removeEventListener('scroll', handleScroll, true);
+      };
+    } else {
+      setDropdownPosition(null);
+    }
+  }, [showLocationDropdown, updateDropdownPosition]);
 
   // Close location dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (locationSearchRef.current && !locationSearchRef.current.contains(event.target as Node)) {
-        setShowLocationDropdown(false);
-      }
+      const target = event.target as Node;
+      const inDesktop = locationSearchRef.current?.contains(target);
+      const inMobile = mobileLocationRef.current?.contains(target);
+      const inDropdown = (event.target as HTMLElement).closest?.('[data-location-dropdown]');
+      if (!inDesktop && !inMobile && !inDropdown) setShowLocationDropdown(false);
+    };
+
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowLocationDropdown(false);
     };
 
     if (showLocationDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleEscape);
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
     };
   }, [showLocationDropdown]);
 
@@ -1660,66 +896,98 @@ export default function Navbar() {
 
   return (
     <>
+      {/* Navbar: 72px main bar, sticky, Inter font, 20px logo–location gap, 16px item gap */}
       <nav 
-        className="sticky top-0 z-50 w-full bg-white border-b border-gray-200 shadow-sm" 
-        style={{ position: 'sticky', top: 0, zIndex: 50, overflow: 'visible' }}
+        className="sticky top-0 z-[100] w-full max-w-full bg-white border-b border-gray-200"
+        style={{ overflow: 'visible', fontFamily: 'var(--font-inter), sans-serif' }}
         role="navigation"
       >
-        {/* Main Navbar: Logo + Location + Search + Actions */}
-        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8" style={{ overflow: 'visible', position: 'relative', zIndex: 1000 }}>
-          <div className="flex items-center gap-3 py-2" style={{ overflow: 'visible', position: 'relative', height: '4.5rem' }}>
-            {/* Left: Logo */}
-            <Link href="/" className="flex items-center gap-2 cursor-pointer flex-shrink-0">
-              <LogoImage />
-            </Link>
-              
-            {/* Location Selector (Dropdown) - Fixed Width */}
-            <div 
-              className="hidden md:flex items-center flex-shrink-0" 
-              ref={locationSearchRef} 
-              style={{ position: 'relative', zIndex: 1000, width: '180px', minWidth: '180px', maxWidth: '180px' }}
-            >
-              <div className="relative w-full">
+        <div className={`${NAVBAR_CONTAINER_CLASS} overflow-visible relative`} style={{ zIndex: 1000 }}>
+          <div className="flex items-center h-[72px] overflow-visible shrink-0 gap-4">
+            {/* Left: Logo + Location with 20px gap */}
+            <div className="flex items-center gap-5 flex-shrink-0 min-w-0">
+              <Link href="/" className="flex items-center cursor-pointer flex-shrink-0 min-w-0">
+                <LogoImage />
+              </Link>
+              {/* Location Selector (Dropdown) */}
+              <div
+                className="hidden md:flex items-center flex-shrink-0"
+                ref={locationSearchRef}
+                style={{ position: 'relative', zIndex: 1000 }}
+              >
+              <div className="relative">
                 <button
-                  onClick={() => setShowLocationDropdown(!showLocationDropdown)}
-                  className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 hover:text-gray-900 cursor-pointer w-full"
+                  ref={locationButtonRef}
+                  type="button"
+                  onClick={() => {
+                    const next = !showLocationDropdown;
+                    setShowLocationDropdown(next);
+                    if (next) updateDropdownPosition();
+                  }}
+                  className="flex items-center gap-2 px-3 py-2 h-9 min-w-[140px] max-w-[220px] text-left rounded-lg border border-gray-200 bg-white hover:border-blue-400 hover:bg-gray-50 transition-all duration-200 text-sm"
+                  aria-expanded={showLocationDropdown}
+                  aria-haspopup="listbox"
                 >
-                  <FiMapPin className="w-4 h-4 flex-shrink-0" />
-                  <span className="flex-1 min-w-0 truncate text-left">
-                    {locationInputValue || locationSearchQuery || 'Mumbai, India'}
+                  <FiMapPin className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                  <span className="flex-1 min-w-0 truncate font-bold text-base text-gray-900">
+                    {locationDisplayLabel}
                   </span>
-                  <span className="material-symbols-outlined text-sm flex-shrink-0">expand_more</span>
+                  <FiChevronDown
+                    className={`w-4 h-4 flex-shrink-0 text-gray-500 transition-transform duration-200 ${showLocationDropdown ? 'rotate-180' : ''}`}
+                  />
                 </button>
-                
-                {/* Location Dropdown */}
-                {showLocationDropdown && (
-                  <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
-                    <div className="p-2">
-                      <input
-                        ref={locationInputRef}
-                        type="text"
-                        placeholder="Search location..."
-                        value={locationInputValue || ''}
-                        onChange={(e) => {
-                          setLocationInputValue(e.target.value);
-                          if (selectedPlaceLocation) {
-                            setSelectedPlaceLocation(null);
-                          }
-                        }}
-                        onFocus={() => {}}
-                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                      {/* Location suggestions would go here */}
+
+                {/* Location Dropdown - rendered via Portal to body so it isn't clipped/overlapped */}
+                {showLocationDropdown && dropdownPosition && typeof document !== 'undefined' && createPortal(
+                  <div
+                    data-location-dropdown
+                    className="fixed w-[420px] min-w-[340px] max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-gray-200 shadow-xl ring-1 ring-black/5 z-[99999]"
+                    role="listbox"
+                    style={{ top: dropdownPosition.top, left: dropdownPosition.left }}
+                  >
+                    <div className="p-4">
+                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">Choose location</p>
+                      {/* All India - always visible at top */}
+                      <button
+                        type="button"
+                        onClick={() => handleLocationChange('')}
+                        className={`w-full px-3 py-2.5 rounded-lg text-sm flex items-center gap-2.5 transition-all border ${
+                          !selectedLocation
+                            ? 'bg-blue-100 text-blue-900 font-semibold ring-1 ring-blue-300 border-blue-200'
+                            : 'hover:bg-gray-100 text-gray-900 border-transparent'
+                        }`}
+                      >
+                        <FiGlobe className="w-4 h-4 flex-shrink-0 text-blue-700" />
+                        <span className="font-semibold">All India</span>
+                      </button>
+                      <p className="text-xs text-gray-500 mt-3 mb-1">Or search your city</p>
+                      {googlePlacesLoaded ? (
+                        <PlaceAutocompleteInputFirefox
+                          visible={showLocationDropdown}
+                          placeholder="e.g. Pune, Jaipur..."
+                          value=""
+                          onPlaceSelect={handlePlaceSelect}
+                          includedRegionCodes={['in']}
+                          includedPrimaryTypes={['locality', 'administrative_area_level_3']}
+                          className="w-full"
+                        />
+                      ) : (
+                        <div className="w-full px-3 py-3 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-700">
+                          Loading...
+                        </div>
+                      )}
                     </div>
-                  </div>
+                  </div>,
+                  document.body
                 )}
               </div>
             </div>
+            </div>
 
-            {/* Center: Search Bar (Full Width - Stable) */}
-            <div className="flex-1 flex items-center min-w-0 mx-2">
-              <div className="w-full bg-white border border-gray-300 rounded-md flex items-center overflow-hidden hover:border-blue-500 transition-colors h-9">
-                <FiSearch className="w-4 h-4 text-gray-400 ml-3 flex-shrink-0" />
+            {/* Center: Search Bar - 44px height, rounded 10px */}
+            <div className="flex-1 flex items-center min-w-0">
+              <div className="w-full min-w-0 bg-white border border-gray-200 rounded-[10px] flex items-center overflow-hidden hover:border-blue-400 focus-within:border-blue-500 transition-colors h-11 relative">
+                <FiSearch className="w-4 h-4 text-gray-500 ml-2 sm:ml-3 flex-shrink-0" />
                 <div className="flex-1 relative">
                   <input
                     ref={searchInputRef}
@@ -1728,18 +996,23 @@ export default function Navbar() {
                     onChange={(e) => setSearchText(e.target.value)}
                     onKeyPress={(e) => {
                       if (e.key === 'Enter' && searchText.trim()) {
-                        router.push(`/ads?search=${encodeURIComponent(searchText.trim())}`);
+                        // Use smart search parser
+                        const { parseSearchQuery, buildSearchUrl, saveRecentSearch } = require('@/utils/searchParser');
+                        const parsed = parseSearchQuery(searchText.trim());
+                        saveRecentSearch(searchText.trim());
+                        const searchUrl = buildSearchUrl(parsed);
+                        router.push(searchUrl);
                       }
                     }}
                     placeholder=""
-                    className="flex-1 px-3 py-1 text-sm text-gray-700 border-none outline-none bg-transparent w-full h-full"
+                    className="flex-1 min-w-0 px-2 sm:px-3 py-1 text-sm text-gray-700 border-none outline-none bg-transparent w-full h-full"
                     onFocus={() => {
-                      // Keep focus on input, don't navigate immediately
+                      setShowSearchSuggestions(true);
                     }}
                   />
                   {!searchText && (
-                    <div className="absolute inset-0 flex items-center pointer-events-none px-3">
-                      <span className="text-sm text-gray-400">
+                    <div className="absolute inset-0 flex items-center pointer-events-none px-2 sm:px-3">
+                      <span className="text-sm text-gray-500">
                         {searchPlaceholder}
                         <span className={`inline-block w-0.5 h-3 bg-blue-500 ml-0.5 align-middle ${showSearchCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
                           {' '}
@@ -1751,12 +1024,16 @@ export default function Navbar() {
                 <button
                   onClick={() => {
                     if (searchText.trim()) {
-                      router.push(`/ads?search=${encodeURIComponent(searchText.trim())}`);
+                      const { parseSearchQuery, buildSearchUrl, saveRecentSearch } = require('@/utils/searchParser');
+                      const parsed = parseSearchQuery(searchText.trim());
+                      saveRecentSearch(searchText.trim());
+                      const searchUrl = buildSearchUrl(parsed);
+                      router.push(searchUrl);
                     } else {
                       router.push('/ads');
                     }
                   }}
-                  className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 flex items-center gap-1.5 transition-colors flex-shrink-0 h-full"
+                  className="bg-[#2563eb] hover:bg-[#1d4ed8] text-white px-3 sm:px-4 py-2 flex items-center justify-center gap-1.5 transition-colors flex-shrink-0 h-full rounded-r-[10px] min-w-[44px]"
                 >
                   <FiSearch className="w-4 h-4" />
                   <span className="hidden sm:inline text-sm">Search</span>
@@ -1764,8 +1041,8 @@ export default function Navbar() {
               </div>
             </div>
 
-            {/* Right: Login / Sell / Profile */}
-            <div className="flex items-center gap-3 flex-shrink-0" style={{ overflow: 'visible', position: 'relative', zIndex: 1000 }}>
+            {/* Right: Login / Sell / Profile - 16px gap */}
+            <div className="flex items-center gap-4 flex-none min-w-fit overflow-visible" style={{ position: 'relative', zIndex: 1000 }}>
               {mounted && isAuthenticated ? (
                 <>
                   {/* Desktop Nav Links - Hidden in reference style */}
@@ -1796,26 +1073,25 @@ export default function Navbar() {
                 </>
               ) : (
                 <button 
-                  onClick={() => setLoginModalOpen(true)}
-                  className="text-sm font-semibold text-gray-700 hover:text-gray-900 cursor-pointer"
+                  onClick={() => openLoginModal()}
+                  className="text-sm font-semibold text-gray-700 hover:text-gray-900 cursor-pointer py-2 px-1 min-h-[44px] flex items-center"
                 >
                   Login
                 </button>
               )}
 
-              {/* Sell Button (Primary CTA - Pill Style) */}
+              {/* Sell Button - #2563eb, 10px radius, 10px 18px padding */}
               <Link
                 href="/post-ad"
-                className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white text-sm font-bold py-2 px-4 rounded-full shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer transform hover:scale-105"
+                className="flex items-center justify-center gap-1.5 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-sm font-semibold py-2.5 px-[18px] rounded-[10px] shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
                 onClick={(e) => {
                   if (!mounted || !isAuthenticated) {
                     e.preventDefault();
-                    setSignupModalOpen(false);
-                    setLoginModalOpen(true);
+                    openLoginModal();
                   }
                 }}
               >
-                <FiPlus className="w-4 h-4" />
+                <FiPlus className="w-4 h-4 flex-shrink-0" />
                 <span className="tracking-wide">SELL</span>
               </Link>
 
@@ -1824,104 +1100,177 @@ export default function Navbar() {
                 <div
                   className="relative"
                   ref={userMenuRef}
-                  onMouseEnter={handleMouseEnter}
-                  onMouseLeave={handleMouseLeave}
                   style={{ zIndex: 1000 }}
                 >
                   <button
                     type="button"
-                    className="flex items-center justify-center cursor-pointer navbar-icon-hover"
+                    className="relative flex items-center justify-center cursor-pointer navbar-icon-hover flex-shrink-0"
                     aria-haspopup="menu"
                     aria-expanded={userMenuOpen}
                     onClick={() => setUserMenuOpen((v) => !v)}
                     title={user?.name || 'Profile'}
                   >
-                    {user?.avatar ? (
-                      <ImageWithFallback
-                        src={user.avatar}
-                        alt={user.name}
-                        width={36}
-                        height={36}
-                        className="w-9 h-9 rounded-full object-cover border-2 border-gray-200 hover:border-blue-600 transition-colors"
-                      />
-                    ) : (
-                      <div className="w-9 h-9 rounded-full bg-gray-200 flex items-center justify-center border-2 border-gray-200 hover:border-blue-600 transition-colors">
-                        <FiUser className="w-5 h-5" />
-                      </div>
-                    )}
+                    {/* Lookback Live: pulse ring around profile pic */}
+                    <span
+                      className="absolute -inset-0.5 rounded-full border-2 border-blue-500/50 pointer-events-none lookback-live-ring"
+                      aria-hidden
+                    />
+                    <span className="relative w-9 h-9 rounded-full overflow-hidden flex items-center justify-center border-2 border-gray-200 hover:border-blue-600 transition-colors bg-gray-100">
+                      {user?.avatar ? (
+                        <ImageWithFallback
+                          src={user.avatar}
+                          alt={user.name}
+                          width={36}
+                          height={36}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <FiUser className="w-5 h-5 text-gray-500" />
+                      )}
+                    </span>
                   </button>
 
                     {userMenuOpen && (
                       <div
-                        className="absolute right-0 w-48 bg-white border border-gray-200 shadow-xl py-1"
+                        className="absolute right-0 w-56 bg-white rounded-xl border border-gray-200 shadow-2xl overflow-hidden"
                         style={{
                           position: 'absolute',
                           top: '100%',
                           right: 0,
                           zIndex: 99999,
-                          marginTop: 0,
-                          paddingTop: 0,
-                          marginBottom: 0,
+                          marginTop: '8px',
                           display: 'block',
                           visibility: 'visible',
                           opacity: 1
                         }}
                       >
-                        <Link
-                          href="/profile"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
-                        >
-                          <FiUser className="w-5 h-5" /> <span>{t('nav.profile')}</span>
-                        </Link>
-                        <Link
-                          href="/my-ads"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
-                        >
-                          <FiGrid className="w-5 h-5" /> <span>{t('nav.myAds')}</span>
-                        </Link>
-                        <Link
-                          href="/favorites"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
-                        >
-                          <FiHeart className="w-5 h-5" /> <span>{t('nav.favorites')}</span>
-                        </Link>
-                        <Link
-                          href="/orders"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
-                        >
-                          <FiShoppingBag className="w-5 h-5" /> <span>{t('nav.orders')}</span>
-                        </Link>
-                        <Link
-                          href="/business-package"
-                          className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
-                        >
-                          <FiBriefcase className="w-5 h-5" /> <span>{t('nav.businessPackage')}</span>
-                        </Link>
-                        {user?.role === 'ADMIN' && (
+                        {/* Account Section */}
+                        <div className="py-2">
                           <Link
-                            href="/admin"
-                            className="block px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
+                            href="/profile"
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group"
                           >
-                            <FiSettings className="w-5 h-5" /> <span>{t('nav.admin')}</span>
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                              <FiUser className="w-5 h-5 text-gray-700 group-hover:text-blue-600 transition-colors" />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">My Profile</span>
                           </Link>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            logout();
-                          }}
-                          className="block w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 navbar-icon-hover"
-                        >
-                          <FiLogOut className="w-5 h-5" /> <span>{t('nav.logout')}</span>
-                        </button>
+                          <Link
+                            href="/settings"
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                              <FiSettings className="w-5 h-5 text-gray-700 group-hover:text-blue-600 transition-colors" />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">Settings</span>
+                          </Link>
+                        </div>
+                        
+                        {/* Activity Section */}
+                        <div className="border-t border-gray-200 py-2">
+                          <Link
+                            href="/my-ads"
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                              <FiGrid className="w-5 h-5 text-gray-700 group-hover:text-blue-600 transition-colors" />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">My Ads</span>
+                          </Link>
+                          <Link
+                            href="/favorites"
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                              <FiHeart className="w-5 h-5 text-gray-700 group-hover:text-blue-600 transition-colors" />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">Favorites</span>
+                          </Link>
+                          <Link
+                            href="/orders"
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                              <FiShoppingBag className="w-5 h-5 text-gray-700 group-hover:text-blue-600 transition-colors" />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">My Orders</span>
+                          </Link>
+                        </div>
+                        
+                        {/* Business & Admin Section */}
+                        <div className="border-t border-gray-200 py-2">
+                          <Link
+                            href="/business-package"
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                              <FiBriefcase className="w-5 h-5 text-gray-700 group-hover:text-blue-600 transition-colors" />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">Business Package</span>
+                          </Link>
+                          {user?.role === 'ADMIN' && (
+                            <Link
+                              href="/admin"
+                              className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group"
+                            >
+                              <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                                <FiShield className="w-5 h-5 text-gray-700 group-hover:text-blue-600 transition-colors" />
+                              </div>
+                              <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">Admin Panel</span>
+                            </Link>
+                          )}
+                        </div>
+                        
+                        {/* Clear cache – visible so updates show after refresh */}
+                        <div className="border-t border-gray-200 py-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setIsClearingCache(true);
+                              try {
+                                await clearAllCache(false);
+                                queryClient.clear();
+                                queryClient.invalidateQueries();
+                                toast.success('Cache cleared. Page will show fresh data.');
+                                setShowProfileDropdown(false);
+                              } catch (e) {
+                                toast.error('Failed to clear cache');
+                              } finally {
+                                setIsClearingCache(false);
+                              }
+                            }}
+                            disabled={isClearingCache}
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-blue-50 transition-colors group w-full disabled:opacity-60"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-blue-100 transition-colors">
+                              <FiRefreshCw className={`w-5 h-5 text-gray-700 group-hover:text-blue-600 ${isClearingCache ? 'animate-spin' : ''}`} />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-blue-600 transition-colors">{isClearingCache ? 'Clearing...' : 'Clear cache & refresh'}</span>
+                          </button>
+                        </div>
+                        {/* Logout Section */}
+                        <div className="border-t border-gray-200">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              logout();
+                            }}
+                            className="flex items-center gap-3 px-4 py-3 text-gray-800 hover:bg-red-50 transition-colors group w-full"
+                          >
+                            <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-red-100 transition-colors">
+                              <FiLogOut className="w-5 h-5 text-gray-700 group-hover:text-red-600 transition-colors" />
+                            </div>
+                            <span className="text-sm text-gray-800 group-hover:text-red-600 transition-colors">Logout</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
                 )}
 
-                {/* Mobile Menu Button */}
+                {/* Mobile Menu Button - always visible on mobile, never shrink */}
                 <button
-                  className="md:hidden text-gray-700 p-2 hover:bg-gray-100 transition-colors navbar-icon-hover"
+                  className="md:hidden shrink-0 text-gray-700 p-2.5 hover:bg-gray-100 rounded-lg transition-colors navbar-icon-hover min-w-[44px] min-h-[44px] flex items-center justify-center"
                   onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
                   aria-label="Toggle menu"
                 >
@@ -1931,15 +1280,60 @@ export default function Navbar() {
             </div>
           </div>
 
-        {/* Second Navbar: Categories (Below Main Navbar) */}
-        <div className="border-t border-gray-200 bg-white">
+        {/* Second Navbar: Categories – full-width background, no gap */}
+        <div className="w-full border-t border-gray-200 bg-white">
           <CategoryChips />
         </div>
 
-        {/* Mobile Menu */}
+        {/* Mobile Menu - scrollable on small screens */}
         {mobileMenuOpen && (
-          <div className="md:hidden py-4 space-y-2 border-t border-gray-200 bg-white dark:bg-slate-800">
+          <div className="md:hidden py-4 space-y-2 border-t border-gray-200 bg-white dark:bg-slate-800 max-h-[calc(100vh-8rem)] overflow-y-auto overscroll-contain">
             
+            {/* Location - Mobile */}
+            <div className="px-4 py-3 border-b border-gray-100" ref={mobileLocationRef}>
+              <p className="text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">Location</p>
+              <button
+                type="button"
+                onClick={() => setShowLocationDropdown((v) => !v)}
+                className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl bg-gray-50 border border-gray-200 hover:bg-gray-100 transition-colors text-left"
+              >
+                <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
+                  <FiMapPin className="w-4 h-4 text-blue-600" />
+                </div>
+                <span className="text-base font-bold text-gray-900 flex-1 truncate">{locationDisplayLabel}</span>
+                <FiChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${showLocationDropdown ? 'rotate-180' : ''}`} />
+              </button>
+              {showLocationDropdown && (
+                <div className="mt-3 p-3 rounded-xl bg-gray-50/80 border border-gray-100 overflow-visible">
+                  {/* All India - top so always visible */}
+                  <button
+                    type="button"
+                    onClick={() => { handleLocationChange(''); setMobileMenuOpen(false); }}
+                    className={`w-full px-3 py-2.5 rounded-lg text-sm flex items-center gap-2 mb-3 ${!selectedLocation ? 'bg-blue-100 text-blue-900 font-semibold ring-1 ring-blue-300' : 'bg-white hover:bg-gray-100 text-gray-900 border border-gray-200'}`}
+                  >
+                    <FiGlobe className="w-4 h-4 text-blue-700" />
+                    <span className="font-semibold">All India</span>
+                  </button>
+                  {googlePlacesLoaded ? (
+                    <>
+                      <p className="text-xs text-gray-500 mb-2">Or search your city</p>
+                      <PlaceAutocompleteInputFirefox
+                        visible={showLocationDropdown}
+                        placeholder="e.g. Kochi, Mumbai..."
+                        value=""
+                        onPlaceSelect={(r) => { handlePlaceSelect(r); setMobileMenuOpen(false); }}
+                        includedRegionCodes={['in']}
+                        includedPrimaryTypes={['locality', 'administrative_area_level_3']}
+                        className="w-full"
+                      />
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-600">Loading...</p>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Translator - Mobile */}
             <div className="px-4 py-2 border-b border-gray-200">
               <Translator />
@@ -1958,7 +1352,7 @@ export default function Navbar() {
               <>
                 <button
                   onClick={() => {
-                    setLoginModalOpen(true);
+                    openLoginModal();
                     setMobileMenuOpen(false);
                   }}
                   className="block w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100 transition-colors"
@@ -1967,7 +1361,7 @@ export default function Navbar() {
                 </button>
                 <button
                   onClick={() => {
-                    setSignupModalOpen(true);
+                    openSignupModal();
                     setMobileMenuOpen(false);
                   }}
                   className="block w-full text-left px-4 py-2 bg-blue-600 text-white transition-colors"
@@ -2032,6 +1426,28 @@ export default function Navbar() {
                   </Link>
                 )}
                 <button
+                  type="button"
+                  onClick={async () => {
+                    setIsClearingCache(true);
+                    try {
+                      await clearAllCache(false);
+                      queryClient.clear();
+                      queryClient.invalidateQueries();
+                      toast.success('Cache cleared. Page will show fresh data.');
+                      setMobileMenuOpen(false);
+                    } catch (e) {
+                      toast.error('Failed to clear cache');
+                    } finally {
+                      setIsClearingCache(false);
+                    }
+                  }}
+                  disabled={isClearingCache}
+                  className="block w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100 flex items-center gap-2 disabled:opacity-60"
+                >
+                  <FiRefreshCw className={isClearingCache ? 'animate-spin' : ''} />
+                  {isClearingCache ? 'Clearing...' : 'Clear cache & refresh'}
+                </button>
+                <button
                   onClick={() => {
                     logout();
                     setMobileMenuOpen(false);
@@ -2045,7 +1461,7 @@ export default function Navbar() {
               <>
                 <button
                   onClick={() => {
-                    setLoginModalOpen(true);
+                    openLoginModal();
                     setMobileMenuOpen(false);
                   }}
                   className="block w-full text-left px-4 py-2 text-gray-700 hover:bg-gray-100 transition-colors"
@@ -2054,7 +1470,7 @@ export default function Navbar() {
                 </button>
                 <button
                   onClick={() => {
-                    setSignupModalOpen(true);
+                    openSignupModal();
                     setMobileMenuOpen(false);
                   }}
                   className="block w-full text-left px-4 py-2 bg-blue-600 text-white transition-colors"
@@ -2067,8 +1483,7 @@ export default function Navbar() {
                   onClick={(e) => {
                     e.preventDefault();
                     setMobileMenuOpen(false);
-                    setSignupModalOpen(false);
-                    setLoginModalOpen(true);
+                    openLoginModal();
                   }}
                 >
                   <FiPlus className="inline w-4 h-4 mr-1" /> Post Ad
@@ -2079,19 +1494,6 @@ export default function Navbar() {
         )}
       </nav>
 
-      {/* Login Modal */}
-      <LoginModal 
-        isOpen={loginModalOpen} 
-        onClose={() => setLoginModalOpen(false)}
-        onSwitchToSignup={() => setSignupModalOpen(true)}
-      />
-
-      {/* Signup Modal */}
-      <SignupModal 
-        isOpen={signupModalOpen} 
-        onClose={() => setSignupModalOpen(false)}
-        onSwitchToLogin={() => setLoginModalOpen(true)}
-      />
     </>
   );
 }

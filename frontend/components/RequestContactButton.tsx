@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { FiPhone, FiX } from 'react-icons/fi';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 interface RequestContactButtonProps {
   sellerId: string;

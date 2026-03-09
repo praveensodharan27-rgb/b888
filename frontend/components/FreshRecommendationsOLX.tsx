@@ -1,10 +1,10 @@
 'use client';
 
 import { useInfiniteAds } from '@/hooks/useInfiniteAds';
-import AdCardOLX from './AdCardOLX';
-import { useEffect, useState } from 'react';
-import { dummyAds } from '@/lib/dummyData';
+import LazyAdCard from './LazyAdCard';
+import { useEffect, useState, useMemo } from 'react';
 import { useIntersectionObserver } from '@/hooks/useIntersectionObserver';
+import { useLocationPersistence } from '@/hooks/useLocationPersistence';
 import { useGoogleLocation } from '@/hooks/useGoogleLocation';
 
 interface FreshRecommendationsOLXProps {
@@ -20,51 +20,41 @@ export default function FreshRecommendationsOLX({ location, categorySlug }: Fres
   const limit = 8; // Show 8 ads per page
   const [radiusMessage, setRadiusMessage] = useState<string | null>(null);
   
-  // Get Google location (city, state, lat, lng)
+  const { location: persistedLocation } = useLocationPersistence();
   const { location: googleLocation } = useGoogleLocation();
   
-  // Build filter object based on location and category props
-  const filters: any = {
-    limit,
-    sort: 'newest' as const,
-  };
-
-  // Add category filter if provided
-  if (categorySlug) {
-    filters.category = categorySlug;
-  }
-
-  // Priority: Use Google location (city/state) if available, else use passed location
-  if (googleLocation) {
-    // Use Google Places location (city, state, lat, lng)
-    filters.city = googleLocation.city;
-    filters.state = googleLocation.state;
-    filters.latitude = googleLocation.lat.toString();
-    filters.longitude = googleLocation.lng.toString();
-    filters.radius = '50'; // Default 50km radius
-    console.log('📍 FreshRecommendationsOLX - Google location filter applied:', {
-      city: filters.city,
-      state: filters.state,
-      latitude: filters.latitude,
-      longitude: filters.longitude,
-      radius: filters.radius
-    });
-  } else if (location?.latitude && location?.longitude) {
-    // Fallback to passed location coordinates
-    filters.latitude = location.latitude.toString();
-    filters.longitude = location.longitude.toString();
-    filters.radius = '50'; // Default 50km radius
-    console.log('📍 FreshRecommendationsOLX - Location coordinates filter applied:', {
-      latitude: filters.latitude,
-      longitude: filters.longitude,
-      radius: filters.radius
-    });
-  } else if (location?.locationSlug) {
-    filters.location = location.locationSlug;
-    console.log('📍 FreshRecommendationsOLX - Location slug filter applied:', filters.location);
-  } else {
-    console.log('📍 FreshRecommendationsOLX - No location filter');
-  }
+  const filters = useMemo(() => {
+    const f: any = { limit, sort: 'newest' as const };
+    if (categorySlug) f.category = categorySlug;
+    const slug = (location?.locationSlug || persistedLocation?.slug || '').toLowerCase();
+    if (slug === 'india' || slug === 'all-india') return f;
+    if (location?.locationSlug) {
+      f.location = location.locationSlug;
+    } else if (persistedLocation?.slug) {
+      f.location = persistedLocation.slug;
+      if (persistedLocation.latitude && persistedLocation.longitude) {
+        f.latitude = String(persistedLocation.latitude);
+        f.longitude = String(persistedLocation.longitude);
+        f.radius = '50';
+      }
+    } else if (persistedLocation?.city) {
+      f.city = persistedLocation.city;
+      if (persistedLocation.state) f.state = persistedLocation.state;
+    } else if (googleLocation?.city) {
+      f.city = googleLocation.city;
+      if (googleLocation.state) f.state = googleLocation.state;
+      if (googleLocation.lat != null && googleLocation.lng != null) {
+        f.latitude = String(googleLocation.lat);
+        f.longitude = String(googleLocation.lng);
+        f.radius = '50';
+      }
+    } else if (location?.latitude != null && location?.longitude != null) {
+      f.latitude = String(location.latitude);
+      f.longitude = String(location.longitude);
+      f.radius = '50';
+    }
+    return f;
+  }, [location, persistedLocation, googleLocation, categorySlug, limit]);
   
   // Use infinite scroll for lazy loading
   const { data, isLoading, isError, hasNextPage, fetchNextPage, isFetchingNextPage } = useInfiniteAds(filters);
@@ -133,7 +123,7 @@ export default function FreshRecommendationsOLX({ location, categorySlug }: Fres
       )}
 
       {isLoading && ads.length === 0 ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6 lg:gap-8">
           {[...Array(8)].map((_, i) => (
             <div key={i} className="bg-white rounded-lg shadow-md animate-pulse overflow-hidden">
               <div className="h-48 md:h-56 bg-gray-200"></div>
@@ -152,13 +142,13 @@ export default function FreshRecommendationsOLX({ location, categorySlug }: Fres
         </div>
       ) : ads.length > 0 ? (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-            {ads.map((ad: any) => {
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6 lg:gap-8 items-stretch">
+            {ads.map((ad: any, index: number) => {
               if (!ad || !ad.id || !ad.title) {
                 return null;
               }
               return (
-                <AdCardOLX key={ad.id} ad={ad} />
+                <LazyAdCard key={ad.id} ad={ad} variant="olx" priority={index < 6} eager={index < 8} />
               );
             })}
           </div>

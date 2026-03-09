@@ -9,7 +9,7 @@ export default function FooterOLX() {
 
   return (
     <footer className="bg-white border-t border-gray-200 mt-16">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
         {/* Main Footer Content */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 md:gap-12 mb-8">
           {/* Popular Locations */}
@@ -46,7 +46,7 @@ export default function FooterOLX() {
             </ul>
           </div>
 
-          {/* About Us */}
+          {/* About Us + CTA */}
           <div>
             <h3 className="text-sm font-bold text-gray-900 uppercase mb-4">About Us</h3>
             <ul className="space-y-2">
@@ -66,6 +66,15 @@ export default function FooterOLX() {
                 </Link>
               </li>
             </ul>
+
+            <div className="mt-4">
+              <a
+                href="/mybusiness"
+                className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition-colors"
+              >
+                List your business
+              </a>
+            </div>
           </div>
         </div>
 

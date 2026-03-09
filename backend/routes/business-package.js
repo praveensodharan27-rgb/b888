@@ -741,6 +741,33 @@ router.post('/verify',
         createdAt: notification.createdAt
       });
 
+      // Send email and SMS notifications
+      try {
+        const { addNotificationToQueue } = require('../queues/notificationQueue');
+        const user = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          select: { id: true, name: true, email: true, phone: true }
+        });
+        if (user) {
+          await addNotificationToQueue({
+            type: 'business_package_activated',
+            data: {
+              user,
+              businessPackage: updatedPackage,
+              order: {
+                id: updatedPackage.id,
+                amount: updatedPackage.amount || updatedPackage.price || businessPackage.amount,
+                paymentMethod: 'Razorpay',
+                invoiceId: updatedPackage.id
+              }
+            }
+          });
+          console.log('📧 Business package notification queued for user', req.user.id);
+        }
+      } catch (notificationError) {
+        console.error('⚠️ Failed to queue business package notification:', notificationError);
+      }
+
       // Emit real-time quota update after package purchase
       try {
         const { checkAndResetUserQuota } = require('../services/monthlyQuotaReset');

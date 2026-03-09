@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { getCurrentPosition } from '@/utils/geolocation';
 
 interface GeolocationState {
   latitude: number | null;
@@ -20,7 +21,7 @@ export const useGeolocation = () => {
   });
 
   useEffect(() => {
-    if (!navigator.geolocation) {
+    if (typeof window === 'undefined' || !navigator.geolocation) {
       setState(prev => ({
         ...prev,
         error: 'Geolocation is not supported by your browser',
@@ -29,43 +30,28 @@ export const useGeolocation = () => {
       return;
     }
 
-    const options: PositionOptions = {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0, // Don't use cached position
-    };
-
-    const success = (position: GeolocationPosition) => {
-      setState({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        accuracy: position.coords.accuracy,
-        error: null,
-        loading: false,
+    getCurrentPosition()
+      .then(({ latitude, longitude, accuracy }) => {
+        setState({
+          latitude,
+          longitude,
+          accuracy: accuracy ?? null,
+          error: null,
+          loading: false,
+        });
+      })
+      .catch((err: { code?: number; message?: string }) => {
+        let errorMessage = 'Unable to retrieve your location';
+        const code = err?.code ?? 2;
+        if (code === 1) errorMessage = 'Location access denied by user';
+        else if (code === 2) errorMessage = 'Location information unavailable';
+        else if (code === 3) errorMessage = 'Location request timed out';
+        setState(prev => ({
+          ...prev,
+          error: errorMessage,
+          loading: false,
+        }));
       });
-    };
-
-    const error = (err: GeolocationPositionError) => {
-      let errorMessage = 'Unable to retrieve your location';
-      switch (err.code) {
-        case err.PERMISSION_DENIED:
-          errorMessage = 'Location access denied by user';
-          break;
-        case err.POSITION_UNAVAILABLE:
-          errorMessage = 'Location information unavailable';
-          break;
-        case err.TIMEOUT:
-          errorMessage = 'Location request timed out';
-          break;
-      }
-      setState(prev => ({
-        ...prev,
-        error: errorMessage,
-        loading: false,
-      }));
-    };
-
-    navigator.geolocation.getCurrentPosition(success, error, options);
   }, []);
 
   return state;

@@ -5,19 +5,46 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { useCreateAd, useFreeAdsStatus, useCreateAdPostingOrder, useVerifyAdPostingPayment, useAdLimitStatus } from '@/hooks/useAds';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import Cookies from 'js-cookie';
 import api from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { getSocket } from '@/lib/socket';
 import { useGooglePlaces } from '@/hooks/useGooglePlaces';
+import PlaceAutocompleteInputFirefox from '@/components/PlaceAutocompleteInputFirefox';
 import { usePlacesAutocomplete } from '@/hooks/usePlacesAutocomplete';
 import CreatableSelect from 'react-select/creatable';
-import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage, FiUser, FiCamera, FiMapPin, FiSearch, FiMap, FiHome } from 'react-icons/fi';
+import { FiX, FiUpload, FiCreditCard, FiInfo, FiStar, FiTrendingUp, FiRefreshCw, FiAlertCircle, FiZap, FiNavigation, FiBriefcase, FiFlag, FiCheckCircle, FiPackage, FiUser, FiCamera, FiMapPin, FiSearch, FiMap, FiHome, FiFileText, FiDollarSign, FiImage, FiShield, FiLayers, FiChevronDown } from 'react-icons/fi';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import ImageWithFallback from '@/components/ImageWithFallback';
 import ProductSpecifications from '@/components/ProductSpecifications';
+import DynamicSpecifications from '@/components/DynamicSpecifications';
 import AdLimitAlert from '@/components/AdLimitAlert';
-import toast from 'react-hot-toast';
+import UpgradePopup from '@/components/UpgradePopup';
+import CategorySkeleton from '@/components/CategorySkeleton';
+import logger from '@/utils/logger';
+import toast from '@/lib/toast';
+interface Category {
+  id: string;
+  _id?: string;
+  name: string;
+  slug: string;
+  icon?: string;
+  image?: string;
+  categoryId?: string | null; // Main categories have null, subcategories have parent ID
+  category_id?: string | null; // Alternative field name
+  subcategories?: Subcategory[];
+  _count?: { ads: number };
+}
+
+interface Subcategory {
+  id: string;
+  _id?: string;
+  name: string;
+  slug: string;
+  categoryId?: string;
+  _count?: { ads: number };
+}
 
 declare global {
   interface Window {
@@ -53,27 +80,61 @@ export default function PostAdPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading, user } = useAuth();
   const queryClient = useQueryClient();
-  const { register, handleSubmit, formState: { errors }, watch, setValue } = useForm();
+  type AdFormValues = {
+    locationId?: string;
+    state?: string;
+    city?: string;
+    neighbourhood?: string;
+    categoryId?: string;
+    subcategoryId?: string;
+    attributes?: Record<string, any>;
+    title?: string;
+    description?: string;
+    price?: number;
+    condition?: string;
+  };
+  const { register, handleSubmit, formState: { errors }, watch, setValue, clearErrors, trigger } = useForm<AdFormValues>({
+    defaultValues: {
+      locationId: '',
+      state: '',
+      city: '',
+      neighbourhood: ''
+    }
+  });
   
   // 2. ALL useState hooks - must be called unconditionally and in same order
   const [images, setImages] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentOrder, setPaymentOrder] = useState<any>(null);
+  const [isSubmittingForm, setIsSubmittingForm] = useState(false);
   const [adFormData, setAdFormData] = useState<any>(null);
   const [selectedPremium, setSelectedPremium] = useState<string | null>(null);
   const [isUrgent, setIsUrgent] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+  const [isImprovingDescription, setIsImprovingDescription] = useState(false);
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
   const [showPaymentRequiredModal, setShowPaymentRequiredModal] = useState(false);
   const [paymentRequiredError, setPaymentRequiredError] = useState<any>(null);
   const [isAdLimitAlertDismissed, setIsAdLimitAlertDismissed] = useState(false);
+  const [upgradePopupDismissed, setUpgradePopupDismissed] = useState(false);
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
   const [isPaymentVerified, setIsPaymentVerified] = useState(false); // Track if payment is verified
   const [showPhoneInAds, setShowPhoneInAds] = useState(true);
+  const [isImageAiLoading, setIsImageAiLoading] = useState(false);
+  const [aiFilledFields, setAiFilledFields] = useState<string[]>([]);
+  const [aiPriceSuggestion, setAiPriceSuggestion] = useState<{
+    suggested?: number | null;
+    min?: number | null;
+    max?: number | null;
+    source?: 'db' | 'ai';
+  } | null>(null);
+  const [autoLocationMessage, setAutoLocationMessage] = useState<string | null>(null);
+  const locationInitializedRef = useRef(false);
   // Use shared Google Places hook (reuses script from home page)
   const { googlePlacesLoaded } = useGooglePlaces();
+  const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent);
   const [locationInputMounted, setLocationInputMounted] = useState(false); // Track if location input is mounted
   const [currentStep, setCurrentStep] = useState(1);
   // Map coordinates state
@@ -90,6 +151,106 @@ export default function PostAdPage() {
   const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [brandSearchQuery, setBrandSearchQuery] = useState('');
   const [modelSearchQuery, setModelSearchQuery] = useState('');
+
+  // Helper: generate lightweight SEO-friendly description based on category + basic fields
+  const generateSeoDescriptionTemplate = useCallback(
+    (opts: {
+      title?: string | null;
+      categoryName?: string | null;
+      categorySlug?: string | null;
+      brand?: string | null;
+      model?: string | null;
+      condition?: string | null;
+      city?: string | null;
+      state?: string | null;
+    }): string | null => {
+      const {
+        title,
+        categoryName,
+        categorySlug,
+        brand,
+        model,
+        condition,
+        city,
+        state,
+      } = opts;
+
+      const clean = (v?: string | null) => (v || '').toString().trim();
+      const t = clean(title);
+      const catName = clean(categoryName);
+      const slug = clean(categorySlug).toLowerCase();
+      const b = clean(brand);
+      const m = clean(model);
+      const c = clean(condition);
+      const cityClean = clean(city);
+      const stateClean = clean(state);
+
+      if (!t && !b && !m) return null;
+
+      const locationPart =
+        cityClean && stateClean
+          ? `${cityClean}, ${stateClean}`
+          : cityClean || stateClean || '';
+
+      const namePart = t || [b, m].filter(Boolean).join(' ');
+      const condPart = c || 'good condition';
+
+      const baseCategory = (() => {
+        if (slug.includes('vehicle') || slug.includes('car') || slug.includes('bike')) return 'vehicles';
+        if (slug.includes('mobile') || slug.includes('phone')) return 'mobiles';
+        if (slug.includes('electronic') || slug.includes('laptop') || slug.includes('tv')) return 'electronics';
+        if (slug.includes('furniture') || slug.includes('sofa') || slug.includes('table')) return 'furniture';
+        if (slug.includes('fashion') || slug.includes('clothing') || slug.includes('shoe')) return 'fashion';
+        if (slug.includes('property') || slug.includes('real-estate') || slug.includes('apartment')) return 'properties';
+        if (slug.includes('job') || slug.includes('career')) return 'jobs';
+        if (slug.includes('service')) return 'services';
+        return 'general';
+      })();
+
+      const fullCategoryLabel = catName || baseCategory;
+
+      const locSentence = locationPart
+        ? ` in ${locationPart}`
+        : '';
+
+      let paragraph: string;
+      switch (baseCategory) {
+        case 'vehicles':
+          paragraph = `${namePart} is available for sale${locSentence}. The vehicle is ${condPart} and well maintained. It belongs to the ${fullCategoryLabel} category and offers reliable performance for daily use and long drives. Interested buyers can contact for more details.`;
+          break;
+        case 'mobiles':
+          paragraph = `${namePart} is available for sale${locSentence}. The phone is in ${condPart} and works perfectly. It is ideal for users looking for a high-performance smartphone with a premium design and modern features.`;
+          break;
+        case 'electronics':
+          paragraph = `${namePart} is available for sale${locSentence}. This electronic item is in ${condPart} and fully functional. It is a great choice for buyers seeking a dependable ${fullCategoryLabel.toLowerCase()} product at a reasonable price.`;
+          break;
+        case 'furniture':
+          paragraph = `${namePart} is available for sale${locSentence}. The furniture is sturdy, well maintained and suitable for modern living spaces. It is perfect for buyers looking to upgrade their home with comfortable and durable ${fullCategoryLabel.toLowerCase()}.`;
+          break;
+        case 'fashion':
+          paragraph = `${namePart} is available for sale${locSentence}. The item is in ${condPart} and offers a stylish look suitable for everyday wear or special occasions. It is ideal for buyers looking for quality fashion at a fair price.`;
+          break;
+        case 'properties':
+          paragraph = `${namePart} is available for sale${locSentence}. The property is in ${condPart} and located in a convenient area. It is a good option for buyers seeking a comfortable and well-located ${fullCategoryLabel.toLowerCase()} for personal use or investment.`;
+          break;
+        case 'jobs':
+          paragraph = `${namePart} opportunity available${locSentence}. The role is in ${condPart} and offers a good work environment. It is suitable for candidates seeking a stable job in the ${fullCategoryLabel.toLowerCase()} category.`;
+          break;
+        case 'services':
+          paragraph = `${namePart} service is available${locSentence}. The service is provided in ${condPart} and aims to deliver reliable results. It is ideal for customers looking for professional ${fullCategoryLabel.toLowerCase()} support.`;
+          break;
+        default:
+          paragraph = `${namePart} is available for sale${locSentence}. The item is in ${condPart} and well maintained. It belongs to the ${fullCategoryLabel} category and is a good option for buyers looking for a reliable product at a reasonable price.`;
+          break;
+      }
+
+      // Clamp to ~55 words for consistency
+      const words = paragraph.split(/\s+/).filter(Boolean);
+      const limited = words.slice(0, 55).join(' ');
+      return limited;
+    },
+    []
+  );
   
   // Color and Storage states for autocomplete
   const [colorOptions, setColorOptions] = useState<Array<{ value: string; label: string }>>([]);
@@ -125,8 +286,11 @@ export default function PostAdPage() {
   const neighborhoodInputRef = useRef<HTMLInputElement>(null);
   
   // 3. ALL useRef hooks
-  const locationAutocompleteRef = useRef<HTMLInputElement>(null);
+  const locationAutocompleteContainerRef = useRef<HTMLDivElement>(null);
   const autocompleteInstanceRef = useRef<any>(null);
+  const setLocationInputValueRef = useRef<((v: string) => void) | null>(null);
+  const lastSyncedLocationInputRef = useRef<string>('');
+  const lastSelectedLocationQueryRef = useRef<string | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -135,7 +299,8 @@ export default function PostAdPage() {
   // 4. Custom hooks and useQuery hooks
   const createAd = useCreateAd();
   const { data: freeAdsStatus } = useFreeAdsStatus(isAuthenticated);
-  const { data: adLimitStatus, isLoading: isLoadingAdLimit } = useAdLimitStatus(user?.id);
+  const hasPremiumSelected = selectedPremium != null && selectedPremium !== '';
+  const { data: adLimitStatus, isLoading: isLoadingAdLimit } = useAdLimitStatus(user?.id, hasPremiumSelected);
   
   // Also fetch business package status as fallback for button text
   const { data: businessPackageStatus } = useQuery({
@@ -165,65 +330,371 @@ export default function PostAdPage() {
   const { data: premiumSettings, isLoading: isLoadingOffers } = useQuery({
     queryKey: ['premium-offers'],
     queryFn: async (): Promise<Array<{ id: string; type: string; name: string; description: string; price: number; originalPrice: number; duration: number; hasOffer: boolean }>> => {
-      const response = await api.get('/premium/offers');
-      const offersData = response.data.offers;
-      
-      // Transform the object structure into an array format
-      // API returns: { prices: {...}, offerPrices: {...}, durations: {...} }
-      // We need: [{ type: 'TOP', name: '...', price: ..., duration: ... }, ...]
-      if (offersData && typeof offersData === 'object' && !Array.isArray(offersData)) {
-        const offersArray: Array<{ id: string; type: string; name: string; description: string; price: number; originalPrice: number; duration: number; hasOffer: boolean }> = [];
-        const premiumTypes = ['TOP', 'FEATURED', 'BUMP_UP', 'URGENT'];
+      try {
+        const response = await api.get('/premium/offers');
+        const offersData = response.data?.offers;
         
-        premiumTypes.forEach((type) => {
-          const originalPrice = offersData.prices?.[type] || 0;
-          const offerPrice = offersData.offerPrices?.[type];
-          // Use offer price if available (discounted), otherwise use regular price
-          const finalPrice = offerPrice && offerPrice < originalPrice ? offerPrice : originalPrice;
-          const duration = offersData.durations?.[type] || 7;
+        // Transform the object structure into an array format
+        // API returns: { prices: {...}, offerPrices: {...}, durations: {...} }
+        // We need: [{ type: 'TOP', name: '...', price: ..., duration: ... }, ...]
+        if (offersData && typeof offersData === 'object' && !Array.isArray(offersData)) {
+          const offersArray: Array<{ id: string; type: string; name: string; description: string; price: number; originalPrice: number; duration: number; hasOffer: boolean }> = [];
+          const premiumTypes = ['TOP', 'FEATURED', 'BUMP_UP', 'URGENT'];
           
-          if (finalPrice > 0) {
-            offersArray.push({
-              id: type,
-              type: type,
-              name: type === 'TOP' ? 'Top Ad' : 
-                    type === 'FEATURED' ? 'Featured Ad' : 
-                    type === 'BUMP_UP' ? 'Bump Up' : 
-                    type === 'URGENT' ? 'Mark as Urgent' : 'Urgent Ad',
-              description: type === 'TOP' ? 'Stand out with a bright badge and priority search ranking' :
-                           type === 'FEATURED' ? 'Stay at the top of the category for 7 days' :
-                           type === 'BUMP_UP' ? 'Bump your ad to the top of listings' :
-                           type === 'URGENT' ? 'Stand out with a bright badge and priority search ranking' :
-                           'Mark your ad as urgent for priority placement',
-              price: finalPrice, // Price from backend (already in correct format, not cents)
-              originalPrice: originalPrice, // Original price for comparison
-              duration: duration,
-              hasOffer: !!(offerPrice && offerPrice < originalPrice),
-            });
-          }
-        });
+          premiumTypes.forEach((type) => {
+            const originalPrice = offersData.prices?.[type] || 0;
+            const offerPrice = offersData.offerPrices?.[type];
+            // Use offer price if available (discounted), otherwise use regular price
+            const finalPrice = offerPrice && offerPrice < originalPrice ? offerPrice : originalPrice;
+            const duration = offersData.durations?.[type] || 7;
+            
+            if (finalPrice > 0) {
+              offersArray.push({
+                id: type,
+                type: type,
+                name: type === 'TOP' ? 'Top Ad' : 
+                      type === 'FEATURED' ? 'Featured Ad' : 
+                      type === 'BUMP_UP' ? 'Bump Up' : 
+                      type === 'URGENT' ? 'Mark as Urgent' : 'Urgent Ad',
+                description: type === 'TOP' ? 'Stand out with a bright badge and priority search ranking' :
+                             type === 'FEATURED' ? 'Stay at the top of the category for 7 days' :
+                             type === 'BUMP_UP' ? 'Bump your ad to the top of listings' :
+                             type === 'URGENT' ? 'Stand out with a bright badge and priority search ranking' :
+                             'Mark your ad as urgent for priority placement',
+                price: finalPrice, // Price from backend (already in correct format, not cents)
+                originalPrice: originalPrice, // Original price for comparison
+                duration: duration,
+                hasOffer: !!(offerPrice && offerPrice < originalPrice),
+              });
+            }
+          });
+          
+          return offersArray;
+        }
         
-        return offersArray;
+        // If it's already an array, return as is
+        return Array.isArray(offersData) ? offersData : [];
+      } catch (err: unknown) {
+        // Network/API errors: don't break the page; post-ad works without premium options
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('Premium offers unavailable:', err instanceof Error ? err.message : 'Request failed');
+        }
+        return [];
       }
-      
-      // If it's already an array, return as is
-      return Array.isArray(offersData) ? offersData : [];
     },
     staleTime: 2 * 60 * 1000, // Cache for 2 minutes (shorter to get updates faster)
     gcTime: 10 * 60 * 1000, // Keep in cache for 10 minutes
     refetchOnWindowFocus: true, // Refetch when window gains focus to get latest offers
+    retry: 1, // Avoid repeated failures when backend is down or wrong URL
   });
 
-  const { data: categories } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      const response = await api.get('/categories');
-      return response.data.categories;
+  const { data: categories, isLoading: categoriesLoading, error: categoriesError, refetch: refetchCategories } = useQuery<Category[]>({
+    queryKey: ['categories', 'with-subcategories'],
+    queryFn: async (): Promise<Category[]> => {
+      try {
+        logger.log('🔄 Fetching categories from API...');
+        
+        const response = await api.get('/categories', {
+          timeout: 15000,
+          validateStatus: (status) => status < 500
+        });
+        
+        logger.log('📡 Categories API Response:', response.status);
+        
+        // Handle different response formats
+        let categories: Category[] = [];
+        
+        // Backend returns: { success: true, categories: [...] }
+        if (response.data?.success && Array.isArray(response.data.categories)) {
+          categories = response.data.categories;
+          console.log('✅ Categories loaded:', categories.length);
+        } else if (Array.isArray(response.data?.categories)) {
+          categories = response.data.categories;
+          console.log('✅ Categories loaded:', categories.length);
+        } else if (Array.isArray(response.data)) {
+          console.warn('⚠️ WARNING: Unexpected response format (direct array)');
+          categories = response.data;
+        } else {
+          console.error('❌ ERROR: Unexpected response format:', response.data);
+          return [];
+        }
+        
+        // CRITICAL: Verify we're using the correct array
+        console.log('✅ Categories array extracted:', {
+          length: categories.length,
+          isArray: Array.isArray(categories),
+          firstItem: categories[0] ? {
+            id: categories[0].id || categories[0]._id,
+            name: categories[0].name,
+            hasCategoryId: !!(categories[0].categoryId || categories[0].category_id),
+            isMainCategory: !(categories[0].categoryId || categories[0].category_id)
+          } : null
+        });
+        
+        // CRITICAL: Filter to ensure ONLY main categories are shown
+        // Main categories: NO categoryId field (they are top-level)
+        // Subcategories: HAVE categoryId field (they belong to a parent category)
+        // 
+        // Backend should only return main categories, but we double-check here
+        // to ensure subcategories never appear in the main category dropdown
+        const categoriesWithSubs = categories
+          .filter((item: any) => {
+            // Check if this item has a categoryId - if yes, it's a subcategory
+            const hasCategoryId = item.categoryId || item.category_id;
+            
+            // If item has categoryId, it's a subcategory - FILTER IT OUT
+            if (hasCategoryId) {
+              console.error('❌ FILTERING OUT subcategory from main category dropdown:', {
+                name: item?.name || 'Unnamed',
+                id: item?.id || item?._id || 'No ID',
+                categoryId: item?.categoryId || item?.category_id || 'Unknown',
+                reason: 'Subcategories should NOT appear in main category dropdown'
+              });
+              return false; // Filter out subcategories
+            }
+            
+            // Also check if this item appears in any category's subcategories list
+            // If it does, it's definitely a subcategory (shouldn't be in main list)
+            // Only check if item has valid id to avoid false matches
+            const itemId = item.id || item._id;
+            if (itemId) {
+              const isSubcategoryInAnyCategory = categories.some((cat: any) => {
+                // Skip if comparing to itself
+                const catId = cat.id || cat._id;
+                if (catId === itemId) return false;
+                
+                // Check if this item appears in this category's subcategories
+                if (cat.subcategories && Array.isArray(cat.subcategories)) {
+                  return cat.subcategories.some((sub: any) => {
+                    const subId = sub.id || sub._id;
+                    return subId === itemId;
+                  });
+                }
+                return false;
+              });
+              
+              if (isSubcategoryInAnyCategory) {
+                console.error('❌ FILTERING OUT item that appears as subcategory:', {
+                  name: item.name || 'Unnamed',
+                  id: itemId,
+                  reason: 'This item is listed as a subcategory in another category'
+                });
+                return false;
+              }
+            }
+            
+            // Accept only items without categoryId (main categories)
+            console.log('✅ Accepting MAIN category:', {
+              name: item?.name || 'Unnamed',
+              id: item?.id || item?._id || 'No ID',
+              hasCategoryId: false,
+              hasSubcategories: !!(item?.subcategories && item.subcategories.length > 0)
+            });
+            return true;
+          })
+          .map((category: any, index: number) => {
+            // Get category ID - prefer id, then _id, then generate one
+            const categoryId = category.id || category._id;
+            
+            // Normalize MAIN category - ensure it has an id and slug (use fallback if needed)
+            // Accept ALL IDs from database (MongoDB ObjectIDs, UUIDs, etc.)
+            return {
+          ...category,
+              id: categoryId || category.slug || `cat-${index}`,
+              slug: category.slug || category.name?.toLowerCase().replace(/\s+/g, '-') || `category-${index}`,
+              // Include ALL subcategories from database
+              subcategories: (category.subcategories || [])
+                .filter((sub: any) => {
+                  // Only filter out subcategories that are clearly invalid (no id, no name)
+                  return sub && (sub.id || sub._id || sub.name);
+                })
+                .map((sub: any, subIndex: number) => {
+                  const subId = sub.id || sub._id;
+                  
+                  // Accept ALL subcategory IDs from database
+                  return {
+                    ...sub,
+                    id: subId || sub.slug || `sub-${subIndex}`,
+                    slug: sub.slug || sub.name?.toLowerCase().replace(/\s+/g, '-') || `subcategory-${subIndex}`
+                  };
+                })
+            };
+          });
+        
+        // CRITICAL: Verify final array - check each item to ensure it's a main category
+        const subcategoriesInFinalArray = categoriesWithSubs.filter((c: any) => {
+          return !!(c.categoryId || c.category_id);
+        });
+        
+        if (subcategoriesInFinalArray.length > 0) {
+          console.error('❌ CRITICAL ERROR: Subcategories found in final array!', {
+            count: subcategoriesInFinalArray.length,
+            subcategories: subcategoriesInFinalArray.map((c: any) => ({
+              name: c.name,
+              id: c.id || c._id,
+              categoryId: c.categoryId || c.category_id
+            }))
+          });
+        }
+        
+        console.log('✅ FINAL MAIN CATEGORIES (returning to component):', {
+          total: categoriesWithSubs.length,
+          originalCount: categories.length,
+          filteredOut: categories.length - categoriesWithSubs.length,
+          withSubcategories: categoriesWithSubs.filter(c => c.subcategories && c.subcategories.length > 0).length,
+          withoutSubcategories: categoriesWithSubs.filter(c => !c.subcategories || c.subcategories.length === 0).length,
+          allCategoryNames: categoriesWithSubs.map((c: any) => c.name),
+          allCategoryIds: categoriesWithSubs.map((c: any) => c.id || c._id),
+          subcategoriesInArray: subcategoriesInFinalArray.length, // Should be 0
+          sampleCategory: categoriesWithSubs[0] ? {
+            id: categoriesWithSubs[0].id,
+            name: categoriesWithSubs[0].name,
+            slug: categoriesWithSubs[0].slug,
+            hasCategoryId: !!(categoriesWithSubs[0].categoryId || categoriesWithSubs[0].category_id), // Should be false
+            isMainCategory: !(categoriesWithSubs[0].categoryId || categoriesWithSubs[0].category_id), // Should be true
+            subcategoriesCount: categoriesWithSubs[0].subcategories?.length || 0
+          } : null
+        });
+        
+        // Log all category names for debugging
+        if (categoriesWithSubs.length > 0) {
+          console.log('📋 All Main Categories (final list):', categoriesWithSubs.map((c: any) => ({
+            name: c.name,
+            id: c.id || c._id,
+            hasCategoryId: !!(c.categoryId || c.category_id),
+            isMain: !(c.categoryId || c.category_id)
+          })));
+        } else {
+          console.warn('⚠️ No main categories found after filtering!');
+        }
+        
+        if (categoriesWithSubs.length === 0) {
+          console.warn('⚠️ Categories array is empty after filtering!');
+          console.warn('   Original categories count:', categories.length);
+          console.warn('   Sample category IDs:', categories.slice(0, 3).map((c: any) => ({ id: c.id, _id: c._id, name: c.name })));
+          
+          // If we have categories but they were all filtered, show them anyway (might be valid DB categories)
+          if (categories.length > 0) {
+            console.warn('⚠️ All categories were filtered out. Showing original categories anyway with normalized IDs.');
+            return categories.map((cat: any, index: number) => ({
+              ...cat,
+              id: cat.id || cat._id || cat.slug || `cat-${index}`,
+              subcategories: (cat.subcategories || []).map((sub: any, subIndex: number) => ({
+                ...sub,
+                id: sub.id || sub._id || sub.slug || `sub-${subIndex}`
+              }))
+            }));
+          }
+          
+          // If no categories at all, the database might be empty
+          console.error('❌ NO CATEGORIES IN DATABASE! Please seed categories.');
+          console.error('   Run: npm run seed-all-categories');
+          return [];
+        }
+        
+        return categoriesWithSubs;
+      } catch (error: any) {
+        if (process.env.NODE_ENV === 'development') {
+          const msg = error?.response?.data?.message ?? error?.message ?? 'Request failed';
+          const status = error?.response?.status;
+          console.warn('Categories fetch failed:', status != null ? `${status}` : '', msg);
+        }
+        return [];
+      }
     },
-    staleTime: 10 * 60 * 1000, // Cache for 10 minutes
-    gcTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-    refetchOnWindowFocus: false,
+    staleTime: 0, // NO CACHE - Always fetch fresh
+    gcTime: 0, // NO CACHE - Don't keep in cache
+    refetchOnWindowFocus: true, // Refetch on window focus
+    refetchOnMount: true, // Always refetch on component mount
+    retry: 3, // Retry on failure
+    enabled: true, // Always enabled
   });
+  
+  // Use categories from DATABASE - ensure they're loaded and displayed
+  const displayCategories = useMemo(() => {
+    console.log('🔍 displayCategories useMemo - Current state:', {
+      hasCategories: !!categories,
+      categoriesLength: categories?.length || 0,
+      isLoading: categoriesLoading,
+      hasError: !!categoriesError,
+      errorMessage: categoriesError?.message || 'none'
+    });
+    
+    if (!categories || categories.length === 0) {
+      if (categoriesLoading) {
+        console.log('⏳ Categories loading from DATABASE...');
+      } else if (categoriesError) {
+        console.error('❌ Error loading categories:', categoriesError);
+      } else {
+        console.warn('⚠️ No categories available from DATABASE');
+      }
+      return [];
+    }
+    
+    // CRITICAL: Filter out any subcategories that might be in the list
+    // Main categories should NOT have categoryId or category_id
+    // Subcategories HAVE categoryId pointing to their parent
+    const mainCategoriesOnly = categories.filter((cat: any) => {
+      const hasCategoryId = cat.categoryId || cat.category_id;
+      
+      if (hasCategoryId) {
+        console.error('❌ FILTERING OUT subcategory from displayCategories:', {
+          name: cat?.name || 'Unnamed',
+          id: cat?.id || cat?._id || 'No ID',
+          categoryId: cat?.categoryId || cat?.category_id || 'Unknown',
+          reason: 'Subcategories should NOT be in main category dropdown'
+        });
+        return false;
+      }
+      
+      // Also check: if this item appears as a subcategory in any other category, filter it out
+      // Only check if category has valid id to avoid false matches
+      const catId = cat?.id || cat?._id;
+      if (catId) {
+        const isSubcategory = categories.some((otherCat: any) => {
+          // Skip if comparing to itself
+          const otherCatId = otherCat?.id || otherCat?._id;
+          if (otherCatId === catId) return false;
+          
+          // Check if this category appears in another category's subcategories
+          if (otherCat?.subcategories && Array.isArray(otherCat.subcategories)) {
+            return otherCat.subcategories.some((sub: any) => {
+              const subId = sub?.id || sub?._id;
+              return subId === catId;
+            });
+          }
+          return false;
+        });
+        
+        if (isSubcategory) {
+          console.error('❌ FILTERING OUT item that is a subcategory:', {
+            name: cat?.name || 'Unnamed',
+            id: catId,
+            reason: 'This item is listed as a subcategory in another category'
+          });
+          return false;
+        }
+      }
+      
+      return true; // This is a valid main category
+    });
+    
+    // Log what we're displaying
+    console.log('✅ Display MAIN categories only:', {
+      originalCount: categories.length,
+      filteredCount: mainCategoriesOnly.length,
+      filteredOut: categories.length - mainCategoriesOnly.length,
+      categoryNames: mainCategoriesOnly.map((c: any) => c.name || 'Unnamed'),
+      firstCategory: mainCategoriesOnly[0] ? {
+        id: mainCategoriesOnly[0].id,
+        name: mainCategoriesOnly[0].name,
+        hasCategoryId: !!(mainCategoriesOnly[0].categoryId || mainCategoriesOnly[0].category_id),
+        subcategoriesCount: mainCategoriesOnly[0].subcategories?.length || 0
+      } : null
+    });
+    
+    return mainCategoriesOnly;
+  }, [categories, categoriesLoading, categoriesError]);
   
   // ALL watch() calls must be at top level, before useEffect hooks
   const selectedCategoryId = watch('categoryId');
@@ -236,14 +707,197 @@ export default function PostAdPage() {
   const state = watch('state');
   const city = watch('city');
   
-  // Computed values from watched values
-  const selectedCategory = categories?.find((c: any) => c.id === selectedCategoryId);
-  const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => s.id === selectedSubcategoryId);
+  // Computed values from watched values (use displayCategories which includes fallback)
+  const selectedCategory = displayCategories?.find((c: any) => {
+    const categoryId = c.id || c._id;
+    return categoryId === selectedCategoryId;
+  });
+  const selectedSubcategory = selectedCategory?.subcategories?.find((s: any) => {
+    const subcategoryId = s.id || s._id;
+    return subcategoryId === selectedSubcategoryId;
+  });
+  
+  // Clear specifications cache when category/subcategory changes
+  useEffect(() => {
+    if (selectedCategory?.slug) {
+      // Invalidate all specifications queries (prefix match)
+      queryClient.invalidateQueries({ queryKey: ['categories-specifications'] });
+    }
+  }, [selectedCategory?.slug, selectedSubcategory?.slug, queryClient]);
+  
+  // Debug: Log selected category/subcategory for specifications
+  useEffect(() => {
+    if (selectedCategory && selectedSubcategory) {
+      console.log('📋 Specifications Debug:', {
+        category: selectedCategory.name,
+        categorySlug: selectedCategory.slug,
+        subcategory: selectedSubcategory.name,
+        subcategorySlug: selectedSubcategory.slug,
+        hasSlug: !!selectedSubcategory.slug
+      });
+    } else if (selectedCategory && !selectedSubcategory) {
+      console.log('⚠️ Category selected but subcategory not found:', {
+        category: selectedCategory.name,
+        subcategoryId: selectedSubcategoryId,
+        availableSubs: selectedCategory.subcategories?.map((s: any) => ({ id: s.id, name: s.name, slug: s.slug }))
+      });
+    }
+  }, [selectedCategory, selectedSubcategory, selectedSubcategoryId]);
+
+  // Auto-generate lightweight SEO-friendly description when key fields are present
+  useEffect(() => {
+    const hasDescription = !!(description && description.toString().trim().length > 0);
+    if (hasDescription) return;
+    // Don't override AI-filled description from image or text generator
+    if (aiFilledFields.includes('description')) return;
+
+    const brand = attributes?.brand ?? attributes?.Brand ?? null;
+    const model = attributes?.model ?? attributes?.Model ?? null;
+
+    const generated = generateSeoDescriptionTemplate({
+      title,
+      categoryName: selectedCategory?.name,
+      categorySlug: selectedCategory?.slug,
+      brand: typeof brand === 'string' ? brand : null,
+      model: typeof model === 'string' ? model : null,
+      condition,
+      city,
+      state,
+    });
+
+    if (generated) {
+      setValue('description', generated, { shouldDirty: true });
+      clearErrors('description');
+      setAiFilledFields((prev) =>
+        prev.includes('description') ? prev : [...prev, 'description']
+      );
+    }
+  }, [
+    title,
+    attributes,
+    description,
+    selectedCategory,
+    condition,
+    city,
+    state,
+    aiFilledFields,
+    generateSeoDescriptionTemplate,
+    setValue,
+    clearErrors,
+  ]);
+
+  // Heuristic: auto-select "mobiles → mobile-phones" for mobile-like titles/brands/models
+  useEffect(() => {
+    // Don't override if user already selected a category
+    if (selectedCategoryId || !displayCategories || displayCategories.length === 0) return;
+
+    const t = (title || '').toString().toLowerCase();
+    const brand = (attributes?.brand || '').toString().toLowerCase();
+    const model = (attributes?.model || '').toString().toLowerCase();
+    const combined = `${t} ${brand} ${model}`.trim();
+    if (!combined) return;
+
+    const mobileKeywords = [
+      'iphone',
+      'samsung',
+      'redmi',
+      'realme',
+      'oneplus',
+      'oppo',
+      'vivo',
+      'pixel',
+      'galaxy',
+      'smartphone',
+      'smart phone',
+      'mobile phone',
+      'mobile-phones',
+      'mobiles',
+      'android phone',
+    ];
+
+    const isMobileLike = mobileKeywords.some((kw) => combined.includes(kw));
+    if (!isMobileLike) return;
+
+    const mobilesCategory = displayCategories.find((c: any) => {
+      const name = (c.name || '').toString().toLowerCase();
+      const slug = (c.slug || '').toString().toLowerCase();
+      return slug === 'mobiles' || name.includes('mobile');
+    });
+
+    if (!mobilesCategory) return;
+
+    const catId = mobilesCategory.id || mobilesCategory._id;
+    if (!catId) return;
+
+    setValue('categoryId', catId, { shouldValidate: true, shouldDirty: true });
+    clearErrors('categoryId');
+    setAiFilledFields((prev) =>
+      prev.includes('category') ? prev : [...prev, 'category']
+    );
+
+    // Try to auto-select mobile-phones / smartphones subcategory
+    if (Array.isArray(mobilesCategory.subcategories)) {
+      const mobileSub = mobilesCategory.subcategories.find((s: any) => {
+        const name = (s.name || '').toString().toLowerCase();
+        const slug = (s.slug || '').toString().toLowerCase();
+        return (
+          slug === 'mobile-phones' ||
+          name.includes('smartphone') ||
+          name.includes('mobile phone')
+        );
+      });
+
+      if (mobileSub) {
+        const subId = mobileSub.id || mobileSub._id;
+        if (subId) {
+          setValue('subcategoryId', subId, {
+            shouldValidate: true,
+            shouldDirty: true,
+          });
+          clearErrors('subcategoryId');
+          setAiFilledFields((prev) =>
+            prev.includes('subcategory') ? prev : [...prev, 'subcategory']
+          );
+        }
+      }
+    }
+  }, [
+    title,
+    attributes,
+    selectedCategoryId,
+    displayCategories,
+    setValue,
+    clearErrors,
+    setAiFilledFields,
+  ]);
+  
+  // Debug: Log selected category and subcategories
+  useEffect(() => {
+    if (selectedCategoryId && selectedCategory) {
+      console.log('🔍 Post-ad Category Selection:', {
+        categoryId: selectedCategoryId,
+        categoryName: selectedCategory.name,
+        subcategoriesCount: selectedCategory.subcategories?.length || 0,
+        subcategories: selectedCategory.subcategories?.map((s: any) => s.name) || [],
+        hasSubcategories: !!(selectedCategory.subcategories && selectedCategory.subcategories.length > 0),
+      });
+    } else if (selectedCategoryId && !selectedCategory) {
+      console.warn('⚠️ Category not found:', selectedCategoryId, 'Available categories:', categories?.map((c: any) => c.id));
+    }
+  }, [selectedCategoryId, selectedCategory, categories]);
   
   // Check if this is mobile phones subcategory
-  const isMobilePhones = selectedCategory?.slug === 'mobiles' && selectedSubcategory?.slug === 'mobile-phones';
+  // Handle both 'mobiles' and 'electronics' category slugs (frontend may use 'electronics', backend uses 'mobiles')
+  const isMobilePhones = (
+    (selectedCategory?.slug === 'mobiles' || selectedCategory?.slug === 'electronics') && 
+    selectedSubcategory?.slug === 'mobile-phones'
+  );
   // Check if this is any mobile subcategory
   const isMobileCategory = selectedCategory?.slug === 'mobiles' || selectedCategory?.name?.toLowerCase().includes('mobile');
+  
+  // State for brands-models data
+  const [brandsModelsData, setBrandsModelsData] = useState<any>(null);
+  const [hasBrandsModels, setHasBrandsModels] = useState(false);
   
   // Check if premium features are selected
   const hasPremiumFeatures = !!(selectedPremium || isUrgent);
@@ -254,20 +908,18 @@ export default function PostAdPage() {
   // Watch brand from attributes
   const selectedBrandFromForm = watch('attributes.brand');
 
-  // Real-time quota updates via socket
+  // Real-time quota updates via socket (optimized - single registration)
   useEffect(() => {
     const socket = getSocket();
     if (!socket || !isAuthenticated) return;
 
     const handleQuotaUpdate = (quotaData: any) => {
-      console.log('📡 Received AD_QUOTA_UPDATED event after purchase/usage:', quotaData);
+      logger.log('📡 Received AD_QUOTA_UPDATED event');
       
-      // CRITICAL: Calculate business ads remaining (only from NON-EXHAUSTED packages)
-      // Never count exhausted packages as "0 Available" - they should show as EXHAUSTED
+      // Calculate business ads remaining (only from NON-EXHAUSTED packages)
       const businessAdsRemaining = quotaData.packages?.reduce((sum: number, pkg: any) => {
-        // Only count packages that are NOT exhausted
         if (pkg.isExhausted || (pkg.adsRemaining === 0 && pkg.totalAds > 0)) {
-          return sum; // Skip exhausted packages
+          return sum;
         }
         return sum + (pkg.adsRemaining || 0);
       }, 0) || 0;
@@ -292,30 +944,16 @@ export default function PostAdPage() {
       queryClient.refetchQueries({ queryKey: ['user-profile'] });
       queryClient.refetchQueries({ queryKey: ['business-package', 'status'] });
       
-      console.log('✅ Quota updated in real-time:', {
-        freeAds: quotaData.monthlyFreeAds?.remaining || 0,
-        businessAds: businessAdsRemaining,
-        totalPackages: quotaData.packages?.length || 0,
-        activePackages: quotaData.packages?.filter((pkg: any) => !pkg.isExhausted && (pkg.adsRemaining || 0) > 0).length || 0,
-        exhaustedPackages: quotaData.packages?.filter((pkg: any) => pkg.isExhausted || (pkg.adsRemaining === 0 && pkg.totalAds > 0)).length || 0
-      });
+      logger.log('✅ Quota updated in real-time');
     };
 
+    // Register listener ONCE (no duplicate on 'connect')
     socket.on('AD_QUOTA_UPDATED', handleQuotaUpdate);
-    console.log('✅ Socket listener registered for AD_QUOTA_UPDATED');
-
-    // Also listen for connection events to re-register listener
-    socket.on('connect', () => {
-      console.log('✅ Socket reconnected - re-registering quota listener');
-      socket.on('AD_QUOTA_UPDATED', handleQuotaUpdate);
-    });
+    logger.log('✅ Socket listener registered');
 
     return () => {
-      if (socket) {
-        socket.off('AD_QUOTA_UPDATED', handleQuotaUpdate);
-        socket.off('connect');
-        console.log('🧹 Cleaned up socket listeners');
-      }
+      socket.off('AD_QUOTA_UPDATED', handleQuotaUpdate);
+      logger.log('🧹 Socket listener cleaned up');
     };
   }, [isAuthenticated, queryClient]);
 
@@ -381,7 +1019,14 @@ export default function PostAdPage() {
   const validateStep = (step: number): boolean => {
     switch (step) {
       case 1: // Category & Subcategory (combined)
-        return !!(selectedCategoryId && selectedSubcategoryId);
+        // Category is always required
+        if (!selectedCategoryId) return false;
+        // Subcategory is only required if category has subcategories
+        if (selectedCategory?.subcategories && selectedCategory.subcategories.length > 0) {
+          return !!selectedSubcategoryId;
+        }
+        // If no subcategories, category alone is sufficient
+        return true;
       case 2: // Brand
         if (!selectedCategory || !selectedSubcategory) return false;
         return true;
@@ -392,8 +1037,9 @@ export default function PostAdPage() {
         return !!(title && description);
       case 5: // Image
         return images.length > 0;
-      case 6: // Price
-        return !!(price && parseFloat(price) >= 0);
+      case 6: // Price (from root or attributes, e.g. Product Specifications)
+        const priceVal = price ?? watch('attributes.price');
+        return !!(priceVal && parseFloat(String(priceVal)) >= 0);
       case 7: // Location
         return !!(state && city);
       default:
@@ -413,49 +1059,148 @@ export default function PostAdPage() {
     }
   }, [mounted, isAuthenticated, isLoading, router]);
 
-  // Fetch popular brands when mobile phones subcategory is selected
+  // Fetch brands-models data when category/subcategory is selected
   useEffect(() => {
-    if (isMobilePhones && !isLoadingBrands) {
+    if (selectedCategory?.slug && selectedSubcategory?.slug && !isLoadingBrands) {
       setIsLoadingBrands(true);
-      api.get('/categories/brands', {
+      api.get('/categories/brands-models', {
         params: {
-          categorySlug: selectedCategory?.slug,
-          subcategorySlug: selectedSubcategory?.slug,
-          limit: 10
+          categorySlug: selectedCategory.slug,
+          subcategorySlug: selectedSubcategory.slug
         }
       })
         .then(response => {
-          if (response.data.success && response.data.brands) {
-            setBrands(response.data.brands);
-            setBrandOptions(response.data.brands.map((brand: { id: string; name: string }) => ({
-              value: brand.name,
-              label: brand.name
-            })));
+          if (response.data.success && response.data.categories) {
+            const categoryData = response.data.categories[0];
+            if (categoryData && categoryData.subcategories) {
+              const subcategoryData = categoryData.subcategories[0];
+              if (subcategoryData && subcategoryData.brands && subcategoryData.brands.length > 0) {
+                setBrandsModelsData(subcategoryData);
+                setHasBrandsModels(true);
+                // Set brands from the data
+                const brandsList = subcategoryData.brands.map((brand: any) => ({
+                  id: brand.name.toLowerCase().replace(/\s+/g, '-'),
+                  name: brand.name,
+                  models: brand.models || []
+                }));
+                setBrands(brandsList);
+                // Filter out unwanted test entries
+            const unwantedEntries = ['mokia', 'yyytytty'];
+            setBrandOptions(brandsList
+              .filter((brand: { id: string; name: string }) => {
+                const brandName = (brand.name || '').toLowerCase();
+                return !unwantedEntries.some(entry => 
+                  brandName === entry || brandName.includes(entry)
+                );
+              })
+              .map((brand: { id: string; name: string }) => ({
+                  value: brand.name,
+                  label: brand.name
+                })));
+              } else {
+                setHasBrandsModels(false);
+                setBrandsModelsData(null);
+                // Fallback to old API for categories without brands-models data
+                api.get('/categories/brands', {
+                  params: {
+                    categorySlug: selectedCategory.slug,
+                    subcategorySlug: selectedSubcategory.slug,
+                    limit: 10
+                  }
+                })
+                  .then(brandResponse => {
+                    if (brandResponse.data.success && brandResponse.data.brands) {
+                      setBrands(brandResponse.data.brands);
+                      setBrandOptions(brandResponse.data.brands.map((brand: { id: string; name: string }) => ({
+                        value: brand.name,
+                        label: brand.name
+                      })));
+                      setHasBrandsModels(true);
+                    }
+                  })
+                  .catch(() => {
+                    setBrands([]);
+                    setBrandOptions([]);
+                    setHasBrandsModels(false);
+                  });
+              }
+            } else {
+              setHasBrandsModels(false);
+              setBrandsModelsData(null);
+            }
           }
         })
         .catch(error => {
-          console.error('Failed to fetch brands:', error);
-          setBrands([]);
-          setBrandOptions([]);
+          console.error('Failed to fetch brands-models:', error);
+          // Fallback to old API
+          api.get('/categories/brands', {
+            params: {
+              categorySlug: selectedCategory?.slug,
+              subcategorySlug: selectedSubcategory?.slug,
+              limit: 10
+            }
+          })
+            .then(brandResponse => {
+              if (brandResponse.data.success && brandResponse.data.brands) {
+                setBrands(brandResponse.data.brands);
+                // Filter out unwanted test entries
+                const unwantedEntries = ['mokia', 'yyytytty'];
+                setBrandOptions(brandResponse.data.brands
+                  .filter((brand: { id: string; name: string }) => {
+                    const brandName = (brand.name || '').toLowerCase();
+                    return !unwantedEntries.some(entry => 
+                      brandName === entry || brandName.includes(entry)
+                    );
+                  })
+                  .map((brand: { id: string; name: string }) => ({
+                    value: brand.name,
+                    label: brand.name
+                  })));
+                setHasBrandsModels(true);
+              } else {
+                setBrands([]);
+                setBrandOptions([]);
+                setHasBrandsModels(false);
+              }
+            })
+            .catch(() => {
+              setBrands([]);
+              setBrandOptions([]);
+              setHasBrandsModels(false);
+            });
         })
         .finally(() => {
           setIsLoadingBrands(false);
         });
-    } else if (!isMobilePhones) {
-      // Clear brands if not mobile phones
+    } else if (!selectedCategory?.slug || !selectedSubcategory?.slug) {
+      // Clear brands if no category/subcategory selected
       setBrands([]);
       setBrandOptions([]);
       setSelectedBrand('');
       setValue('attributes.brand', '');
+      setValue('attributes.model', '');
+      setModels([]);
+      setModelOptions([]);
+      setHasBrandsModels(false);
+      setBrandsModelsData(null);
     }
-  }, [isMobilePhones, selectedCategory?.slug, selectedSubcategory?.slug, setValue]);
+  }, [selectedCategory?.slug, selectedSubcategory?.slug, setValue]);
 
   // Search brands with debounce
   useEffect(() => {
     if (!isMobilePhones || !brandSearchQuery.trim()) {
       // Reset to popular brands if no search
       if (brandOptions.length === 0 && brands.length > 0) {
-        setBrandOptions(brands.map((brand: { id: string; name: string }) => ({
+        // Filter out unwanted test entries
+        const unwantedEntries = ['mokia', 'yyytytty'];
+        setBrandOptions(brands
+          .filter((brand: { id: string; name: string }) => {
+            const brandName = (brand.name || '').toLowerCase();
+            return !unwantedEntries.some(entry => 
+              brandName === entry || brandName.includes(entry)
+            );
+          })
+          .map((brand: { id: string; name: string }) => ({
           value: brand.name,
           label: brand.name
         })));
@@ -475,7 +1220,16 @@ export default function PostAdPage() {
       })
         .then(response => {
           if (response.data.success && response.data.brands) {
-            setBrandOptions(response.data.brands.map((brand: { id: string; name: string }) => ({
+            // Filter out unwanted test entries
+            const unwantedEntries = ['mokia', 'yyytytty'];
+            setBrandOptions(response.data.brands
+              .filter((brand: { id: string; name: string }) => {
+                const brandName = (brand.name || '').toLowerCase();
+                return !unwantedEntries.some(entry => 
+                  brandName === entry || brandName.includes(entry)
+                );
+              })
+              .map((brand: { id: string; name: string }) => ({
               value: brand.name,
               label: brand.name
             })));
@@ -493,11 +1247,39 @@ export default function PostAdPage() {
   // Fetch models when brand is selected
   useEffect(() => {
     const brandName = selectedBrandFromForm || selectedBrand;
-    if (isMobilePhones && brandName && !isLoadingModels) {
+    if (hasBrandsModels && brandName && !isLoadingModels) {
       setIsLoadingModels(true);
-      // Find brand ID from brands list using brand name
+      
+      // First try to get models from brands-models data
+      if (brandsModelsData && brandsModelsData.brands) {
+        const selectedBrandData = brandsModelsData.brands.find((b: any) => b.name === brandName);
+        if (selectedBrandData && selectedBrandData.models && selectedBrandData.models.length > 0) {
+          const modelsList = selectedBrandData.models.map((modelName: string) => ({
+            id: modelName.toLowerCase().replace(/\s+/g, '-'),
+            name: modelName
+          }));
+          setModels(modelsList);
+          // Filter out unwanted test entries
+          const unwantedEntries = ['mokia', 'yyytytty'];
+          setModelOptions(modelsList
+            .filter((model: { id: string; name: string }) => {
+              const modelName = (model.name || '').toLowerCase();
+              return !unwantedEntries.some(entry => 
+                modelName === entry || modelName.includes(entry)
+              );
+            })
+            .map((model: { id: string; name: string }) => ({
+              value: model.name,
+              label: model.name
+            })));
+          setIsLoadingModels(false);
+          return;
+        }
+      }
+      
+      // Fallback to API if not found in brands-models data
       const brandObj = brands.find(b => b.name === brandName);
-      const brandId = brandObj?.id || brandName.toLowerCase().replace(/\s+/g, '-');
+      const brandId = brandObj?.id || String(brandName || '').toLowerCase().replace(/\s+/g, '-');
       
       api.get('/categories/models', {
         params: { brand: brandId, limit: 20 }
@@ -505,10 +1287,19 @@ export default function PostAdPage() {
         .then(response => {
           if (response.data.success && response.data.models) {
             setModels(response.data.models);
-            setModelOptions(response.data.models.map((model: { id: string; name: string }) => ({
-              value: model.name,
-              label: model.name
-            })));
+            // Filter out unwanted test entries
+            const unwantedEntries = ['mokia', 'yyytytty'];
+            setModelOptions(response.data.models
+              .filter((model: { id: string; name: string }) => {
+                const modelName = (model.name || '').toLowerCase();
+                return !unwantedEntries.some(entry => 
+                  modelName === entry || modelName.includes(entry)
+                );
+              })
+              .map((model: { id: string; name: string }) => ({
+                value: model.name,
+                label: model.name
+              })));
           }
         })
         .catch(error => {
@@ -519,24 +1310,33 @@ export default function PostAdPage() {
         .finally(() => {
           setIsLoadingModels(false);
         });
-    } else if (!brandName) {
-      // Clear models if no brand selected
+    } else if (!hasBrandsModels || !brandName) {
+      // Clear models if no brands-models data or no brand selected
       setModels([]);
       setModelOptions([]);
       setValue('attributes.model', '');
     }
-  }, [isMobilePhones, selectedBrandFromForm, selectedBrand, brands, setValue]);
+  }, [selectedBrandFromForm, selectedBrand, hasBrandsModels, brands, brandsModelsData, setValue]);
 
   // Search models with debounce
   useEffect(() => {
     const brandName = selectedBrandFromForm || selectedBrand;
-    if (!isMobilePhones || !brandName || !modelSearchQuery.trim()) {
+    if (!hasBrandsModels || !brandName || !modelSearchQuery.trim()) {
       // Reset to popular models if no search
       if (modelOptions.length === 0 && models.length > 0) {
-        setModelOptions(models.map((model: { id: string; name: string }) => ({
-          value: model.name,
-          label: model.name
-        })));
+        // Filter out unwanted test entries
+        const unwantedEntries = ['mokia', 'yyytytty'];
+        setModelOptions(models
+          .filter((model: { id: string; name: string }) => {
+            const modelName = (model.name || '').toLowerCase();
+            return !unwantedEntries.some(entry => 
+              modelName === entry || modelName.includes(entry)
+            );
+          })
+          .map((model: { id: string; name: string }) => ({
+            value: model.name,
+            label: model.name
+          })));
       }
       return;
     }
@@ -551,10 +1351,19 @@ export default function PostAdPage() {
       })
         .then(response => {
           if (response.data.success && response.data.models) {
-            setModelOptions(response.data.models.map((model: { id: string; name: string }) => ({
-              value: model.name,
-              label: model.name
-            })));
+            // Filter out unwanted test entries
+            const unwantedEntries = ['mokia', 'yyytytty'];
+            setModelOptions(response.data.models
+              .filter((model: { id: string; name: string }) => {
+                const modelName = (model.name || '').toLowerCase();
+                return !unwantedEntries.some(entry => 
+                  modelName === entry || modelName.includes(entry)
+                );
+              })
+              .map((model: { id: string; name: string }) => ({
+                value: model.name,
+                label: model.name
+              })));
           }
         })
         .catch(() => {})
@@ -564,7 +1373,7 @@ export default function PostAdPage() {
     }, 300);
 
     return () => clearTimeout(timeoutId);
-  }, [modelSearchQuery, isMobilePhones, selectedBrandFromForm, selectedBrand, brands, models]);
+  }, [modelSearchQuery, hasBrandsModels, selectedBrandFromForm, selectedBrand, brands, models]);
 
   // Fetch popular colors when mobile phones subcategory is selected
   useEffect(() => {
@@ -762,34 +1571,31 @@ export default function PostAdPage() {
   // This reuses the same script that's already working on the home page
   // No duplicate script loads - script is shared across all components
 
-  // Handle place selection from autocomplete
+  // Handle place selection from autocomplete (legacy format or PlaceResult from Firefox)
   const handlePlaceSelect = useCallback((place: any) => {
-    if (!place.address_components) {
-      return;
-    }
-
-    // Update the input field with formatted address
-    if (locationAutocompleteRef.current && place.formatted_address) {
-      locationAutocompleteRef.current.value = place.formatted_address;
-    }
-
-    // Parse address components
     let state = '';
     let city = '';
     let neighbourhood = '';
 
-    for (const component of place.address_components) {
-      const types = component.types;
-
-      if (types.includes('administrative_area_level_1')) {
-        state = component.long_name;
-      } else if (types.includes('locality') || types.includes('administrative_area_level_2')) {
-        city = component.long_name;
-      } else if (types.includes('sublocality') || types.includes('sublocality_level_1')) {
-        neighbourhood = component.long_name;
-      } else if (types.includes('neighborhood') && !neighbourhood) {
-        neighbourhood = component.long_name;
+    if (place.latitude !== undefined && place.longitude !== undefined) {
+      state = place.state || '';
+      city = place.city || '';
+      neighbourhood = '';
+    } else if (place.address_components) {
+      for (const component of place.address_components) {
+        const types = component.types || [];
+        if (types.includes('administrative_area_level_1')) state = component.long_name;
+        else if (types.includes('locality') || types.includes('administrative_area_level_2')) city = component.long_name;
+        else if (types.includes('sublocality') || types.includes('sublocality_level_1')) neighbourhood = component.long_name;
+        else if (types.includes('neighborhood') && !neighbourhood) neighbourhood = component.long_name;
       }
+    } else {
+      return;
+    }
+
+    const address = place.formatted_address || place.address || '';
+    if (setLocationInputValueRef.current && address) {
+      setLocationInputValueRef.current(address);
     }
 
     // Auto-populate form fields
@@ -805,35 +1611,31 @@ export default function PostAdPage() {
       setNeighborhoodQuery(neighbourhood);
     }
 
-    // Update location query state
-    if (city) {
-      setLocationQuery(city);
-    } else if (place.formatted_address) {
-      setLocationQuery(place.formatted_address);
+    if (city) setLocationQuery(city);
+    else if (address) setLocationQuery(address);
+
+    if (setLocationInputValueRef.current) {
+      setLocationInputValueRef.current(city || address);
     }
 
-    // Update autocomplete input
-    if (locationAutocompleteRef.current) {
-      if (city) {
-        locationAutocompleteRef.current.value = city;
-      } else if (place.formatted_address) {
-        locationAutocompleteRef.current.value = place.formatted_address;
-      }
+    let lat: number | undefined;
+    let lng: number | undefined;
+    if (place.latitude !== undefined && place.longitude !== undefined) {
+      lat = place.latitude;
+      lng = place.longitude;
+    } else if (place.geometry?.location) {
+      lat = typeof place.geometry.location.lat === 'function' ? place.geometry.location.lat() : place.geometry.location.lat;
+      lng = typeof place.geometry.location.lng === 'function' ? place.geometry.location.lng() : place.geometry.location.lng;
     }
-
-    // Update map coordinates if geometry is available
-    if (place.geometry && place.geometry.location) {
-      const lat = typeof place.geometry.location.lat === 'function' 
-        ? place.geometry.location.lat() 
-        : place.geometry.location.lat;
-      const lng = typeof place.geometry.location.lng === 'function' 
-        ? place.geometry.location.lng() 
-        : place.geometry.location.lng;
-      
-      // Validate coordinates are numbers
-      if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
-        setMapCoordinates({ lat, lng });
-      }
+    if (typeof lat === 'number' && typeof lng === 'number' && !isNaN(lat) && !isNaN(lng)) {
+      setMapCoordinates({ lat, lng });
+      api.post('/geocoding/detect-location', { latitude: lat, longitude: lng })
+        .then((res) => {
+          if (res.data?.success && res.data?.nearestLocation?.id) {
+            setValue('locationId', res.data.nearestLocation.id);
+          }
+        })
+        .catch(() => {});
     }
 
     // Hide location dropdown after Google Places selection
@@ -848,8 +1650,8 @@ export default function PostAdPage() {
   // Use shared autocomplete hook (reuses same logic from home page)
   // MANDATORY: Input DOM ready check is built into the hook
   // Prevents multiple initializations - hook handles all guards
-  const { autocompleteInstance, isInitialized: autocompleteInitialized } = usePlacesAutocomplete(
-    locationAutocompleteRef,
+  const { autocompleteInstance, isInitialized: autocompleteInitialized, setValue: setLocationInputValue } = usePlacesAutocomplete(
+    locationAutocompleteContainerRef,
     {
       country: 'in',
       bounds: {
@@ -857,10 +1659,28 @@ export default function PostAdPage() {
         northeast: { lat: 28.8, lng: 77.4 }
       },
       types: ['geocode', 'establishment'],
-      fields: ['place_id', 'geometry', 'formatted_address', 'address_components', 'name', 'types'],
       onPlaceSelect: handlePlaceSelect
     }
   );
+
+  setLocationInputValueRef.current = setLocationInputValue;
+
+  // Sync the Google Places input only for programmatic updates (avoid cursor jumps while typing)
+  // We only push value when the script becomes ready OR when we set locationQuery programmatically.
+  useEffect(() => {
+    if (!googlePlacesLoaded || !setLocationInputValue) return;
+    if (!locationQuery) return;
+    if (lastSyncedLocationInputRef.current === locationQuery) return;
+    setLocationInputValue(locationQuery);
+    lastSyncedLocationInputRef.current = locationQuery;
+  }, [googlePlacesLoaded, setLocationInputValue, locationQuery]);
+
+  // Keep internal "last synced" marker aligned when value is set via ref (detect/select flows)
+  useEffect(() => {
+    if (locationQuery) {
+      lastSyncedLocationInputRef.current = locationQuery;
+    }
+  }, [locationQuery]);
 
   // Store autocomplete instance reference
   useEffect(() => {
@@ -1073,6 +1893,11 @@ export default function PostAdPage() {
       return;
     }
 
+    // Don't reopen dropdown right after user selected - wait for them to type again
+    if (locationQuery.trim() === lastSelectedLocationQueryRef.current) {
+      return;
+    }
+
     setIsLoadingLocations(true);
     setShowLocationDropdown(true);
 
@@ -1099,14 +1924,18 @@ export default function PostAdPage() {
     return () => clearTimeout(searchTimeout);
   }, [locationQuery]);
 
-  // Handle location selection
+  // Handle location selection (from API search)
   const handleLocationSelect = (location: any) => {
-    // Update input value
     const locationName = location.name || location.city || '';
+    lastSelectedLocationQueryRef.current = locationName;
     setLocationQuery(locationName);
-    setValue('city', locationName);
+    setValue('city', location.city || locationName);
 
-    // Auto-populate form fields
+    // CRITICAL: Set locationId for ad creation
+    if (location.id) {
+      setValue('locationId', location.id);
+    }
+
     if (location.state) {
       setValue('state', location.state);
       setStateQuery(location.state);
@@ -1119,14 +1948,12 @@ export default function PostAdPage() {
       setNeighborhoodQuery(location.neighbourhood);
     }
 
-    // Hide dropdown
     setShowLocationDropdown(false);
     setLocationSuggestions([]);
     setSelectedLocationIndex(-1);
 
-    // Also update Google Places input if it exists
-    if (locationAutocompleteRef.current) {
-      locationAutocompleteRef.current.value = locationName;
+    if (setLocationInputValueRef.current) {
+      setLocationInputValueRef.current(locationName);
     }
   };
 
@@ -1323,15 +2150,19 @@ export default function PostAdPage() {
     setSelectedNeighborhoodIndex(-1);
   };
 
-  // Close dropdowns when clicking outside
+  // Close dropdowns when clicking outside (exclude pac-container for Firefox/Chrome)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      const pacContainer = document.querySelector('.pac-container');
+      if (pacContainer?.contains(target)) return; // Don't close when clicking Google Places suggestions
+
       // Location dropdown
       if (
         locationDropdownRef.current &&
-        !locationDropdownRef.current.contains(event.target as Node) &&
-        locationAutocompleteRef.current &&
-        !locationAutocompleteRef.current.contains(event.target as Node)
+        !locationDropdownRef.current.contains(target) &&
+        locationAutocompleteContainerRef.current &&
+        !locationAutocompleteContainerRef.current.contains(target)
       ) {
         setShowLocationDropdown(false);
       }
@@ -1361,52 +2192,37 @@ export default function PostAdPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  // NEW SYSTEM: Check if user has active business package with ads remaining
-  // IMPORTANT: Only check if adLimitStatus is loaded to avoid showing premium options during loading
-  // If user has active packages with ads remaining, premium payment options should NOT be shown
-  const hasActiveBusinessPackage = !isLoadingAdLimit && 
-    adLimitStatus && 
-    adLimitStatus.success !== false && 
-    typeof adLimitStatus.activePackagesCount === 'number' &&
-    adLimitStatus.activePackagesCount > 0;
-  
-  // NEW SYSTEM: Use adsRemaining instead of premiumSlotsAvailable
+  // Quota / display values from API (needed first for totalRemaining)
   const adsRemaining = adLimitStatus?.adsRemaining || 0;
   const hasAdsRemaining = adsRemaining > 0;
-  
-  // Check if user has free ads remaining
-  // IMPORTANT: Default to false if not specified, so premium options show when data is missing
   const hasFreeAdsRemaining = adLimitStatus?.hasFreeAdsRemaining ?? false;
   const freeAdsRemaining = adLimitStatus?.freeAdsRemaining || 0;
-  
-  // Deprecated: Keep for backward compatibility
+  const businessAdsRemaining = adLimitStatus?.businessAdsRemaining || 0;
+  const totalRemaining = adLimitStatus?.totalRemaining ?? (freeAdsRemaining + businessAdsRemaining);
+
+  // Backend-controlled visibility; business plan undel + free quota thrunna varea → Business Package Status kanikaruthu
+  const allowDirectPost = adLimitStatus?.allowDirectPost ?? false;
+  const showBusinessPackageStatusSectionFromApi = adLimitStatus?.showBusinessPackageStatusSection === true;
+  const hasQuotaLeft = totalRemaining > 0 || freeAdsRemaining > 0;
+  const hasActiveBusinessPackage = adLimitStatus?.activeBusinessPackage ?? false;
+  const showBusinessPackageStatusSection = showBusinessPackageStatusSectionFromApi && totalRemaining === 0 && freeAdsRemaining === 0;
+  // When package exhausted (business package, no ads left, can't post): always show premium/single buy options
+  const isPackageExhausted = hasActiveBusinessPackage && !hasAdsRemaining && !adLimitStatus?.canPost;
+  const hidePremiumSection = isPackageExhausted ? false : (hasQuotaLeft || !showBusinessPackageStatusSectionFromApi);
+  const hideSingleBuy = isPackageExhausted ? false : (totalRemaining > 0 || allowDirectPost || (adLimitStatus?.hideSingleBuy ?? false));
+
   const premiumSlotsAvailable = adLimitStatus?.premiumSlotsAvailable || 0;
   const hasPremiumSlotsAvailable = premiumSlotsAvailable > 0;
-  
-  // Calculate if premium options should be shown
-  // CORE RULE: Hide premium options when business package ads are available
-  // Show premium options ONLY when:
-  // 1. No business package ads remaining AND no free ads remaining
-  // 2. OR no business package at all AND no free ads remaining
-  const businessAdsRemaining = adLimitStatus?.businessAdsRemaining || 0;
   const hasBusinessAdsRemaining = businessAdsRemaining > 0;
-  
-  // CORE RULE: Show premium options ONLY when BOTH free ads AND business package ads are exhausted
-  // PRIORITY: 1. Free ads (monthly) 2. Business package ads 3. Payment required
-  // IMPORTANT: If user has ANY business package (even exhausted), don't show payment options
-  // Only show payment when NO business packages exist AND free ads exhausted
+
+  // Current plan name for Business Package Status section (which package is this)
+  const currentPackageType = adLimitStatus?.packages?.[0]?.packageType || businessPackageStatus?.packages?.[0]?.packageType;
+  const currentPackageDisplayName = currentPackageType
+    ? currentPackageType.split('_').map((w: string) => w.charAt(0) + w.slice(1).toLowerCase()).join(' ')
+    : null;
   const hasAnyBusinessPackage = adLimitStatus?.packages && adLimitStatus.packages.length > 0;
-  
-  // CRITICAL: Hide payment options if user has free ads OR business package ads OR any business package
-  // Only show payment when BOTH free ads AND business package ads are exhausted AND no packages exist
   const shouldHidePaymentOptions = hasFreeAdsRemaining || hasBusinessAdsRemaining || hasAnyBusinessPackage;
-  
-  const shouldShowPremiumOptions = !isLoadingAdLimit && 
-    adLimitStatus && // Data exists
-    !hasFreeAdsRemaining && // Free ads exhausted FIRST
-    businessAdsRemaining === 0 && // Business package ads exhausted SECOND
-    !hasAnyBusinessPackage && // NO business packages at all (not even exhausted ones)
-    !shouldHidePaymentOptions; // Additional check: ensure no free/business ads available
+  const shouldShowPremiumOptions = !isLoadingAdLimit && adLimitStatus && !hasFreeAdsRemaining && businessAdsRemaining === 0 && !hasAnyBusinessPackage && !shouldHidePaymentOptions;
 
   // Debug: Log the calculation with detailed breakdown
   useEffect(() => {
@@ -1445,28 +2261,36 @@ export default function PostAdPage() {
   useEffect(() => {
     if (!isLoadingAdLimit && adLimitStatus) {
       if (process.env.NODE_ENV === 'development') {
-      console.log('📦 Business Package Status:', {
-        hasActiveBusinessPackage,
-        activePackagesCount: adLimitStatus.activePackagesCount,
-        adsRemaining: adLimitStatus.adsRemaining,
-        hasAdsRemaining,
-        hasFreeAdsRemaining,
-        freeAdsRemaining: adLimitStatus.freeAdsRemaining,
-        firstPackageType: adLimitStatus.packages?.[0]?.packageType,
-          shouldShowPremiumOptions
+      console.log('📦 Business Package Status (backend flags):', {
+        activeBusinessPackage: hasActiveBusinessPackage,
+        businessAdsRemaining: adLimitStatus.businessAdsRemaining,
+        hidePremiumSection,
+        hideSingleBuy,
+        shouldShowPremiumOptions,
       });
       }
     }
-  }, [adLimitStatus, isLoadingAdLimit, hasActiveBusinessPackage, hasAdsRemaining, hasFreeAdsRemaining, shouldShowPremiumOptions]);
+  }, [adLimitStatus, isLoadingAdLimit, hasActiveBusinessPackage, hidePremiumSection, hideSingleBuy, shouldShowPremiumOptions]);
+
+  // Reset upgrade popup dismissed when backend no longer says show upgrade (e.g. user bought package)
+  useEffect(() => {
+    if (adLimitStatus?.showUpgradePopup !== true) {
+      setUpgradePopupDismissed(false);
+    }
+  }, [adLimitStatus?.showUpgradePopup]);
+
+  // User has free/business ads → don't show payment modal; close if already open
+  useEffect(() => {
+    if (totalRemaining > 0 && showPaymentRequiredModal) {
+      setShowPaymentRequiredModal(false);
+      setPaymentRequiredError(null);
+    }
+  }, [totalRemaining, showPaymentRequiredModal]);
 
   // Check if payment is required BEFORE posting
+  // DISABLED: Allow posting without payment gate (free ads / business package checks bypassed)
   // Priority: 1. Free ads 2. Business package 3. Payment required
-  // Payment is required if:
-  // - No free ads remaining AND
-  // - No active business package OR no business ads remaining
-  const requiresPaymentBeforePosting = !isLoadingAdLimit && 
-    !hasFreeAdsRemaining && 
-    (!hasActiveBusinessPackage || !hasBusinessAdsRemaining);
+  const requiresPaymentBeforePosting = false; // was: !isLoadingAdLimit && !hasFreeAdsRemaining && (!hasActiveBusinessPackage || !hasBusinessAdsRemaining);
 
   // Early check: If payment is required before posting, show payment modal immediately
   // DISABLED: Payment popup removed on page load - will only show when user tries to submit
@@ -1569,6 +2393,15 @@ export default function PostAdPage() {
 
     const newPreviews = files.map((file) => URL.createObjectURL(file));
     setPreviews([...previews, ...newPreviews]);
+
+    // Automatically run AI product detection on first upload/change
+    if (files.length > 0 && !isImageAiLoading) {
+      // Use the primary image (first in newImages) for analysis
+      const primaryImage = newImages[0];
+      if (primaryImage) {
+        void autoFillDetailsFromImage(primaryImage);
+      }
+    }
   };
 
   const removeImage = (index: number) => {
@@ -1592,34 +2425,7 @@ export default function PostAdPage() {
 
     setIsDetectingLocation(true);
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          resolve,
-          (error) => {
-            // Better error handling for geolocation
-            let errorMessage = 'Failed to detect location. Please enter location manually.';
-            switch (error.code) {
-              case error.PERMISSION_DENIED:
-                errorMessage = 'Location access denied. Please enable location permissions.';
-                break;
-              case error.POSITION_UNAVAILABLE:
-                errorMessage = 'Location information unavailable. Please try again.';
-                break;
-              case error.TIMEOUT:
-                errorMessage = 'Location request timed out. Please try again.';
-                break;
-            }
-            reject(new Error(errorMessage));
-          },
-          {
-            enableHighAccuracy: false, // Changed to false for faster response
-            timeout: 20000, // Increased timeout
-            maximumAge: 300000, // Accept cached position up to 5 minutes
-          }
-        );
-      });
-
-      const { latitude, longitude } = position.coords;
+      const { latitude, longitude } = await import('@/utils/geolocation').then((m) => m.getCurrentPosition());
 
       // Validate coordinates are numbers
       if (typeof latitude !== 'number' || typeof longitude !== 'number' || isNaN(latitude) || isNaN(longitude)) {
@@ -1636,27 +2442,52 @@ export default function PostAdPage() {
       }
 
       // Call geocoding API to detect location
-      console.log('📍 Calling geocoding API with coordinates:', { latitude, longitude });
-      const response = await api.post('/geocoding/detect-location', {
-        latitude,
-        longitude,
-      }).catch((apiError: any) => {
-        console.error('❌ Geocoding API call failed:', apiError);
-        // Re-throw with more context
-        if (apiError.response) {
-          // API responded with error
-          throw apiError;
-        } else if (apiError.request) {
-          // Request was made but no response received
-          throw new Error('Network error: Could not reach the server. Please check your internet connection.');
-        } else {
-          // Something else happened
-          throw new Error(`Request setup error: ${apiError.message}`);
+      let response: { data: { success?: boolean; message?: string; detectedLocation?: any; nearestLocation?: any } };
+      try {
+        response = await api.post('/geocoding/detect-location', {
+          latitude,
+          longitude,
+        });
+      } catch (apiError: any) {
+        // Handle geocoding API errors without re-throwing so caller doesn't see unhandled rejection (e.g. 403)
+        const status = apiError?.response?.status;
+        const data = apiError?.response?.data;
+        const msg = data?.message || data?.error_message;
+        if (status === 403) {
+          // Silent: user can enter location manually; do not show API config error
+          setIsDetectingLocation(false);
+          return;
         }
-      });
+        if (status === 429 || status === 503) {
+          toast.error('Location service temporarily unavailable. Please try again later or enter location manually.', { duration: 6000 });
+          setIsDetectingLocation(false);
+          return;
+        }
+        if (status === 404) {
+          toast.error('No location found for your coordinates. Please enter location manually.', { duration: 5000 });
+          setIsDetectingLocation(false);
+          return;
+        }
+        if (status >= 400 && status < 500) {
+          toast.error(msg || 'Could not detect location. Please enter location manually.', { duration: 5000 });
+          setIsDetectingLocation(false);
+          return;
+        }
+        // Network/other: re-throw so outer catch can show generic message
+        throw apiError;
+      }
 
+      if (!response?.data) {
+        setIsDetectingLocation(false);
+        return;
+      }
       if (response.data.success) {
-        const { detectedLocation } = response.data;
+        const { detectedLocation, nearestLocation } = response.data;
+
+        // CRITICAL: Set locationId from nearest DB location for ad creation
+        if (nearestLocation?.id) {
+          setValue('locationId', nearestLocation.id);
+        }
 
         // Update map coordinates with detected location
         if (typeof latitude === 'number' && typeof longitude === 'number' && !isNaN(latitude) && !isNaN(longitude)) {
@@ -1677,8 +2508,8 @@ export default function PostAdPage() {
           }
           
           // Update autocomplete input field
-          if (locationAutocompleteRef.current && locationString) {
-            locationAutocompleteRef.current.value = locationString;
+          if (setLocationInputValueRef.current && locationString) {
+            setLocationInputValueRef.current(locationString);
           }
           
           if (detectedLocation.state) {
@@ -1711,33 +2542,62 @@ export default function PostAdPage() {
         console.error('Location detection failed:', response.data);
       }
     } catch (error: any) {
-      console.error('Location detection error:', error);
-      
-      // Handle geolocation API errors
-      if (error.code === 'PERMISSION_DENIED') {
+      // Log structured details (raw error often serializes as {} for Axios/network errors)
+      if (process.env.NODE_ENV === 'development') {
+        const details: Record<string, unknown> = {
+          message: error?.message,
+          name: error?.name,
+          code: error?.code,
+        };
+        if (error?.response) {
+          details.status = error.response.status;
+          details.responseData = error.response.data;
+        }
+        console.warn('Location detection error:', details);
+      }
+
+      // Handle geolocation errors (code 1=denied, 2=unavailable, 3=timeout)
+      const geoCode = error?.code;
+      if (geoCode === 1 || geoCode === 'PERMISSION_DENIED') {
         toast.error('Location access denied. Please enable location permissions in your browser settings.', { duration: 5000 });
-      } else if (error.code === 'POSITION_UNAVAILABLE') {
+      } else if (geoCode === 2 || geoCode === 'POSITION_UNAVAILABLE') {
         toast.error('Location information unavailable. Please try again or enter location manually.', { duration: 5000 });
-      } else if (error.code === 'TIMEOUT') {
+      } else if (geoCode === 3 || geoCode === 'TIMEOUT') {
         toast.error('Location request timed out. Please try again or enter location manually.', { duration: 5000 });
       } else if (error.response) {
         // Handle API errors with detailed messages
-        const errorData = error.response.data;
+        const errorData = error.response.data || null;
         const statusCode = error.response.status;
         const errorMessage = errorData?.message || errorData?.error_message || 'Failed to detect location';
-        
-        console.error('API Error Details:', {
-          status: statusCode,
-          data: errorData,
-          message: errorData?.message || errorData?.error_message,
-          error_message: errorData?.error_message,
-          status_field: errorData?.status,
-          url: error.config?.url
-        });
+
+        // Log detailed API error only in development, and avoid noisy empty objects
+        if (process.env.NODE_ENV === 'development') {
+          const hasPayload = !!(errorData && Object.keys(errorData).length > 0);
+
+          if (hasPayload) {
+            console.error('API Error Details:', {
+              status: statusCode,
+              data: errorData,
+              message: errorData?.message || errorData?.error_message,
+              error_message: errorData?.error_message,
+              status_field: errorData?.status,
+              url: error.config?.url
+            });
+          } else {
+            console.warn('Location API error without response body', {
+              status: statusCode,
+              url: error.config?.url,
+              message: errorMessage
+            });
+          }
+        }
         
         // Handle HTTP status codes
         if (statusCode === 401) {
-          toast.error('Please log in to use location detection. You can still enter location manually.', { duration: 5000 });
+          Cookies.remove('token', { path: '/' });
+          queryClient.setQueryData(['auth', 'me'], null);
+          toast.error('Your session has expired. Please log in again to continue.', { duration: 5000 });
+          router.push('/login');
         } else if (statusCode === 403) {
           // Use backend error message if available, otherwise show generic message
           const backendMessage = errorData?.message || errorData?.error_message;
@@ -1757,7 +2617,7 @@ export default function PostAdPage() {
         } else {
           // Show specific error messages based on API status
           if (errorData?.status === 'REQUEST_DENIED') {
-            toast.error('Geocoding API error: Please check API configuration. You can still enter location manually.', { duration: 6000 });
+            // Silent: user can enter location manually; do not show API config error
           } else if (errorData?.status === 'OVER_QUERY_LIMIT') {
             toast.error('Location service quota exceeded. Please try again later or enter location manually.', { duration: 6000 });
           } else if (errorData?.status === 'ZERO_RESULTS') {
@@ -1770,12 +2630,14 @@ export default function PostAdPage() {
         }
       } else {
         // Handle network errors or other unexpected errors
-        const errorMessage = error.message || 'Failed to detect location';
-        console.error('Location detection error details:', {
-          message: error.message,
-          name: error.name,
-          stack: error.stack
-        });
+        const errorMessage = error?.message || 'Failed to detect location';
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('Location detection error (no response):', {
+            message: error?.message,
+            name: error?.name,
+            code: error?.code,
+          });
+        }
         
         // Provide more helpful error messages
         if (error.message?.includes('Network') || error.message?.includes('fetch')) {
@@ -1788,6 +2650,367 @@ export default function PostAdPage() {
       }
     } finally {
       setIsDetectingLocation(false);
+    }
+  };
+
+  // Auto-fill location from last known sources (profile, navbar, local storage, geolocation fallback)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (locationInitializedRef.current) return;
+
+    // If user already selected location in this form, don't override
+    if (state || city) {
+      locationInitializedRef.current = true;
+      return;
+    }
+
+    const applyLocation = (cityVal?: string | null, stateVal?: string | null, label?: string) => {
+      const cleanCity = (cityVal || '').toString().trim();
+      const cleanState = (stateVal || '').toString().trim();
+      if (!cleanCity && !cleanState) return false;
+
+      setValue('city', cleanCity, { shouldDirty: true });
+      setValue('state', cleanState, { shouldDirty: true });
+      clearErrors(['city', 'state']);
+
+      const parts = [];
+      if (cleanCity) parts.push(cleanCity);
+      if (cleanState) parts.push(cleanState);
+      const display = parts.join(', ');
+
+      if (display) {
+        setLocationQuery(display);
+        if (setLocationInputValueRef.current) {
+          setLocationInputValueRef.current(display);
+        }
+      }
+
+      if (display && label) {
+        setAutoLocationMessage(`${label}: ${display}`);
+      }
+
+      locationInitializedRef.current = true;
+      return true;
+    };
+
+    // 1. User profile saved location
+    if (user) {
+      const profileCity =
+        (user as any)?.city ||
+        (user as any)?.locationCity ||
+        (user as any)?.location?.city;
+      const profileState =
+        (user as any)?.state ||
+        (user as any)?.locationState ||
+        (user as any)?.location?.state;
+
+      if (applyLocation(profileCity, profileState, 'Using your profile location')) {
+        return;
+      }
+    }
+
+    // 2. Navbar selected_location from localStorage
+    try {
+      const stored = window.localStorage.getItem('selected_location');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        const cityVal = parsed.city || null;
+        const stateVal = parsed.state || null;
+        if (applyLocation(cityVal, stateVal, 'Using your last selected location')) {
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('Error reading selected_location from localStorage:', err);
+    }
+
+    // 3. google_location_data from localStorage
+    try {
+      const storedGoogle = window.localStorage.getItem('google_location_data');
+      if (storedGoogle) {
+        const parsed = JSON.parse(storedGoogle);
+        const cityVal = parsed.city || null;
+        const stateVal = parsed.state || null;
+        if (applyLocation(cityVal, stateVal, 'Using your last detected location')) {
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('Error reading google_location_data from localStorage:', err);
+    }
+
+    // 4. user_location from localStorage (legacy utility)
+    try {
+      const savedUserLoc = window.localStorage.getItem('user_location');
+      if (savedUserLoc) {
+        const parsed = JSON.parse(savedUserLoc);
+        const cityVal = parsed.city || null;
+        const stateVal = parsed.state || null;
+        if (applyLocation(cityVal, stateVal, 'Using your last saved location')) {
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('Error reading user_location from localStorage:', err);
+    }
+
+    // 5. Fallback: device geolocation (only once)
+    const runGeolocationFallback = async () => {
+      try {
+        await detectLocation();
+        setAutoLocationMessage('Using your device location');
+      } catch {
+        // Silent fail – user can still enter location manually
+      } finally {
+        locationInitializedRef.current = true;
+      }
+    };
+
+    runGeolocationFallback();
+  }, [user, state, city, setValue, clearErrors, detectLocation]);
+
+  const autoFillDetailsFromImage = async (overrideImageFile?: File) => {
+    const imageFile = overrideImageFile || images[0];
+    if (!imageFile) {
+      toast.error('Please upload at least one image first');
+      return;
+    }
+
+    setIsImageAiLoading(true);
+    setAiFilledFields([]);
+    setAiPriceSuggestion(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('image', imageFile);
+
+      const response = await api.post('/ai/generate-ad-details-from-image', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      const aiData = response.data?.data || response.data || {};
+      const newlyFilled: string[] = [];
+
+      let matchedCategoryId: string | null = null;
+      let matchedSubcategoryId: string | null = null;
+
+      // Category & Subcategory
+      if (aiData.category && Array.isArray(displayCategories) && displayCategories.length > 0) {
+        const normalizedCategory = String(aiData.category).toLowerCase().trim();
+        const slugifiedCategory = normalizedCategory.replace(/\s+/g, '-');
+
+        // Handle common AI → category name mismatches (especially mobiles)
+        const categorySynonyms: Record<string, string[]> = {
+          'mobile phones': ['mobiles', 'mobile', 'smartphones'],
+          'mobile phone': ['mobiles', 'mobile', 'smartphones'],
+          phones: ['mobiles', 'mobile-phones'],
+          smartphone: ['mobiles', 'mobile-phones'],
+          smartphones: ['mobiles', 'mobile-phones'],
+          car: ['cars', 'vehicles'],
+          cars: ['vehicles'],
+          bike: ['bikes', 'two-wheelers'],
+          'two wheeler': ['bikes', 'two-wheelers'],
+        };
+
+        const candidateNames = new Set<string>([normalizedCategory, slugifiedCategory]);
+        const extraFromNorm = categorySynonyms[normalizedCategory] || [];
+        const extraFromSlug = categorySynonyms[slugifiedCategory] || [];
+        extraFromNorm.forEach((v) => candidateNames.add(v.toLowerCase()));
+        extraFromSlug.forEach((v) => candidateNames.add(v.toLowerCase()));
+
+        const matchedCategory = displayCategories.find((c: any) => {
+          const name = (c.name || '').toLowerCase().trim();
+          const slug = (c.slug || '').toLowerCase().trim();
+          return candidateNames.has(name) || candidateNames.has(slug);
+        });
+
+        if (matchedCategory) {
+          const categoryId = matchedCategory.id || matchedCategory._id;
+          if (categoryId) {
+            matchedCategoryId = categoryId;
+            setValue('categoryId', categoryId, { shouldValidate: true, shouldDirty: true });
+            clearErrors('categoryId');
+            newlyFilled.push('category');
+
+            if (aiData.subcategory && Array.isArray(matchedCategory.subcategories)) {
+              const normalizedSub = String(aiData.subcategory).toLowerCase().trim();
+              const slugifiedSub = normalizedSub.replace(/\s+/g, '-');
+
+              const matchedSub = matchedCategory.subcategories.find((s: any) => {
+                const subName = (s.name || '').toLowerCase().trim();
+                const subSlug = (s.slug || '').toLowerCase().trim();
+                return (
+                  subName === normalizedSub ||
+                  subSlug === normalizedSub ||
+                  subSlug === slugifiedSub
+                );
+              });
+
+            if (matchedSub) {
+              const subId = matchedSub.id || matchedSub._id;
+              if (subId) {
+                matchedSubcategoryId = subId;
+                setValue('subcategoryId', subId, { shouldValidate: true, shouldDirty: true });
+                clearErrors('subcategoryId');
+                newlyFilled.push('subcategory');
+              }
+            }
+          }
+        }
+        }
+      }
+
+      // Brand, Model, Color – store in attributes so DynamicSpecifications can use them
+      if (aiData.brand) {
+        const brand = String(aiData.brand).trim();
+        if (brand) {
+          setValue('attributes.brand', brand, { shouldDirty: true });
+          setSelectedBrand(brand);
+          newlyFilled.push('brand');
+        }
+      }
+
+      if (aiData.model) {
+        const model = String(aiData.model).trim();
+        if (model) {
+          setValue('attributes.model', model, { shouldDirty: true });
+          newlyFilled.push('model');
+        }
+      }
+
+      if (aiData.color) {
+        const color = String(aiData.color).trim();
+        if (color) {
+          setValue('attributes.color', color, { shouldDirty: true });
+          newlyFilled.push('color');
+        }
+      }
+
+      // Product type (stored in attributes.product_type for now)
+      if (aiData.productType || aiData.product_type) {
+        const productType = String(aiData.productType || aiData.product_type).trim();
+        if (productType) {
+          setValue('attributes.product_type', productType, { shouldDirty: true });
+          newlyFilled.push('product_type');
+        }
+      }
+
+      // Title & Description (SEO-friendly)
+      if (aiData.title) {
+        const titleFromAi = String(aiData.title).trim();
+        if (titleFromAi) {
+          setValue('title', titleFromAi, { shouldValidate: true, shouldDirty: true });
+          clearErrors('title');
+          newlyFilled.push('title');
+        }
+      }
+
+      const aiSeoDescription = aiData.seoDescription || aiData.description;
+      if (aiSeoDescription) {
+        const descFromAi = String(aiSeoDescription).trim();
+        if (descFromAi) {
+          setValue('description', descFromAi, { shouldValidate: true, shouldDirty: true });
+          clearErrors('description');
+          newlyFilled.push('description');
+        }
+      }
+
+      // Price suggestion (AI + similar ads)
+      let fallbackNumericFromAi: number | null = null;
+      const rawPrice =
+        aiData.priceSuggestion ?? aiData.price ?? aiData.suggestedPrice ?? null;
+      if (rawPrice != null) {
+        const numeric = parseFloat(String(rawPrice).replace(/[^0-9.]/g, ''));
+        if (!isNaN(numeric) && isFinite(numeric) && numeric > 0) {
+          fallbackNumericFromAi = numeric;
+        }
+      }
+
+      try {
+        // Use DB-based price suggestion if we have enough context
+        if (matchedCategoryId || selectedCategoryId || matchedSubcategoryId || selectedSubcategoryId) {
+          const priceSuggestionResp = await api.post('/ai/ad-price-suggestion', {
+            title: aiData.title || title || '',
+            category: matchedCategoryId || selectedCategoryId || undefined,
+            subcategory: matchedSubcategoryId || selectedSubcategoryId || undefined,
+            condition: condition || undefined,
+            location: state && city ? `${city}, ${state}` : undefined,
+          });
+
+          const psData = priceSuggestionResp.data || {};
+          if (psData.success && (psData.suggestedPrice || psData.priceRange)) {
+            const suggested = typeof psData.suggestedPrice === 'number'
+              ? psData.suggestedPrice
+              : psData.suggestedPrice
+              ? Number(psData.suggestedPrice)
+              : undefined;
+            const min = psData.priceRange?.min ?? null;
+            const max = psData.priceRange?.max ?? null;
+
+            if (
+              (suggested != null && !isNaN(Number(suggested))) ||
+              (min != null && max != null)
+            ) {
+              setAiPriceSuggestion({
+                suggested: suggested != null && !isNaN(Number(suggested)) ? Number(suggested) : null,
+                min: typeof min === 'number' ? min : null,
+                max: typeof max === 'number' ? max : null,
+                source: 'db',
+              });
+            }
+          } else if (fallbackNumericFromAi) {
+            const base = fallbackNumericFromAi;
+            const delta = Math.round(base * 0.1);
+            setAiPriceSuggestion({
+              suggested: base,
+              min: base - delta,
+              max: base + delta,
+              source: 'ai',
+            });
+          }
+        } else if (fallbackNumericFromAi) {
+          const base = fallbackNumericFromAi;
+          const delta = Math.round(base * 0.1);
+          setAiPriceSuggestion({
+            suggested: base,
+            min: base - delta,
+            max: base + delta,
+            source: 'ai',
+          });
+        }
+      } catch (priceError) {
+        console.error('Error getting price suggestion from backend:', priceError);
+        if (fallbackNumericFromAi) {
+          const base = fallbackNumericFromAi;
+          const delta = Math.round(base * 0.1);
+          setAiPriceSuggestion({
+            suggested: base,
+            min: base - delta,
+            max: base + delta,
+            source: 'ai',
+          });
+        }
+      }
+
+      if (newlyFilled.length === 0) {
+        toast.info('AI could not detect details from the image. Please fill the form manually.');
+      } else {
+        setAiFilledFields(newlyFilled);
+        toast.success('Details auto-filled from image. Please review and edit.');
+      }
+    } catch (error: any) {
+      console.error('Error generating ad details from image:', error);
+      const status = error.response?.status;
+      if (status === 401) {
+        Cookies.remove('token', { path: '/' });
+        queryClient.setQueryData(['auth', 'me'], null);
+        toast.error('Your session has expired. Please log in again to continue.', { duration: 5000 });
+        router.push('/login');
+      } else {
+        toast.error(error.response?.data?.message || 'Failed to analyze image. Please try again.');
+      }
+    } finally {
+      setIsImageAiLoading(false);
     }
   };
 
@@ -1808,6 +3031,7 @@ export default function PostAdPage() {
         condition: condition || undefined,
         category: selectedCategory?.name || undefined,
         subcategory: selectedSubcategory?.name || undefined,
+        attributes: attributes && typeof attributes === 'object' ? attributes : undefined,
       });
 
       if (response.data.success && response.data.description) {
@@ -1818,10 +3042,88 @@ export default function PostAdPage() {
       }
     } catch (error: any) {
       console.error('Error generating description:', error);
+      const status = error.response?.status;
+      if (status === 401) {
+        Cookies.remove('token', { path: '/' });
+        queryClient.setQueryData(['auth', 'me'], null);
+        toast.error('Your session has expired. Please log in again to continue.', { duration: 5000 });
+        router.push('/login');
+        return;
+      }
       toast.error(error.response?.data?.message || 'Failed to generate description. Please try again.');
     } finally {
       setIsGeneratingDescription(false);
     }
+  };
+
+  const improveDescription = async () => {
+    const currentDesc = description || '';
+    if (!currentDesc.trim()) {
+      toast.error('Please enter some description text first');
+      return;
+    }
+    if (currentDesc.trim().length < 10) {
+      toast.error('Description must be at least 10 characters to improve');
+      return;
+    }
+
+    setIsImprovingDescription(true);
+    try {
+      const response = await api.post('/ai/improve-description', { text: currentDesc });
+      if (response.data.success && response.data.description) {
+        setValue('description', response.data.description);
+        clearErrors('description');
+        toast.success('Description improved!');
+      } else {
+        toast.error('Failed to improve description');
+      }
+    } catch (error: any) {
+      console.error('Improve description error:', error);
+      if (error.response?.status === 401) {
+        Cookies.remove('token', { path: '/' });
+        queryClient.setQueryData(['auth', 'me'], null);
+        toast.error('Your session has expired. Please log in again.');
+        router.push('/login');
+        return;
+      }
+      toast.error(error.response?.data?.message || 'Failed to improve description. Please try again.');
+    } finally {
+      setIsImprovingDescription(false);
+    }
+  };
+
+  // Helper function to validate MongoDB ObjectID
+  const isValidObjectId = (id: string | undefined | null): boolean => {
+    if (!id || typeof id !== 'string') return false;
+    // MongoDB ObjectID is 24-character hex string
+    return /^[a-fA-F0-9]{24}$/.test(id);
+  };
+
+  // Normalize condition to backend format: NEW, USED, LIKE_NEW, REFURBISHED
+  const normalizeCondition = (val: string | undefined | null): string | null => {
+    if (!val || typeof val !== 'string') return null;
+    const v = val.trim().toUpperCase().replace(/-/g, '_');
+    const map: Record<string, string> = {
+      NEW: 'NEW', LIKE_NEW: 'LIKE_NEW', USED: 'USED', REFURBISHED: 'REFURBISHED',
+      GOOD: 'USED', FAIR: 'USED', // map good/fair to USED
+    };
+    return map[v] || (['NEW', 'USED', 'LIKE_NEW', 'REFURBISHED'].includes(v) ? v : null);
+  };
+
+  // Normalize form data so price is always at root level (from data.price or data.attributes?.price)
+  // Prevents "Price is missing after payment" when form data is stored/passed across async flows
+  // Rejects object values (e.g. {}) and prefers attributes.price when root price is invalid
+  const normalizeFormDataWithPrice = (data: any): any => {
+    if (!data) return data;
+    const isUsable = (v: any) =>
+      typeof v === 'number' && !isNaN(v) && isFinite(v) ||
+      (typeof v === 'string' && String(v).trim() !== '');
+    const rootOk = isUsable(data.price);
+    const attrsOk = isUsable(data.attributes?.price);
+    const price = rootOk ? data.price : (attrsOk ? data.attributes.price : undefined);
+    const hasPrice = price !== undefined && price !== null;
+    if (!hasPrice) return { ...data, attributes: { ...data.attributes } };
+    return { ...data, price, attributes: { ...data.attributes, price } };
   };
 
   const onSubmit = async (data: any) => {
@@ -1832,7 +3134,7 @@ export default function PostAdPage() {
       router.push('/login');
       return;
     }
-    
+    setIsSubmittingForm(true);
     console.log('🚀 onSubmit called', { 
       hasPremiumFeatures, 
       requiresPayment, 
@@ -1844,15 +3146,17 @@ export default function PostAdPage() {
       userId: user?.id
     });
     
-    // Log form data for debugging
+    // Log form data for debugging (including location)
     console.log('📋 Form data:', {
       title: data.title?.substring(0, 50),
       description: data.description?.substring(0, 50),
       price: data.price,
       categoryId: data.categoryId,
       subcategoryId: data.subcategoryId,
+      locationId: data.locationId,
       state: data.state,
       city: data.city,
+      neighbourhood: data.neighbourhood,
       attributes: data.attributes,
       attributesKeys: data.attributes ? Object.keys(data.attributes) : [],
       attributesCount: data.attributes ? Object.keys(data.attributes).length : 0
@@ -1860,6 +3164,7 @@ export default function PostAdPage() {
 
     // CRITICAL: Block submission if payment is required but not verified
     if (requiresPaymentBeforePosting && !isPaymentVerified) {
+      setIsSubmittingForm(false);
       toast.error('Please complete payment before posting your ad');
       // Set payment required error data so modal can display
       setPaymentRequiredError({
@@ -1867,30 +3172,62 @@ export default function PostAdPage() {
         freeAdsUsed: adLimitStatus?.freeAdsUsed || 0,
         freeAdsLimit: adLimitStatus?.freeAdsLimit || 2,
       });
-      // Store form data for later use
-      setAdFormData({ ...data });
+      // Store form data for later use (normalize so price is always at root)
+      setAdFormData(normalizeFormDataWithPrice({ ...data }));
       setShowPaymentRequiredModal(true);
       return;
     }
 
-    // Check ad limit before proceeding
+    // Check ad limit before proceeding - DISABLED (posting allowed without limit gate)
     // Only block if no premium features are selected AND user can't post
-    // If premium features are selected, allow posting even if business package slots are exhausted
-    if (adLimitStatus?.hasLimit && !adLimitStatus?.canPost && !hasPremiumFeatures) {
+    if (false && adLimitStatus?.hasLimit && !adLimitStatus?.canPost && !hasPremiumFeatures) {
+      setIsSubmittingForm(false);
       toast.error(adLimitStatus.message || 'You have reached your ad limit. Please select premium features to continue posting.');
       return;
     }
 
     if (images.length === 0) {
+      setIsSubmittingForm(false);
       toast.error('Please upload at least one image');
+      return;
+    }
+
+    // CRITICAL: Validate category/subcategory IDs BEFORE payment order creation
+    // This prevents payment processing with invalid data
+    if (!isValidObjectId(data.categoryId)) {
+      setIsSubmittingForm(false);
+      toast.error('Invalid category selected. Please refresh the page and select a valid category. Payment will not be processed.');
+      console.error('❌ Invalid categoryId before payment:', data.categoryId);
+      return;
+    }
+
+    // Subcategory is only required if the selected category has subcategories
+    const categoryHasSubcategories = selectedCategory?.subcategories && selectedCategory.subcategories.length > 0;
+    if (categoryHasSubcategories) {
+      if (!data.subcategoryId || !isValidObjectId(data.subcategoryId)) {
+      setIsSubmittingForm(false);
+      toast.error('Invalid subcategory selected. Please select a valid subcategory. Payment will not be processed.');
+      console.error('❌ Invalid subcategoryId before payment:', data.subcategoryId);
+      return;
+      }
+    } else {
+      // If category has no subcategories, clear subcategoryId
+      data.subcategoryId = undefined;
+      setValue('subcategoryId', '');
+    }
+
+    if (data.locationId && !isValidObjectId(data.locationId)) {
+      setIsSubmittingForm(false);
+      toast.error('Invalid location selected. Please select a valid location. Payment will not be processed.');
+      console.error('❌ Invalid locationId before payment:', data.locationId);
       return;
     }
 
     // Check if payment is required (category posting price or premium features)
     if (requiresPayment) {
       console.log('💰 Payment required, creating payment order...');
-      // Store form data (without images - we'll use images state directly)
-      setAdFormData({ ...data });
+      // Store form data (normalize so price is always at root; images from state)
+      setAdFormData(normalizeFormDataWithPrice({ ...data }));
       
       // Create payment order with premium options
       const orderData = {
@@ -1916,6 +3253,7 @@ export default function PostAdPage() {
 
       console.log('💰 Creating payment order for ad:', orderData);
       createPaymentOrder.mutate(orderData, {
+        onSettled: () => setIsSubmittingForm(false),
         onSuccess: (response) => {
           console.log('✅ Payment order created:', response);
           if (!response.requiresPayment) {
@@ -1932,13 +3270,16 @@ export default function PostAdPage() {
               const discount = ((parseFloat(data.originalPrice) - parseFloat(data.price)) / parseFloat(data.originalPrice) * 100).toFixed(2);
               formData.append('discount', discount);
             }
-            if (data.condition) formData.append('condition', data.condition);
+            const conditionValue = normalizeCondition(data.condition || data.attributes?.condition);
+            if (conditionValue) formData.append('condition', conditionValue);
             formData.append('categoryId', data.categoryId);
             if (data.subcategoryId) formData.append('subcategoryId', data.subcategoryId);
-            // Location fields are now required
-            formData.append('state', data.state);
-            formData.append('city', data.city);
+            // Location fields - include all location data
+            if (data.locationId) formData.append('locationId', data.locationId);
+            formData.append('state', data.state || '');
+            formData.append('city', data.city || locationQuery || '');
             if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
+            if (data.exactLocation) formData.append('exactLocation', data.exactLocation);
             formData.append('showPhone', String(showPhoneInAds));
             
             if (data.attributes && Object.keys(data.attributes).length > 0) {
@@ -1955,6 +3296,7 @@ export default function PostAdPage() {
             });
 
             createAd.mutate(formData, {
+              onSettled: () => setIsSubmittingForm(false),
               onSuccess: (data) => {
                 console.log('✅ Ad created successfully:', data);
                 toast.success('Ad posted successfully! Waiting for approval.');
@@ -1967,14 +3309,10 @@ export default function PostAdPage() {
                 }, 1500);
               },
               onError: (error: any) => {
-                console.error('❌ Ad creation failed:', error);
                 const errorData = error.response?.data;
-                
-                // Handle validation errors
                 if (errorData?.errors && Array.isArray(errorData.errors) && errorData.errors.length > 0) {
                   const validationErrors = errorData.errors.map((err: any) => err.msg || err.message).join(', ');
                   toast.error(`Validation failed: ${validationErrors}`, { duration: 5000 });
-                  console.error('Validation errors:', errorData.errors);
                 } else {
                   toast.error(errorData?.message || 'Failed to create ad');
                 }
@@ -1984,14 +3322,43 @@ export default function PostAdPage() {
           }
           setPaymentOrder(response);
           // Directly open Razorpay checkout instead of showing payment modal popup
-          // Pass form data to capture in closure
-          openRazorpayCheckout(response, { ...data, attributes: data.attributes || {} });
+          // Pass form data to capture in closure (normalize so price is always at root)
+          openRazorpayCheckout(response, normalizeFormDataWithPrice({ ...data, attributes: data.attributes || {} }));
         },
         onError: (error: any) => {
           console.error('❌ Payment order creation failed:', error);
           console.error('Error response:', error.response);
           console.error('Error data:', error.response?.data);
-          toast.error(error.response?.data?.message || 'Failed to create payment order. Please try again.');
+          
+          const status = error.response?.status;
+          const errorData = error.response?.data;
+          
+          // Handle 402 Payment Required
+          if (status === 402) {
+            console.log('💰 Payment required (402) in payment order creation - showing payment options modal');
+            setPaymentRequiredError({
+              message: errorData?.message || 'You have reached your free ad limit. Please purchase a Business Package or Premium Options to continue posting ads.',
+              requiresPayment: true,
+              freeAdsUsed: errorData?.freeAdsUsed || adLimitStatus?.freeAdsUsed || 0,
+              freeAdsLimit: errorData?.freeAdsLimit || adLimitStatus?.freeAdsLimit || 2,
+              businessAdsRemaining: errorData?.businessAdsRemaining || adLimitStatus?.businessAdsRemaining || 0,
+              ...errorData
+            });
+            setShowPaymentRequiredModal(true);
+            // Store form data for later use (normalize so price is always at root)
+            setAdFormData(normalizeFormDataWithPrice({ 
+              ...data,
+              attributes: data.attributes || {},
+              images: images
+            }));
+            toast.error(
+              errorData?.message || 'You have reached your free ad limit. Please complete payment to post your ad.',
+              { duration: 5000 }
+            );
+          } else {
+            // Other errors
+            toast.error(errorData?.message || 'Failed to create payment order. Please try again.', { duration: 5000 });
+          }
         }
       });
       return;
@@ -2001,20 +3368,113 @@ export default function PostAdPage() {
     const formData = new FormData();
     formData.append('title', data.title);
     formData.append('description', data.description);
-    formData.append('price', String(data.price || ''));
+    
+    // Price can be in root level (data.price) or in attributes (data.attributes.price)
+    // For mobile phones, price is in Product Specifications (attributes.price), so check both locations
+    // Backend expects price at root level, so extract from attributes if needed
+    let priceValue: any = data.price;
+    
+    // Helper: price is valid only if it's a number or non-empty string (reject objects like {})
+    const isUsablePrice = (v: any) =>
+      typeof v === 'number' && !isNaN(v) && isFinite(v) ||
+      (typeof v === 'string' && String(v).trim() !== '');
+    
+    // Check attributes.price if root level price is not available, empty, or invalid (e.g. object)
+    const rootPriceExists = isUsablePrice(priceValue);
+    const attributesPriceExists = isUsablePrice(data.attributes?.price);
+    
+    if (!rootPriceExists && attributesPriceExists) {
+      priceValue = data.attributes.price;
+      console.log('💰 Using price from attributes:', priceValue);
+    }
+    
+    // Log for debugging
+    console.log('💰 Price extraction:', {
+      dataPrice: data.price,
+      attributesPrice: data.attributes?.price,
+      finalPriceValue: priceValue,
+      priceType: typeof priceValue,
+      rootPriceExists,
+      attributesPriceExists,
+      allAttributes: data.attributes
+    });
+    
+    // Check if price is missing (but allow 0 as valid)
+    if (priceValue === undefined || priceValue === null || priceValue === '') {
+      console.error('❌ Price is missing!', {
+        dataPrice: data.price,
+        attributesPrice: data.attributes?.price,
+        allAttributes: data.attributes,
+        formDataKeys: Array.from(formData.keys())
+      });
+      toast.error('Price is required. Please enter a price for your ad.');
+      return;
+    }
+    
+    // Reject object values (e.g. {} from malformed form state)
+    if (typeof priceValue === 'object' && priceValue !== null) {
+      console.error('❌ Price must be a number or string, not an object!', { priceValue });
+      toast.error('Price is invalid. Please enter a numeric value (e.g., 10000) in the Price field.');
+      return;
+    }
+    
+    // Ensure price is a valid number (0 is valid)
+    // Handle both number and string types
+    let priceNum: number;
+    if (typeof priceValue === 'number') {
+      priceNum = priceValue;
+    } else if (typeof priceValue === 'string') {
+      // Remove any whitespace, commas, and currency symbols
+      const trimmed = priceValue.trim().replace(/[,₹$]/g, '');
+      if (trimmed === '') {
+        console.error('❌ Price is empty string!');
+        toast.error('Price is required. Please enter a price for your ad.');
+        return;
+      }
+      priceNum = parseFloat(trimmed);
+    } else {
+      // Fallback: try to convert to string and parse (e.g. edge cases)
+      const stringValue = String(priceValue).trim().replace(/[,₹$]/g, '');
+      priceNum = parseFloat(stringValue);
+    }
+    
+    if (isNaN(priceNum) || !isFinite(priceNum)) {
+      console.error('❌ Invalid price value (NaN or Infinity)!', { 
+        priceValue, 
+        priceNum, 
+        priceType: typeof priceValue,
+        stringValue: String(priceValue),
+        dataPrice: data.price,
+        attributesPrice: data.attributes?.price
+      });
+      toast.error('Price must be a valid number. Please enter a numeric value (e.g., 10000).');
+      return;
+    }
+    
+    if (priceNum < 0) {
+      console.error('❌ Invalid price value (negative)!', { priceValue, priceNum });
+      toast.error('Price must be greater than or equal to 0.');
+      return;
+    }
+    
+    console.log('✅ Price validated and added to form:', { priceNum, priceString: String(priceNum) });
+    formData.append('price', String(priceNum));
     if (data.originalPrice) {
       formData.append('originalPrice', data.originalPrice);
-      // Calculate discount automatically
-      const discount = ((parseFloat(data.originalPrice) - parseFloat(data.price)) / parseFloat(data.originalPrice) * 100).toFixed(2);
+      // Calculate discount automatically using the extracted priceNum
+      const discount = ((parseFloat(data.originalPrice) - priceNum) / parseFloat(data.originalPrice) * 100).toFixed(2);
       formData.append('discount', discount);
     }
-    if (data.condition) formData.append('condition', data.condition);
+    const conditionValue = normalizeCondition(data.condition || data.attributes?.condition);
+    if (conditionValue) formData.append('condition', conditionValue);
     formData.append('categoryId', data.categoryId);
     if (data.subcategoryId) formData.append('subcategoryId', data.subcategoryId);
-    // Location fields are now required
-    formData.append('state', data.state);
-    formData.append('city', data.city);
+    // Location fields - include all location data
+    if (data.locationId) formData.append('locationId', data.locationId);
+    formData.append('state', data.state || '');
+    formData.append('city', data.city || locationQuery || '');
     if (data.neighbourhood) formData.append('neighbourhood', data.neighbourhood);
+    if (data.exactLocation) formData.append('exactLocation', data.exactLocation);
     formData.append('showPhone', String(showPhoneInAds));
     
     // DON'T add premium features to initial submission if business package is active and free ads remain
@@ -2027,10 +3487,14 @@ export default function PostAdPage() {
     }
     
     // Add attributes if they exist
-    // Clean attributes: remove empty strings and null values
+    // Clean attributes: remove empty strings and null values, and remove price (sent at root level)
     const cleanedAttributes: any = {};
     if (data.attributes) {
       Object.keys(data.attributes).forEach(key => {
+        // Skip price field - it's sent at root level, not in attributes
+        if (key === 'price') {
+          return;
+        }
         const value = data.attributes[key];
         // Only include non-empty values
         if (value !== null && value !== undefined && value !== '') {
@@ -2056,6 +3520,7 @@ export default function PostAdPage() {
     });
 
     createAd.mutate(formData, {
+      onSettled: () => setIsSubmittingForm(false),
       onSuccess: (adResponse) => {
         console.log('✅ Ad created successfully:', adResponse);
         console.log('📋 Ad response structure:', {
@@ -2088,19 +3553,15 @@ export default function PostAdPage() {
           return;
         }
         
-        // Invalidate queries to ensure My Ads page shows the new ad
+        // Invalidate and refetch user ads so My Ads page shows the new ad
         queryClient.invalidateQueries({ queryKey: ['user', 'ads'] });
-        queryClient.invalidateQueries({ queryKey: ['my-ads'] });
+        queryClient.refetchQueries({ queryKey: ['user', 'ads'] });
         
-        // Invalidate and refetch ad limit status
+        // Invalidate ad limit status
         queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
         queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
         
-        // CRITICAL: Invalidate user ads query to ensure new ad appears in My Ads page
-        queryClient.invalidateQueries({ queryKey: ['user', 'ads'] });
-        queryClient.invalidateQueries({ queryKey: ['my-ads'] });
-        
-        // Also set the ad in cache for immediate access
+        // Set the ad in cache for immediate access
         if (createdAd) {
           queryClient.setQueryData(['ad', createdAdId], createdAd);
           console.log('✅ Ad cached for immediate access:', createdAdId);
@@ -2133,6 +3594,7 @@ export default function PostAdPage() {
           };
           
           createPaymentOrder.mutate(premiumOrderData, {
+            onSettled: () => setIsSubmittingForm(false),
             onSuccess: (paymentResponse) => {
               console.log('✅ Premium payment order created:', paymentResponse);
               if (paymentResponse.requiresPayment && paymentResponse.razorpayOrder) {
@@ -2165,32 +3627,45 @@ export default function PostAdPage() {
         }
       },
       onError: (error: any) => {
-        console.error('❌ Ad creation failed:', error);
-        console.error('❌ Error details:', {
-          message: error.message,
-          response: error.response,
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          data: error.response?.data,
-          config: error.config,
-          requestUrl: error.config?.url,
-          requestMethod: error.config?.method
-        });
+        if (process.env.NODE_ENV === 'development') {
+          const msg = error.response?.data?.message || error.message;
+          const status = error.response?.status;
+          console.warn('Ad creation failed:', status != null ? `${status}` : '', msg);
+        }
         const errorData = error.response?.data;
         const status = error.response?.status;
         
         // Handle 402 Payment Required - Free ads limit reached
-        if (status === 402 && errorData?.requiresPayment) {
-          console.log('💰 Payment required - showing payment options modal');
+        if (status === 402) {
+          console.log('💰 Payment required (402) - showing payment options modal');
+          console.log('📝 Error data:', errorData);
           console.log('📝 Storing form data:', data);
-          setPaymentRequiredError(errorData);
+          
+          // Set payment required error with proper message
+          setPaymentRequiredError({
+            message: errorData?.message || 'You have reached your free ad limit. Please purchase a Business Package or Premium Options to continue posting ads.',
+            requiresPayment: true,
+            freeAdsUsed: errorData?.freeAdsUsed || adLimitStatus?.freeAdsUsed || 0,
+            freeAdsLimit: errorData?.freeAdsLimit || adLimitStatus?.freeAdsLimit || 2,
+            businessAdsRemaining: errorData?.businessAdsRemaining || adLimitStatus?.businessAdsRemaining || 0,
+            ...errorData
+          });
+          
+          // Show payment modal
           setShowPaymentRequiredModal(true);
-          // Store form data for later use (include all fields)
-          setAdFormData({ 
+          
+          // Store form data for later use (normalize so price is always at root)
+          setAdFormData(normalizeFormDataWithPrice({ 
             ...data,
             attributes: data.attributes || {},
             images: images // Store image references
-          });
+          }));
+          
+          // Show user-friendly toast message
+          toast.error(
+            errorData?.message || 'You have reached your free ad limit. Please complete payment to post your ad.',
+            { duration: 5000 }
+          );
           return;
         }
         
@@ -2198,9 +3673,9 @@ export default function PostAdPage() {
         if (errorData?.errors && Array.isArray(errorData.errors) && errorData.errors.length > 0) {
           const validationErrors = errorData.errors.map((err: any) => err.msg || err.message).join(', ');
           toast.error(`Validation failed: ${validationErrors}`, { duration: 5000 });
-          console.error('Validation errors:', errorData.errors);
         } else {
-          toast.error(errorData?.message || 'Failed to create ad');
+          const errorMessage = errorData?.message || errorData?.error || 'Failed to create ad. Please try again.';
+          toast.error(errorMessage, { duration: 5000 });
         }
       },
     });
@@ -2223,6 +3698,33 @@ export default function PostAdPage() {
     if (!currentFormData) {
       console.error('❌ Ad form data missing');
       toast.error('Ad form data not found. Please try again.');
+      return;
+    }
+
+    // CRITICAL: Validate category/subcategory/location IDs BEFORE creating ad
+    // This prevents ad creation failure after payment has been processed
+    if (!isValidObjectId(currentFormData.categoryId)) {
+      console.error('❌ Invalid categoryId after payment:', currentFormData.categoryId);
+      toast.error('Invalid category selected. Payment was processed but ad creation failed. Please contact support for refund.');
+      return;
+    }
+
+    // Subcategory is only required if the selected category has subcategories
+    const categoryHasSubcategories = selectedCategory?.subcategories && selectedCategory.subcategories.length > 0;
+    if (categoryHasSubcategories) {
+      if (!currentFormData.subcategoryId || !isValidObjectId(currentFormData.subcategoryId)) {
+        console.error('❌ Invalid subcategoryId after payment:', currentFormData.subcategoryId);
+        toast.error('Invalid subcategory selected. Payment was processed but ad creation failed. Please contact support for refund.');
+        return;
+      }
+    } else {
+      // If category has no subcategories, ensure subcategoryId is not set
+      currentFormData.subcategoryId = undefined;
+    }
+
+    if (currentFormData.locationId && !isValidObjectId(currentFormData.locationId)) {
+      console.error('❌ Invalid locationId after payment:', currentFormData.locationId);
+      toast.error('Invalid location selected. Payment was processed but ad creation failed. Please contact support for refund.');
       return;
     }
 
@@ -2257,15 +3759,98 @@ export default function PostAdPage() {
           const formData = new FormData();
           formData.append('title', currentFormData.title);
           formData.append('description', currentFormData.description);
-          formData.append('price', String(currentFormData.price || ''));
+          
+          // Price extraction - same logic as regular form submission
+          // Price can be in root level (currentFormData.price) or in attributes (currentFormData.attributes.price)
+          // For mobile phones, price is in Product Specifications (attributes.price), so check both locations
+          let priceValue: any = currentFormData.price;
+          
+          const isUsablePricePostPay = (v: any) =>
+            typeof v === 'number' && !isNaN(v) && isFinite(v) ||
+            (typeof v === 'string' && String(v).trim() !== '');
+          const rootPriceExistsPostPay = isUsablePricePostPay(priceValue);
+          const attributesPriceExistsPostPay = isUsablePricePostPay(currentFormData.attributes?.price);
+          
+          if (!rootPriceExistsPostPay && attributesPriceExistsPostPay) {
+            priceValue = currentFormData.attributes.price;
+            console.log('💰 Using price from attributes after payment:', priceValue);
+          }
+          
+          // Log for debugging
+          console.log('💰 Price extraction after payment:', {
+            dataPrice: currentFormData.price,
+            attributesPrice: currentFormData.attributes?.price,
+            finalPriceValue: priceValue,
+            priceType: typeof priceValue,
+            rootPriceExistsPostPay,
+            attributesPriceExistsPostPay
+          });
+          
+          // Check if price is missing (but allow 0 as valid)
+          if (priceValue === undefined || priceValue === null || priceValue === '') {
+            console.error('❌ Price is missing after payment!', {
+              dataPrice: currentFormData.price,
+              attributesPrice: currentFormData.attributes?.price,
+              allAttributes: currentFormData.attributes
+            });
+            toast.error('Price is required. Please contact support.');
+            return;
+          }
+          
+          // Reject object values (e.g. {} from malformed form state)
+          if (typeof priceValue === 'object' && priceValue !== null) {
+            console.error('❌ Price must be a number or string, not an object (after payment)!', { priceValue });
+            toast.error('Price is invalid. Please contact support.');
+            return;
+          }
+          
+          // Ensure price is a valid number (0 is valid)
+          let priceNum: number;
+          if (typeof priceValue === 'number') {
+            priceNum = priceValue;
+          } else if (typeof priceValue === 'string') {
+            const trimmed = priceValue.trim().replace(/[,₹$]/g, '');
+            if (trimmed === '') {
+              console.error('❌ Price is empty string after payment!');
+              toast.error('Price is required. Please contact support.');
+              return;
+            }
+            priceNum = parseFloat(trimmed);
+          } else {
+            priceNum = parseFloat(String(priceValue).trim().replace(/[,₹$]/g, ''));
+          }
+          
+          if (isNaN(priceNum) || !isFinite(priceNum)) {
+            console.error('❌ Invalid price value (NaN or Infinity) after payment!', { 
+              priceValue, 
+              priceNum, 
+              priceType: typeof priceValue
+            });
+            toast.error('Price must be a valid number. Please contact support.');
+            return;
+          }
+          
+          if (priceNum < 0) {
+            console.error('❌ Invalid price value (negative) after payment!', { priceValue, priceNum });
+            toast.error('Price must be greater than or equal to 0. Please contact support.');
+            return;
+          }
+          
+          console.log('✅ Price validated and added to form after payment:', { priceNum, priceString: String(priceNum) });
+          formData.append('price', String(priceNum));
+          
           if (currentFormData.originalPrice) formData.append('originalPrice', currentFormData.originalPrice);
           if (currentFormData.discount) formData.append('discount', currentFormData.discount);
-          if (currentFormData.condition) formData.append('condition', currentFormData.condition);
+          const condVal = normalizeCondition(currentFormData.condition || currentFormData.attributes?.condition);
+          if (condVal) formData.append('condition', condVal);
           formData.append('categoryId', currentFormData.categoryId);
           if (currentFormData.subcategoryId) formData.append('subcategoryId', currentFormData.subcategoryId);
-          if (currentFormData.state) formData.append('state', currentFormData.state);
-          if (currentFormData.city) formData.append('city', currentFormData.city);
+          // Location fields - include all location data
+          if (currentFormData.locationId) formData.append('locationId', currentFormData.locationId);
+          formData.append('state', currentFormData.state || '');
+          formData.append('city', currentFormData.city || locationQuery || '');
           if (currentFormData.neighbourhood) formData.append('neighbourhood', currentFormData.neighbourhood);
+          if (currentFormData.exactLocation) formData.append('exactLocation', currentFormData.exactLocation);
           formData.append('showPhone', String(showPhoneInAds));
           formData.append('paymentOrderId', currentOrder.razorpayOrder.id);
           
@@ -2276,9 +3861,29 @@ export default function PostAdPage() {
             console.log('⭐ Adding premiumType to formData after payment:', selectedPremium);
           }
           
-          // Add attributes if they exist
+          // Add attributes if they exist (but remove price from attributes since it's sent at root level)
           if (currentFormData.attributes && Object.keys(currentFormData.attributes).length > 0) {
-            formData.append('attributes', JSON.stringify(currentFormData.attributes));
+            const cleanedAttributes: any = {};
+            Object.keys(currentFormData.attributes).forEach(key => {
+              // Skip price field - it's sent at root level, not in attributes
+              if (key === 'price') {
+                return;
+              }
+              const value = currentFormData.attributes[key];
+              // Only include non-empty values
+              if (value !== null && value !== undefined && value !== '') {
+                cleanedAttributes[key] = value;
+              }
+            });
+            
+            if (Object.keys(cleanedAttributes).length > 0) {
+              formData.append('attributes', JSON.stringify(cleanedAttributes));
+            }
+          }
+
+          // Add specifications if they exist (for new ads)
+          if (currentFormData._specifications && Array.isArray(currentFormData._specifications) && currentFormData._specifications.length > 0) {
+            formData.append('specifications', JSON.stringify(currentFormData._specifications));
           }
 
           // Use images from state (File objects persist in state)
@@ -2301,27 +3906,28 @@ export default function PostAdPage() {
             isPremiumAd: !!(selectedPremium || isUrgent)
           });
           createAd.mutate(formData, {
+            onSettled: () => setIsSubmittingForm(false),
             onSuccess: (data) => {
               console.log('✅ Ad created successfully:', data);
-              toast.success('Ad posted successfully! Redirecting to orders...');
+              toast.success('Ad posted successfully! Redirecting to My Ads...');
               // Invalidate ad limit status to refresh it after ad creation
               queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
               queryClient.invalidateQueries({ queryKey: ['business-package', 'status'] });
-              // Redirect to orders page after successful payment and ad creation
+              // Redirect to My Ads - use window.location for reliable navigation after payment
               setTimeout(() => {
-                console.log('🔄 Redirecting to /orders');
-                router.push('/orders');
-              }, 1500);
+                console.log('🔄 Redirecting to /my-ads');
+                if (typeof window !== 'undefined') {
+                  window.location.href = '/my-ads';
+                } else {
+                  router.push('/my-ads');
+                }
+              }, 800);
             },
             onError: (error: any) => {
-              console.error('❌ Ad creation failed:', error);
               const errorData = error.response?.data;
-              
-              // Handle validation errors
               if (errorData?.errors && Array.isArray(errorData.errors) && errorData.errors.length > 0) {
                 const validationErrors = errorData.errors.map((err: any) => err.msg || err.message).join(', ');
                 toast.error(`Validation failed: ${validationErrors}`, { duration: 5000 });
-                console.error('Validation errors:', errorData.errors);
               } else {
                 toast.error(errorData?.message || 'Failed to create ad. Please contact support.');
               }
@@ -2329,7 +3935,6 @@ export default function PostAdPage() {
           });
         },
         onError: (error: any) => {
-          console.error('❌ Payment verification failed:', error);
           toast.error(error.response?.data?.message || 'Payment verification failed. Please contact support.');
           setShowPaymentModal(false);
         },
@@ -2407,7 +4012,7 @@ export default function PostAdPage() {
           key: razorpayOrder.key,
           amount: amountInPaise,
           currency: 'INR',
-          name: 'SellIt',
+          name: 'Sell Box',
           description: descriptionText,
           order_id: razorpayOrder.id,
           handler: function (response: any) {
@@ -2479,11 +4084,16 @@ export default function PostAdPage() {
   // Show loading during initial mount to prevent hydration mismatch
   // Early returns must be AFTER all hooks
   if (!mounted || isLoading) {
-    return <div className="container mx-auto px-4 py-8">Loading...</div>;
+    return <div className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8">Loading...</div>;
   }
 
   if (!isAuthenticated) {
     return null;
+  }
+
+  // Show loading skeleton while categories are being fetched
+  if (categoriesLoading) {
+    return <CategorySkeleton />;
   }
 
   // FIX: Don't block entire UI - allow form to render so autocomplete can initialize
@@ -2491,14 +4101,37 @@ export default function PostAdPage() {
   // Only disable submit button when adLimitStatus is not ready
   const canSubmit = !isLoadingAdLimit && adLimitStatus !== null;
 
+  // Calculate form completion percentage
+  const calculateCompletion = () => {
+    let completed = 0;
+    const total = 7;
+    
+    if (watch('title')) completed++;
+    if (watch('description')) completed++;
+    if (watch('categoryId')) completed++;
+    if (images.length > 0) completed++;
+    if (watch('price') || watch('attributes.price')) completed++;
+    if (watch('state') && watch('city')) completed++;
+    if (selectedCategory) completed++;
+    
+    return Math.round((completed / total) * 100);
+  };
+
+  const completionPercentage = calculateCompletion();
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Modern Header */}
+    <div id="post-ad-page" className="min-h-screen bg-gray-50">
+      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Header */}
         <div className="mb-6">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Post a New Ad</h1>
-          <p className="text-gray-600">Fill in the details to sell your item quickly and reach thousands of buyers.</p>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">Post your ad</h1>
+          <p className="text-gray-600">Fill in the details below to reach thousands of buyers.</p>
         </div>
+
+        {/* Two Column Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Main Content - 2 columns on large screens */}
+          <div className="lg:col-span-2 space-y-6">
 
         {/* Loading indicator for ad limits (non-blocking) */}
         {isLoadingAdLimit && (
@@ -2507,28 +4140,66 @@ export default function PostAdPage() {
           </div>
         )}
 
-        {/* Ad Limit Alert - Only show if not dismissed */}
-        {!isLoadingAdLimit && adLimitStatus?.hasLimit && !adLimitStatus?.canPost && !isAdLimitAlertDismissed && (
-        <>
+        {/* Ad Limit Alert - Only when limit reached AND user has no active business package (business ullapol "Free ad limit reached" kanikkaruthu) */}
+        {!isLoadingAdLimit && adLimitStatus?.hasLimit && !adLimitStatus?.canPost && !isAdLimitAlertDismissed && !hasActiveBusinessPackage && (
           <AdLimitAlert
             packageName={adLimitStatus.packageName || 'Business Package'}
             maxAds={adLimitStatus.maxAds || 0}
             currentAds={adLimitStatus.currentAds || 0}
-            message={adLimitStatus.message || 'You have reached your ad limit.'}
+            message={adLimitStatus.blockReason || adLimitStatus.message || 'You have reached your ad limit.'}
             extraAdSlots={adLimitStatus.extraAdSlots || 0}
             totalAllowedAds={adLimitStatus.totalAllowedAds}
             onDismiss={() => setIsAdLimitAlertDismissed(true)}
             dismissible={true}
           />
-          {/* Message below banner when business package slots are exhausted */}
-          {hasActiveBusinessPackage && !hasAdsRemaining && (
-            <div className="mb-6 p-4 rounded-lg bg-blue-50 border border-blue-200">
-              <p className="text-sm text-blue-800 font-medium">
-                Your business package slots are used, but you can still post ads using Premium features.
-              </p>
+        )}
+
+        {/* Package Exhausted Alert - when business package slots used; show message + Upgrade + Post with single buy options */}
+        {!isLoadingAdLimit && hasActiveBusinessPackage && !hasAdsRemaining && !adLimitStatus?.canPost && !isAdLimitAlertDismissed && (
+          <div className="mb-6 p-6 bg-gradient-to-r from-orange-50 to-amber-50 border-2 border-orange-200 rounded-xl shadow-lg relative">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center flex-shrink-0">
+                <FiAlertCircle className="w-6 h-6 text-primary-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-lg font-bold text-orange-900 mb-2">Package Exhausted</h3>
+                <p className="text-orange-800 mb-4 leading-relaxed">
+                  {adLimitStatus?.blockReason || adLimitStatus?.message || 'Package exhausted. Upgrade or post with single buy.'}
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  <Link
+                    href="/business-package"
+                    className="inline-flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-3 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all shadow-md"
+                  >
+                    <FiBriefcase className="w-5 h-5" />
+                    Upgrade Package
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const premiumSection = document.querySelector('[data-premium-section]');
+                      if (premiumSection) {
+                        premiumSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        (premiumSection as HTMLElement).classList.add('ring-4', 'ring-amber-400');
+                        setTimeout(() => (premiumSection as HTMLElement).classList.remove('ring-4', 'ring-amber-400'), 3000);
+                      }
+                    }}
+                    className="inline-flex items-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white px-6 py-3 rounded-lg font-semibold hover:from-amber-600 hover:to-primary-700 transition-all shadow-md"
+                  >
+                    <FiStar className="w-5 h-5" />
+                    Post with Single Buy
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAdLimitAlertDismissed(true)}
+                className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full p-1.5"
+                aria-label="Dismiss"
+              >
+                <FiX className="w-5 h-5" />
+              </button>
             </div>
-          )}
-        </>
+          </div>
         )}
 
         {/* Payment Required Alert - Show if payment is required but not verified */}
@@ -2570,7 +4241,7 @@ export default function PostAdPage() {
             {/* FREE ADS Box - Sell Box Style */}
             <div className="relative bg-white rounded-lg p-4 border-2 border-blue-200 shadow-sm hover:shadow-md transition-shadow">
               <div className="absolute top-2 right-2">
-                <FiFlag className="w-5 h-5 text-orange-500" />
+                <FiFlag className="w-5 h-5 text-primary-600" />
               </div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-semibold text-gray-700 uppercase">FREE ADS</span>
@@ -2593,13 +4264,13 @@ export default function PostAdPage() {
             {/* BUSINESS PACKAGE Box - Sell Box Style */}
             <div className="relative bg-white rounded-lg p-4 border-2 border-green-200 shadow-sm hover:shadow-md transition-shadow">
               <div className="absolute top-2 right-2">
-                <FiBriefcase className="w-5 h-5 text-orange-500" />
+                <FiBriefcase className="w-5 h-5 text-primary-600" />
               </div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-semibold text-gray-700 uppercase">BUSINESS PACKAGE</span>
               </div>
               <div className="flex items-baseline gap-2 mb-1">
-                <span className={`text-3xl font-bold ${adLimitStatus.businessAdsRemaining > 0 ? 'text-green-600' : 'text-orange-600'}`}>
+                <span className={`text-3xl font-bold ${adLimitStatus.businessAdsRemaining > 0 ? 'text-green-600' : 'text-primary-600'}`}>
                   {adLimitStatus.businessAdsRemaining || 0}
                 </span>
                 <span className="text-lg text-gray-500">/</span>
@@ -2608,7 +4279,7 @@ export default function PostAdPage() {
                 </span>
               </div>
               <div className="text-xs text-gray-500 font-medium">
-                Active credits available
+                Promotions available
               </div>
               <div className="mt-3 text-xs text-gray-600">
                 {adLimitStatus.totalPurchased || 0} Total Purchase{adLimitStatus.totalPurchased !== 1 ? 's' : ''} • {adLimitStatus.activePackagesCount || 0} Active Package{adLimitStatus.activePackagesCount !== 1 ? 's' : ''}
@@ -2665,7 +4336,7 @@ export default function PostAdPage() {
                             </span>
                           )}
                           {isExhausted && (
-                            <span className="px-1.5 py-0.5 bg-orange-600 text-white text-xs rounded font-bold">
+                            <span className="px-1.5 py-0.5 bg-primary-700 text-white text-xs rounded font-bold">
                               EXHAUSTED
                             </span>
                           )}
@@ -2723,7 +4394,7 @@ export default function PostAdPage() {
         {false && !isLoadingAdLimit && shouldHidePaymentOptions && adLimitStatus && (
         <div className="mb-6 p-4 rounded-lg bg-orange-50 border-2 border-orange-300 flex items-center justify-between">
           <div className="flex items-start gap-3 flex-1">
-            <FiInfo className="w-5 h-5 text-orange-600 mt-0.5 flex-shrink-0" />
+            <FiInfo className="w-5 h-5 text-primary-600 mt-0.5 flex-shrink-0" />
             <div className="flex-1">
               <p className="font-semibold text-orange-900 mb-1">
                 Payment Options Hidden
@@ -2736,7 +4407,7 @@ export default function PostAdPage() {
           {hasAnyBusinessPackage && (
             <Link 
               href="/business-package"
-              className="px-4 py-2 bg-orange-600 text-white text-sm font-semibold rounded-lg hover:bg-orange-700 transition-colors whitespace-nowrap"
+              className="px-4 py-2 bg-primary-700 text-white text-sm font-semibold rounded-lg hover:bg-orange-700 transition-colors whitespace-nowrap"
             >
               View Packages
             </Link>
@@ -2744,8 +4415,8 @@ export default function PostAdPage() {
         </div>
         )}
 
-        {/* Info Banner - When no ads available */}
-        {!isLoadingAdLimit && adLimitStatus && adLimitStatus.totalRemaining === 0 && !shouldHidePaymentOptions && (
+        {/* Info Banner - When no ads available - HIDDEN (posting allowed without payment gate) */}
+        {false && !isLoadingAdLimit && adLimitStatus && adLimitStatus.totalRemaining === 0 && !shouldHidePaymentOptions && (
         <div className="mb-6 p-4 rounded-lg flex items-center gap-3 bg-red-50 border-2 border-red-200">
           <FiAlertCircle className="w-5 h-5 text-red-600" />
           <div>
@@ -2759,19 +4430,131 @@ export default function PostAdPage() {
         </div>
         )}
 
-        {/* Form Sections */}
-        <div className="space-y-6">
-
             <form 
               onSubmit={handleSubmit(onSubmit)} 
               className="space-y-6"
             >
-              {/* Ad Details Section - Modern Design */}
-              <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-900 mb-6">Ad Details</h2>
-                
+              {/* Step 1: Category Details – Category & Subcategory side by side */}
+              <div className="bg-white rounded-xl p-5 shadow-md border border-gray-200">
+                <h2 className="text-lg font-semibold text-gray-900 mb-5 flex items-center gap-2">
+                  <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-50 text-blue-600" aria-hidden>
+                    <FiLayers className="w-4 h-4" />
+                  </span>
+                  Category Details
+                </h2>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  {/* Category Dropdown */}
+                  <div className="relative">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Category <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      {...register('categoryId', { required: 'Category is required' })}
+                      className={`w-full pl-4 pr-10 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white appearance-none cursor-pointer ${
+                        errors.categoryId ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                      } ${aiFilledFields.includes('category') ? 'ring-2 ring-primary-500 bg-primary-50' : ''}`}
+                      onChange={(e) => {
+                        const newCategoryId = e.target.value;
+                        setValue('categoryId', newCategoryId, { shouldValidate: true });
+                        setValue('subcategoryId', '', { shouldValidate: false });
+                        clearErrors('subcategoryId');
+                        trigger('categoryId');
+                      }}
+                      value={selectedCategoryId || ''}
+                      disabled={categoriesLoading}
+                    >
+                      <option value="">
+                        {categoriesLoading ? 'Loading...' : 'Select Category'}
+                      </option>
+                      {!categoriesLoading && !categoriesError && displayCategories && displayCategories.length > 0 &&
+                        displayCategories
+                          .filter((cat: any) => !(cat.categoryId || cat.category_id))
+                          .map((cat: any, index: number) => {
+                            const categoryId = cat.id || cat._id || `cat-${index}`;
+                            const categoryName = cat.name || `Category ${index + 1}`;
+                            return (
+                              <option key={categoryId} value={categoryId}>
+                                {categoryName}
+                              </option>
+                            );
+                          })}
+                      {categoriesError && <option value="" disabled>Error loading categories</option>}
+                      {!categoriesLoading && !categoriesError && (!displayCategories || displayCategories.length === 0) && (
+                        <option value="" disabled>No categories available</option>
+                      )}
+                    </select>
+                    <FiChevronDown className="absolute right-3 top-[2.6rem] w-5 h-5 text-gray-500 pointer-events-none" aria-hidden />
+                    {errors.categoryId && (
+                      <p className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</p>
+                    )}
+                  </div>
+
+                  {/* Subcategory Dropdown – always visible, disabled when no category */}
+                  <div className="relative">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Subcategory <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      {...register('subcategoryId', {
+                        required:
+                          selectedCategory?.subcategories && selectedCategory.subcategories.length > 0
+                            ? 'Subcategory is required'
+                            : false,
+                      })}
+                      className={`w-full pl-4 pr-10 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white appearance-none ${
+                        !selectedCategory ? 'cursor-not-allowed bg-gray-50' : 'cursor-pointer'
+                      } ${
+                        errors.subcategoryId ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                      } ${aiFilledFields.includes('subcategory') ? 'ring-2 ring-primary-500 bg-primary-50' : ''}`}
+                      onChange={(e) => {
+                        setValue('subcategoryId', e.target.value, { shouldValidate: true });
+                        trigger('subcategoryId');
+                      }}
+                      value={selectedSubcategoryId || ''}
+                      disabled={!selectedCategory || (selectedCategory.subcategories && selectedCategory.subcategories.length === 0)}
+                    >
+                      <option value="">
+                        {!selectedCategory
+                          ? 'Select category first'
+                          : !selectedCategory.subcategories || selectedCategory.subcategories.length === 0
+                            ? 'No subcategories'
+                            : 'Select Subcategory'}
+                      </option>
+                      {selectedCategory?.subcategories?.map((sub: any, index: number) => {
+                        const subcategoryId = sub.id || sub._id || `sub-${index}`;
+                        return (
+                          <option key={subcategoryId} value={subcategoryId}>
+                            {sub.name || `Subcategory ${index + 1}`}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <FiChevronDown className="absolute right-3 top-[2.6rem] w-5 h-5 text-gray-500 pointer-events-none" aria-hidden />
+                    {errors.subcategoryId && (
+                      <p className="text-red-500 text-sm mt-1">{errors.subcategoryId.message as string}</p>
+                    )}
+                  </div>
+                </div>
+
+                {selectedCategory && (!selectedCategory.subcategories || selectedCategory.subcategories.length === 0) && (
+                  <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <p className="text-blue-700 text-sm">
+                      This category has no subcategories. You can proceed with just the category selection.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Step 2: Ad Details - Title, Description, Condition, Location */}
+              <div id="post-ad-step-2" className="bg-white rounded-xl p-5 shadow-md border border-gray-200">
+                <h2 className="text-lg font-semibold text-gray-900 mb-5 flex items-center gap-2">
+                  <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-50 text-blue-600" aria-hidden>
+                    <FiFileText className="w-4 h-4" />
+                  </span>
+                  <span className="text-primary-600 font-bold">2.</span> Ad Details
+                </h2>
                 <div className="space-y-5">
-                  {/* Ad Title */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Ad Title <span className="text-red-500">*</span>
@@ -2782,110 +4565,100 @@ export default function PostAdPage() {
                         maxLength: { value: 70, message: 'Title must not exceed 70 characters' },
                         minLength: { value: 5, message: 'Title must be at least 5 characters' }
                       })}
-                      className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                      onBlur={() => {
+                        const currentDesc = (description || '').toString().trim();
+                        if (currentDesc.length > 0) return;
+                        if (aiFilledFields.includes('description')) return;
+
+                        const brand = attributes?.brand ?? attributes?.Brand ?? null;
+                        const model = attributes?.model ?? attributes?.Model ?? null;
+
+                        const generated = generateSeoDescriptionTemplate({
+                          title,
+                          categoryName: selectedCategory?.name,
+                          categorySlug: selectedCategory?.slug,
+                          brand: typeof brand === 'string' ? brand : null,
+                          model: typeof model === 'string' ? model : null,
+                          condition,
+                          city,
+                          state,
+                        });
+
+                        if (generated) {
+                          setValue('description', generated, { shouldDirty: true });
+                          clearErrors('description');
+                          setAiFilledFields((prev) =>
+                            prev.includes('description') ? prev : [...prev, 'description']
+                          );
+                        }
+                      }}
+                      className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 ${
                         errors.title ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                      }`}
-                      placeholder="Keep it short and distinct (e.g. iPhone 14 Pro Max 256GB)"
+                      } ${aiFilledFields.includes('title') ? 'ring-2 ring-primary-500 bg-primary-50' : ''}`}
+                      placeholder="e.g. 2022 Tesla Model 3 Long Range"
                     />
+                    <p className="text-xs text-gray-500 mt-1">
+                      A good title should include Brand, Model, and Key Feature
+                    </p>
                     {errors.title && (
                       <p className="text-red-500 text-sm mt-1">{errors.title.message as string}</p>
                     )}
                   </div>
 
-                  {/* Category & Subcategory */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Category <span className="text-red-500">*</span>
-                      </label>
-                        <select
-                          {...register('categoryId', { required: 'Category is required' })}
-                        className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
-                            errors.categoryId ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                          }`}
-                          onChange={(e) => {
-                            setValue('categoryId', e.target.value);
-                          setValue('subcategoryId', '');
+                  {/* Product Specifications - Moved here from Step 3 */}
+                  {selectedCategory && (selectedCategory.slug || selectedCategory.name) && (
+                    <div className="border-t border-gray-200 pt-5">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                        Product Specifications
+                      </h3>
+                      {selectedSubcategory && (selectedSubcategory.slug || selectedSubcategory.name) ? (
+                        <DynamicSpecifications
+                          categorySlug={
+                            (() => {
+                              const catSlug = (selectedCategory.slug || (selectedCategory.name || '').toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || '').toLowerCase();
+                              const subSlug = (selectedSubcategory.slug || (selectedSubcategory.name || '').toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || '').toLowerCase();
+                              if (catSlug === 'mobiles') return 'mobiles';
+                              if (catSlug === 'electronics' && subSlug === 'mobile-phones') return 'mobiles';
+                              if (catSlug === 'electronics' && ['tablets', 'accessories', 'smart-watches'].includes(subSlug)) return 'mobiles';
+                              if (catSlug === 'electronics' && ['laptops', 'tvs', 'cameras', 'home-appliances', 'kitchen-appliances'].includes(subSlug)) return 'electronics-appliances';
+                              return catSlug || selectedCategory.slug || 'vehicles';
+                            })()
+                          }
+                          subcategorySlug={(selectedSubcategory.slug || (selectedSubcategory.name || '').toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || '').toLowerCase()}
+                          register={register}
+                          watch={watch}
+                          setValue={setValue}
+                          errors={errors}
+                          aiPriceSuggestion={aiPriceSuggestion}
+                          onApplySuggestedPrice={() => {
+                            setAiFilledFields((prev) =>
+                              prev.includes('price') ? prev : [...prev, 'price']
+                            );
                           }}
-                        >
-                        <option value="">Select Category</option>
-                          {categories?.map((cat: any) => (
-                            <option key={cat.id} value={cat.id}>
-                              {cat.name}
-                            </option>
-                          ))}
-                        </select>
-                        {errors.categoryId && (
-                        <p className="text-red-500 text-sm mt-1">{errors.categoryId.message as string}</p>
-                        )}
-                      </div>
-                      <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Subcategory <span className="text-red-500">*</span>
-                      </label>
-                        <select
-                          {...register('subcategoryId', { required: 'Subcategory is required' })}
-                        className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
-                          errors.subcategoryId ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                          }`}
-                          disabled={!selectedCategory}
-                        >
-                        <option value="">Select Subcategory</option>
-                          {selectedCategory?.subcategories?.map((sub: any) => (
-                            <option key={sub.id} value={sub.id}>
-                              {sub.name}
-                            </option>
-                          ))}
-                        </select>
-                        {errors.subcategoryId && (
-                        <p className="text-red-500 text-sm mt-1">{errors.subcategoryId.message as string}</p>
-                        )}
-                </div>
-              </div>
-
-                  {/* Price - Hidden for Mobile Phones */}
-                  {!isMobilePhones && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Price <span className="text-red-500">*</span>
-                      </label>
-                      <div className="relative">
-                        <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-600 font-semibold">$</span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          {...register('price', { 
-                            required: !isMobilePhones ? 'Price is required' : false, 
-                            min: { value: 0, message: 'Price must be greater than or equal to 0' }
-                          })}
-                          className={`w-full pl-8 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
-                            errors.price ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                          }`}
-                          placeholder="0.00"
                         />
-                      </div>
-                      <div className="mt-2 flex items-center">
-                        <input
-                          type="checkbox"
-                          id="negotiable"
-                          className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
+                      ) : (
+                        <DynamicSpecifications
+                          categorySlug={(selectedCategory.slug || (selectedCategory.name || '').toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || '').toLowerCase()}
+                          subcategorySlug={(selectedCategory.slug || (selectedCategory.name || '').toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || '').toLowerCase()}
+                          register={register}
+                          watch={watch}
+                          setValue={setValue}
+                          errors={errors}
+                          aiPriceSuggestion={aiPriceSuggestion}
+                          onApplySuggestedPrice={() => {
+                            setAiFilledFields((prev) =>
+                              prev.includes('price') ? prev : [...prev, 'price']
+                            );
+                          }}
                         />
-                        <label htmlFor="negotiable" className="ml-2 text-sm text-gray-700">
-                          Price is negotiable
-                        </label>
-                      </div>
-                      {errors.price && (
-                        <p className="text-red-500 text-sm mt-1">{errors.price.message as string}</p>
                       )}
                     </div>
                   )}
 
-                  {/* Description with Rich Text Editor */}
-                      <div>
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Description <span className="text-red-500">*</span>
                     </label>
-                    {/* Rich Text Toolbar */}
                     <div className="flex items-center gap-2 mb-2 p-2 bg-gray-50 rounded-t-lg border-b border-gray-200">
                       <button type="button" className="p-2 hover:bg-gray-200 rounded" title="Bold">
                         <span className="font-bold">B</span>
@@ -2897,40 +4670,200 @@ export default function PostAdPage() {
                         <span>•</span>
                       </button>
                     </div>
-                        <textarea
-                          {...register('description', { 
-                            required: 'Description is required',
-                            minLength: { value: 10, message: 'Description must be at least 10 characters' },
+                    <textarea
+                      {...register('description', { 
+                        required: 'Description is required',
+                        minLength: { value: 10, message: 'Description must be at least 10 characters' },
                         maxLength: { value: 5000, message: 'Description must not exceed 5000 characters' }
-                          })}
+                      })}
                       rows={8}
-                      className={`w-full px-4 py-3 border rounded-b-lg focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none ${
-                            errors.description ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                          }`}
-                      placeholder="Describe your item in detail. Include condition, features, and why you are selling it..."
-                        />
+                      className={`w-full px-4 py-3 border rounded-b-lg focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none ${
+                        errors.description ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                      } ${aiFilledFields.includes('description') ? 'ring-2 ring-primary-500 bg-primary-50' : ''}`}
+                      placeholder="Describe what you are selling. Be as detailed as possible."
+                    />
                     <div className="flex justify-between items-center mt-1">
                       <p className="text-xs text-gray-500">SUPPORTED FORMATS: Plain text</p>
                       <p className="text-xs text-gray-500">{(watch('description')?.length || 0)}/5000</p>
                     </div>
-                        {errors.description && (
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <button
+                        type="button"
+                        onClick={generateDescription}
+                        disabled={isGeneratingDescription || !title}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-blue-500 hover:bg-blue-600 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-500 transition-colors shadow-sm"
+                      >
+                        <FiZap className={`w-4 h-4 shrink-0 ${isGeneratingDescription ? 'animate-pulse' : ''}`} />
+                        <span>{isGeneratingDescription ? 'Generating...' : 'AI Text Generator'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={improveDescription}
+                        disabled={isImprovingDescription || !description?.trim()}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-gray-900 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <FiRefreshCw className={`w-4 h-4 shrink-0 ${isImprovingDescription ? 'animate-spin' : ''}`} />
+                        <span>{isImprovingDescription ? 'Improving...' : 'Text Improve'}</span>
+                      </button>
+                    </div>
+                    {errors.description && (
                       <p className="text-red-500 text-sm mt-1">{errors.description.message as string}</p>
                     )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Condition
+                    </label>
+                    <select
+                      {...register('condition')}
+                      className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white ${
+                        errors.condition ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                      }`}
+                    >
+                      <option value="">Select condition</option>
+                      <option value="NEW">New</option>
+                      <option value="LIKE_NEW">Like New</option>
+                      <option value="USED">Used</option>
+                      <option value="REFURBISHED">Refurbished</option>
+                    </select>
+                  </div>
+
+                  {/* Location - inline in Basic Info */}
+                  <div>
+                    <input type="hidden" {...register('locationId')} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Location <span className="text-red-500">*</span>
+                    </label>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <div className="flex-1" ref={locationDropdownRef}>
+                        <div className="relative">
+                          {googlePlacesLoaded ? (
+                            isFirefox ? (
+                              <div className="relative">
+                                <FiSearch className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none z-10" />
+                                <PlaceAutocompleteInputFirefox
+                                  visible
+                                  placeholder="Search city or area"
+                                  value={locationQuery}
+                                  onPlaceSelect={handlePlaceSelect}
+                                  includedRegionCodes={['in']}
+                                  includedPrimaryTypes={['geocode', 'establishment']}
+                                  className="w-full [&_input]:pl-11 [&_input]:pr-4 [&_input]:py-3 [&_input]:rounded-xl [&_input]:border [&_input]:border-gray-300 [&_input]:bg-white [&_input]:shadow-sm [&_input]:ring-1 [&_input]:ring-black/5 [&_input]:focus:outline-none [&_input]:focus:ring-2 [&_input]:focus:ring-primary-500"
+                                />
+                              </div>
+                            ) : (
+                              <div
+                                ref={locationAutocompleteContainerRef}
+                                className="w-full [&>gmp-place-autocomplete]:w-full [&>gmp-place-autocomplete]:rounded-xl [&>gmp-place-autocomplete]:border [&>gmp-place-autocomplete]:border-gray-300 [&>gmp-place-autocomplete]:pl-11 [&>gmp-place-autocomplete]:pr-4 [&>gmp-place-autocomplete]:py-3 [&>gmp-place-autocomplete]:bg-white [&>gmp-place-autocomplete]:shadow-sm [&>gmp-place-autocomplete]:ring-1 [&>gmp-place-autocomplete]:ring-black/5"
+                              />
+                            )
+                          ) : (
+                            <>
+                              <FiSearch className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
+                              <input
+                                id="location-input"
+                                type="text"
+                                autoComplete="off"
+                                value={locationQuery}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  lastSelectedLocationQueryRef.current = null;
+                                  setLocationQuery(value);
+                                }}
+                                onKeyDown={handleLocationKeyDown}
+                                onFocus={() => {
+                                  if (locationQuery.trim().length >= 2) setShowLocationDropdown(true);
+                                }}
+                                className="w-full pl-11 pr-4 py-3 border border-gray-300 rounded-xl bg-white shadow-sm ring-1 ring-black/5 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                placeholder="Search city or area"
+                              />
+                            </>
+                          )}
+                          {!googlePlacesLoaded && showLocationDropdown && (locationSuggestions.length > 0 || isLoadingLocations) && (
+                            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl z-[9999] max-h-60 overflow-y-auto">
+                              {isLoadingLocations ? (
+                                <div className="px-4 py-3 text-sm text-gray-500">Searching...</div>
+                              ) : (
+                                <ul className="py-1">
+                                  {locationSuggestions.map((loc: any, idx: number) => {
+                                    const name = loc.name || loc.city || '';
+                                    const display = loc.neighbourhood
+                                      ? `${loc.neighbourhood}, ${loc.city || ''}${loc.state ? `, ${loc.state}` : ''}`.trim()
+                                      : loc.city
+                                        ? `${loc.city}${loc.state ? `, ${loc.state}` : ''}`
+                                        : name;
+                                    return (
+                                      <li key={loc.id || idx}>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleLocationSelect(loc)}
+                                          className={`w-full px-4 py-2.5 text-left text-sm hover:bg-orange-50 flex items-center gap-2 ${
+                                            selectedLocationIndex === idx ? 'bg-orange-50' : ''
+                                          }`}
+                                        >
+                                          <FiMapPin className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                                          <span className="truncate">{display || name}</span>
+                                        </button>
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        {autoLocationMessage && (watch('city') || watch('state')) && (
+                          <div className="mt-2 bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
+                            <FiCheckCircle className="w-5 h-5 text-amber-700 mt-0.5 flex-shrink-0" />
+                            <p className="text-sm text-amber-900 leading-snug">{autoLocationMessage}</p>
                           </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={detectLocation}
+                        disabled={isDetectingLocation}
+                        className="shrink-0 px-4 py-3 rounded-xl transition-colors border flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed bg-primary-600 hover:bg-primary-700 border-primary-600 text-white shadow-sm"
+                        title="Auto-detect your location"
+                      >
+                        {isDetectingLocation ? (
+                          <span className="animate-spin inline-block w-5 h-5 border-2 border-white/80 border-t-transparent rounded-full" />
+                        ) : (
+                          <FiNavigation className="w-5 h-5 text-white" />
+                        )}
+                        <span className="text-sm font-semibold hidden sm:inline">Detect</span>
+                      </button>
+                    </div>
+                    {mapCoordinates && typeof mapCoordinates.lat === 'number' && typeof mapCoordinates.lng === 'number' && !isNaN(mapCoordinates.lat) && !isNaN(mapCoordinates.lng) ? (
+                      <div className="relative h-48 rounded-lg overflow-hidden border border-gray-200 mt-4">
+                        <div ref={mapRef} className="w-full h-full" style={{ minHeight: '200px' }} />
+                      </div>
+                    ) : (
+                      <div className="h-48 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center mt-4">
+                        <div className="text-center">
+                          <FiMapPin className="w-10 h-10 text-gray-400 mx-auto mb-2" />
+                          <p className="text-sm text-gray-500">Map will appear when location is selected</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-
-              {/* Product Specifications - Category Specific */}
-              {selectedCategory && selectedSubcategory && (
-                <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                  <h2 className="text-xl font-semibold text-gray-900 mb-6">Product Specifications</h2>
+              {/* Step 3: Product Specifications - MOVED to Step 2 (below title) */}
+              {/* Specifications now appear inline in Ad Details section */}
+              
+              {/* Legacy Hardcoded Specifications - Keep for backward compatibility (hidden) */}
+              {false && selectedCategory && selectedSubcategory && (
+                <div className="bg-white rounded-xl p-5 shadow-md border border-gray-200 hidden">
+                  <h2 className="text-xl font-semibold text-gray-900 mb-6">Product Specifications (Legacy)</h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Mobiles Category Fields */}
-                    {(selectedCategory.slug === 'mobiles' || selectedCategory.name?.toLowerCase().includes('mobile')) && (
+                    {/* Brand and Model Fields - Show for any category/subcategory with brands-models data */}
+                    {hasBrandsModels && (
                       <>
                         {/* Brand Dropdown with Autocomplete */}
-                        {isMobilePhones && (
+                        {(
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
                               Brand <span className="text-red-500">*</span>
@@ -3000,22 +4933,22 @@ export default function PostAdPage() {
                                 control: (base) => ({
                                   ...base,
                                   minHeight: '48px',
-                                  borderColor: errors.attributes?.brand ? '#ef4444' : '#d1d5db',
+                                  borderColor: (errors.attributes as any)?.brand ? '#ef4444' : '#d1d5db',
                                   '&:hover': {
-                                    borderColor: errors.attributes?.brand ? '#ef4444' : '#9ca3af'
+                                    borderColor: (errors.attributes as any)?.brand ? '#ef4444' : '#9ca3af'
                                   }
                                 })
                               }}
                             />
-                            {errors.attributes?.brand && (
+                            {(errors.attributes as any)?.brand && (
                               <p className="text-red-500 text-sm mt-1">
-                                {(errors.attributes.brand as any)?.message || 'Brand is required'}
+                                {((errors.attributes as any).brand as any)?.message || 'Brand is required'}
                               </p>
                             )}
                           </div>
                         )}
                         {/* Model Dropdown with Autocomplete - Show after brand is selected */}
-                        {isMobilePhones && selectedBrandFromForm && (
+                        {hasBrandsModels && selectedBrandFromForm && (
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
                               Model <span className="text-red-500">*</span>
@@ -3066,22 +4999,28 @@ export default function PostAdPage() {
                                 control: (base) => ({
                                   ...base,
                                   minHeight: '48px',
-                                  borderColor: errors.attributes?.model ? '#ef4444' : '#d1d5db',
+                                  borderColor: (errors.attributes as any)?.model ? '#ef4444' : '#d1d5db',
                                   '&:hover': {
-                                    borderColor: errors.attributes?.model ? '#ef4444' : '#9ca3af'
+                                    borderColor: (errors.attributes as any)?.model ? '#ef4444' : '#9ca3af'
                                   }
                                 })
                               }}
                             />
-                            {errors.attributes?.model && (
+                            {(errors.attributes as any)?.model && (
                               <p className="text-red-500 text-sm mt-1">
-                                {(errors.attributes.model as any)?.message || 'Model is required'}
+                                {((errors.attributes as any).model as any)?.message || 'Model is required'}
                               </p>
                             )}
                           </div>
                         )}
+                      </>
+                    )}
+                    
+                    {/* Mobile Phones Specific Fields (Color, Storage) */}
+                    {isMobilePhones && (
+                      <>
                         {/* Color Dropdown with Autocomplete */}
-                        {isMobilePhones && (
+                        {(
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
                             <CreatableSelect
@@ -3130,16 +5069,16 @@ export default function PostAdPage() {
                                 control: (base) => ({
                                   ...base,
                                   minHeight: '48px',
-                                  borderColor: errors.attributes?.color ? '#ef4444' : '#d1d5db',
+                                  borderColor: (errors.attributes as any)?.color ? '#ef4444' : '#d1d5db',
                                   '&:hover': {
-                                    borderColor: errors.attributes?.color ? '#ef4444' : '#9ca3af'
+                                    borderColor: (errors.attributes as any)?.color ? '#ef4444' : '#9ca3af'
                                   }
                                 })
                               }}
                             />
-                            {errors.attributes?.color && (
+                            {(errors.attributes as any)?.color && (
                               <p className="text-red-500 text-sm mt-1">
-                                {errors.attributes.color.message as string}
+                                {((errors.attributes as any).color as any)?.message || 'Invalid color'}
                               </p>
                             )}
                           </div>
@@ -3194,62 +5133,26 @@ export default function PostAdPage() {
                                 control: (base) => ({
                                   ...base,
                                   minHeight: '48px',
-                                  borderColor: errors.attributes?.storage ? '#ef4444' : '#d1d5db',
+                                  borderColor: (errors.attributes as any)?.storage ? '#ef4444' : '#d1d5db',
                                   '&:hover': {
-                                    borderColor: errors.attributes?.storage ? '#ef4444' : '#9ca3af'
+                                    borderColor: (errors.attributes as any)?.storage ? '#ef4444' : '#9ca3af'
                                   }
                                 })
                               }}
                             />
-                            {errors.attributes?.storage && (
+                            {(errors.attributes as any)?.storage && (
                               <p className="text-red-500 text-sm mt-1">
-                                {errors.attributes.storage.message as string}
+                                {((errors.attributes as any).storage as any)?.message || 'Invalid storage'}
                               </p>
                             )}
                           </div>
                         )}
-                        {/* Price - Show for Mobile Phones in Product Specifications */}
-                        {isMobilePhones && (
-                          <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                              Price <span className="text-red-500">*</span>
-                            </label>
-                            <div className="relative">
-                              <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-600 font-semibold">₹</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                {...register('price', { 
-                                  required: isMobilePhones ? 'Price is required' : false, 
-                                  min: { value: 0, message: 'Price must be greater than or equal to 0' }
-                                })}
-                                className={`w-full pl-8 pr-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 ${
-                                  errors.price ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                                }`}
-                                placeholder="0.00"
-                              />
-                            </div>
-                            <div className="mt-2 flex items-center">
-                              <input
-                                type="checkbox"
-                                id="negotiable-specs"
-                                {...register('isNegotiable')}
-                                className="w-4 h-4 text-orange-600 border-gray-300 rounded focus:ring-orange-500"
-                              />
-                              <label htmlFor="negotiable-specs" className="ml-2 text-sm text-gray-700">
-                                Price is negotiable
-                              </label>
-                            </div>
-                            {errors.price && (
-                              <p className="text-red-500 text-sm mt-1">{errors.price.message as string}</p>
-                            )}
-                          </div>
-                        )}
+                        {/* Price field is now handled by DynamicSpecifications component in Product Specifications section */}
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Warranty</label>
                           <select
                             {...register('attributes.warranty')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Warranty</option>
                             <option value="no_warranty">No Warranty</option>
@@ -3262,41 +5165,26 @@ export default function PostAdPage() {
                           </select>
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">Battery Health</label>
-                          <select
-                            {...register('attributes.battery_health')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                          >
-                            <option value="">Select Battery Health</option>
-                            <option value="100">100%</option>
-                            <option value="90-99">90-99%</option>
-                            <option value="80-89">80-89%</option>
-                            <option value="70-79">70-79%</option>
-                            <option value="60-69">60-69%</option>
-                            <option value="below_60">Below 60%</option>
-                          </select>
-                        </div>
-                        <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
                           <input
                             type="text"
                             {...register('attributes.price_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹5,000 - ₹10,000"
                           />
                         </div>
                       </>
                     )}
 
-                    {/* Vehicles Category Fields */}
-                    {(selectedCategory.slug === 'vehicles' || selectedCategory.name?.toLowerCase().includes('vehicle') || selectedCategory.name?.toLowerCase().includes('car') || selectedCategory.name?.toLowerCase().includes('bike')) && (
+                    {/* Vehicles Category Fields - DISABLED: Now using DynamicSpecifications */}
+                    {false && selectedCategory && (selectedCategory?.slug === 'vehicles' || selectedCategory?.name?.toLowerCase().includes('vehicle') || selectedCategory?.name?.toLowerCase().includes('car') || selectedCategory?.name?.toLowerCase().includes('bike')) && (
                       <>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Brand</label>
                           <input
                             type="text"
                             {...register('attributes.brand')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Maruti, Honda, Toyota"
                           />
                       </div>
@@ -3305,7 +5193,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.model')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Swift, City, Innova"
                           />
                         </div>
@@ -3314,7 +5202,7 @@ export default function PostAdPage() {
                           <input
                             type="number"
                             {...register('attributes.year')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. 2020"
                             min="1900"
                             max={new Date().getFullYear() + 1}
@@ -3324,7 +5212,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Fuel Type</label>
                           <select
                             {...register('attributes.fuel_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Fuel Type</option>
                             <option value="petrol">Petrol</option>
@@ -3340,7 +5228,7 @@ export default function PostAdPage() {
                           <input
                             type="number"
                             {...register('attributes.km_driven')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. 50000"
                             min="0"
                           />
@@ -3349,7 +5237,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Owner Type</label>
                           <select
                             {...register('attributes.owner_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Owner Type</option>
                             <option value="first_owner">First Owner</option>
@@ -3362,7 +5250,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Transmission</label>
                           <select
                             {...register('attributes.transmission')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Transmission</option>
                             <option value="manual">Manual</option>
@@ -3375,7 +5263,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Insurance Status</label>
                           <select
                             {...register('attributes.insurance_status')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Insurance Status</option>
                             <option value="valid">Valid</option>
@@ -3388,21 +5276,24 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.color')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. White, Black, Red"
                           />
                         </div>
                       </>
                     )}
 
-                    {/* Properties Category Fields */}
-                    {(selectedCategory.slug === 'properties' || selectedCategory.name?.toLowerCase().includes('property') || selectedCategory.name?.toLowerCase().includes('real estate') || selectedCategory.name?.toLowerCase().includes('house')) && (
+                    {/* Properties Category Fields - DISABLED: Now using DynamicSpecifications */}
+                    {false && selectedCategory && (() => {
+                      const cat = selectedCategory;
+                      return (cat?.slug === 'properties' || cat?.name?.toLowerCase().includes('property') || cat?.name?.toLowerCase().includes('real estate') || cat?.name?.toLowerCase().includes('house'));
+                    })() && (
                       <>
                       <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Property Type</label>
                           <select
                             {...register('attributes.property_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Property Type</option>
                             <option value="apartment">Apartment</option>
@@ -3421,7 +5312,7 @@ export default function PostAdPage() {
                           <input
                             type="number"
                             {...register('attributes.area_sqft')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. 1200"
                             min="0"
                           />
@@ -3430,7 +5321,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Bedrooms</label>
                           <select
                             {...register('attributes.bedrooms')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Bedrooms</option>
                             <option value="1">1 BHK</option>
@@ -3446,7 +5337,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Bathrooms</label>
                           <select
                             {...register('attributes.bathrooms')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Bathrooms</option>
                             <option value="1">1</option>
@@ -3460,7 +5351,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Furnishing</label>
                           <select
                             {...register('attributes.furnishing')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Furnishing</option>
                             <option value="furnished">Furnished</option>
@@ -3472,7 +5363,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Parking</label>
                           <select
                             {...register('attributes.parking')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Parking</option>
                             <option value="0">No Parking</option>
@@ -3486,7 +5377,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Facing</label>
                           <select
                             {...register('attributes.facing')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Facing</option>
                             <option value="north">North</option>
@@ -3503,7 +5394,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Ownership Type</label>
                           <select
                             {...register('attributes.ownership_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Ownership Type</option>
                             <option value="freehold">Freehold</option>
@@ -3517,22 +5408,25 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.price_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹50,00,000 - ₹1,00,00,000"
                           />
                         </div>
                       </>
                     )}
 
-                    {/* Home & Furniture Category Fields */}
-                    {(selectedCategory.slug === 'home-furniture' || selectedCategory.slug === 'home' || selectedCategory.name?.toLowerCase().includes('home') || selectedCategory.name?.toLowerCase().includes('furniture')) && (
+                    {/* Home & Furniture Category Fields - DISABLED: Now using DynamicSpecifications */}
+                    {false && selectedCategory && (() => {
+                      const cat = selectedCategory;
+                      return (cat?.slug === 'home-furniture' || cat?.slug === 'home' || cat?.name?.toLowerCase().includes('home') || cat?.name?.toLowerCase().includes('furniture'));
+                    })() && (
                       <>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Material</label>
                           <input
                             type="text"
                             {...register('attributes.material')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Wood, Metal, Plastic"
                           />
                       </div>
@@ -3541,7 +5435,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.brand')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. IKEA, Godrej"
                           />
                         </div>
@@ -3549,7 +5443,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Condition</label>
                           <select
                             {...register('attributes.condition')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Condition</option>
                             <option value="new">New</option>
@@ -3564,7 +5458,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.color')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Brown, White, Black"
                           />
                         </div>
@@ -3573,7 +5467,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.dimensions')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. 120cm x 60cm x 75cm"
                           />
                         </div>
@@ -3581,7 +5475,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Assembly Required</label>
                           <select
                             {...register('attributes.assembly_required')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select</option>
                             <option value="yes">Yes</option>
@@ -3594,7 +5488,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.price_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹5,000 - ₹20,000"
                           />
                         </div>
@@ -3602,14 +5496,17 @@ export default function PostAdPage() {
                     )}
 
                     {/* Fashion Category Fields */}
-                    {(selectedCategory.slug === 'fashion' || selectedCategory.name?.toLowerCase().includes('fashion') || selectedCategory.name?.toLowerCase().includes('clothing') || selectedCategory.name?.toLowerCase().includes('apparel')) && (
+                    {selectedCategory && (() => {
+                      const cat = selectedCategory;
+                      return (cat?.slug === 'fashion' || cat?.name?.toLowerCase().includes('fashion') || cat?.name?.toLowerCase().includes('clothing') || cat?.name?.toLowerCase().includes('apparel'));
+                    })() && (
                       <>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Brand</label>
                           <input
                             type="text"
                             {...register('attributes.brand')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Zara, H&M, Levi's"
                           />
                         </div>
@@ -3618,7 +5515,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.size')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. S, M, L, XL, 32, 36"
                           />
                         </div>
@@ -3627,7 +5524,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.color')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Red, Blue, Black"
                           />
                         </div>
@@ -3635,7 +5532,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Gender</label>
                           <select
                             {...register('attributes.gender')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Gender</option>
                             <option value="men">Men</option>
@@ -3650,7 +5547,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.material')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Cotton, Polyester, Denim"
                           />
                         </div>
@@ -3658,7 +5555,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Fit Type</label>
                           <select
                             {...register('attributes.fit_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Fit Type</option>
                             <option value="slim">Slim</option>
@@ -3672,7 +5569,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Condition</label>
                           <select
                             {...register('attributes.condition')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Condition</option>
                             <option value="new">New</option>
@@ -3687,7 +5584,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.price_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹500 - ₹5,000"
                           />
                         </div>
@@ -3695,14 +5592,17 @@ export default function PostAdPage() {
                     )}
 
                     {/* Books, Sports & Hobbies Category Fields */}
-                    {(selectedCategory.slug === 'books' || selectedCategory.slug === 'sports' || selectedCategory.slug === 'hobbies' || selectedCategory.name?.toLowerCase().includes('book') || selectedCategory.name?.toLowerCase().includes('sport') || selectedCategory.name?.toLowerCase().includes('hobby')) && (
+                    {selectedCategory && (() => {
+                      const cat = selectedCategory;
+                      return (cat?.slug === 'books' || cat?.slug === 'sports' || cat?.slug === 'hobbies' || cat?.name?.toLowerCase().includes('book') || cat?.name?.toLowerCase().includes('sport') || cat?.name?.toLowerCase().includes('hobby'));
+                    })() && (
                       <>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Category Type</label>
                           <input
                             type="text"
                             {...register('attributes.category_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Fiction, Sports Equipment, Musical Instrument"
                           />
                     </div>
@@ -3711,7 +5611,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.brand')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Nike, Adidas, Penguin"
                           />
                   </div>
@@ -3720,7 +5620,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.author_maker')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. J.K. Rowling, Company Name"
                           />
                 </div>
@@ -3728,7 +5628,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Language</label>
                           <select
                             {...register('attributes.language')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Language</option>
                             <option value="english">English</option>
@@ -3747,7 +5647,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Age Group</label>
                           <select
                             {...register('attributes.age_group')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Age Group</option>
                             <option value="0-2">0-2 years</option>
@@ -3763,7 +5663,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Condition</label>
                           <select
                             {...register('attributes.condition')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Condition</option>
                             <option value="new">New</option>
@@ -3778,7 +5678,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.price_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹100 - ₹5,000"
                           />
                         </div>
@@ -3786,14 +5686,17 @@ export default function PostAdPage() {
                     )}
 
                     {/* Pets Category Fields */}
-                    {(selectedCategory.slug === 'pets' || selectedCategory.name?.toLowerCase().includes('pet') || selectedCategory.name?.toLowerCase().includes('animal')) && (
+                    {selectedCategory && (() => {
+                      const cat = selectedCategory;
+                      return (cat?.slug === 'pets' || cat?.name?.toLowerCase().includes('pet') || cat?.name?.toLowerCase().includes('animal'));
+                    })() && (
                       <>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Breed</label>
                           <input
                             type="text"
                             {...register('attributes.breed')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Golden Retriever, Persian Cat"
                           />
                         </div>
@@ -3802,7 +5705,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.age')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. 2 months, 1 year"
                           />
                         </div>
@@ -3810,7 +5713,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Gender</label>
                           <select
                             {...register('attributes.gender')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Gender</option>
                             <option value="male">Male</option>
@@ -3821,7 +5724,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Vaccinated</label>
                           <select
                             {...register('attributes.vaccinated')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select</option>
                             <option value="yes">Yes</option>
@@ -3833,7 +5736,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Trained</label>
                           <select
                             {...register('attributes.trained')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select</option>
                             <option value="yes">Yes</option>
@@ -3845,7 +5748,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">With Papers</label>
                           <select
                             {...register('attributes.with_papers')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select</option>
                             <option value="yes">Yes</option>
@@ -3857,7 +5760,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.color')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Golden, Black, White"
                           />
                         </div>
@@ -3866,7 +5769,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.price_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹5,000 - ₹50,000"
                           />
                         </div>
@@ -3874,14 +5777,17 @@ export default function PostAdPage() {
                     )}
 
                     {/* Services Category Fields */}
-                    {(selectedCategory.slug === 'services' || selectedCategory.name?.toLowerCase().includes('service')) && (
+                    {selectedCategory && (() => {
+                      const cat = selectedCategory;
+                      return (cat?.slug === 'services' || cat?.name?.toLowerCase().includes('service'));
+                    })() && (
                       <>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Service Type</label>
                           <input
                             type="text"
                             {...register('attributes.service_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Plumbing, Electrician, Tutor"
                           />
                         </div>
@@ -3889,7 +5795,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Experience Level</label>
                           <select
                             {...register('attributes.experience_level')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Experience Level</option>
                             <option value="beginner">Beginner (0-1 years)</option>
@@ -3902,7 +5808,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Availability</label>
                           <select
                             {...register('attributes.availability')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Availability</option>
                             <option value="full_time">Full Time</option>
@@ -3915,7 +5821,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Service Mode</label>
                           <select
                             {...register('attributes.service_mode')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Service Mode</option>
                             <option value="online">Online</option>
@@ -3928,7 +5834,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.location')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. City, Area"
                           />
                         </div>
@@ -3937,7 +5843,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.price_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹500 - ₹5,000 per hour"
                           />
                         </div>
@@ -3945,14 +5851,17 @@ export default function PostAdPage() {
                     )}
 
                     {/* Jobs Category Fields */}
-                    {(selectedCategory.slug === 'jobs' || selectedCategory.name?.toLowerCase().includes('job') || selectedCategory.name?.toLowerCase().includes('career')) && (
+                    {selectedCategory && (() => {
+                      const cat = selectedCategory;
+                      return (cat?.slug === 'jobs' || cat?.name?.toLowerCase().includes('job') || cat?.name?.toLowerCase().includes('career'));
+                    })() && (
                       <>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">Job Role</label>
                           <input
                             type="text"
                             {...register('attributes.job_role')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. Software Developer, Sales Executive"
                           />
                         </div>
@@ -3960,7 +5869,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Experience Level</label>
                           <select
                             {...register('attributes.experience_level')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Experience Level</option>
                             <option value="fresher">Fresher (0 years)</option>
@@ -3975,7 +5884,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Job Type</label>
                           <select
                             {...register('attributes.job_type')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Job Type</option>
                             <option value="full_time">Full Time</option>
@@ -3989,7 +5898,7 @@ export default function PostAdPage() {
                           <label className="block text-sm font-medium text-gray-700 mb-2">Work Mode</label>
                           <select
                             {...register('attributes.work_mode')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">Select Work Mode</option>
                             <option value="work_from_home">Work From Home</option>
@@ -4003,7 +5912,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.qualification')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. B.Tech, MBA, Diploma"
                           />
                         </div>
@@ -4012,7 +5921,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.salary_range')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. ₹20,000 - ₹50,000 per month"
                           />
                         </div>
@@ -4021,7 +5930,7 @@ export default function PostAdPage() {
                           <input
                             type="text"
                             {...register('attributes.location')}
-                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                             placeholder="e.g. City, Area"
                           />
                         </div>
@@ -4031,300 +5940,315 @@ export default function PostAdPage() {
                 </div>
               )}
 
-              {/* Images Section - Modern Design */}
-              <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-semibold text-gray-900">Images</h2>
-                  <span className="text-sm text-gray-500">Max 12 photos</span>
-                </div>
-                
-                <div className="space-y-4">
-                  {/* Drag & Drop Upload Area */}
-                      <label className="block">
-                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-orange-500 transition-colors cursor-pointer bg-gray-50">
-                          <div className="flex flex-col items-center">
-                        <FiCamera className="w-10 h-10 text-gray-400 mb-3" />
-                        <span className="text-sm font-medium text-gray-700 mb-1">ADD PHOTOS</span>
-                        <span className="text-xs text-gray-500">or drag & drop</span>
-                          </div>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            multiple
-                            onChange={handleImageChange}
-                            className="hidden"
-                          />
-                        </div>
-                      </label>
-
-                  {/* Image Previews */}
-                  {previews.length > 0 && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      {previews.map((preview, index) => (
-                        <div key={index} className="relative group">
-                          <div className="aspect-square rounded-lg overflow-hidden border-2 border-gray-200">
-                          <img
-                            src={preview}
-                            alt={`Preview ${index + 1}`}
-                              className="w-full h-full object-cover"
-                          />
-                          </div>
-                          {index === 0 && (
-                            <span className="absolute bottom-2 left-2 bg-white text-gray-900 text-xs font-semibold px-2 py-1 rounded">
-                              MAIN PHOTO
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => removeImage(index)}
-                            className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <FiX className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                          </div>
-                  )}
-
-                  <p className="text-xs text-gray-500">
-                    SUPPORTED FORMATS: JPG, PNG. MAX SIZE: 5MB PER IMAGE.
-                  </p>
-                  
-                    {images.length === 0 && (
-                    <p className="text-red-500 text-sm flex items-center gap-1">
-                        <FiAlertCircle className="w-4 h-4" />
-                        At least one image is required
-                      </p>
-                    )}
-                </div>
-              </div>
-
-              {/* Location Information - Modern Design */}
-              <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-900 mb-6">Location Information</h2>
-                
-                <div className="space-y-4">
-                  {/* Location Input with Auto-detect */}
-                  <div className="flex gap-4">
-                    <div className="flex-1">
-                      <div className="relative">
-                        <FiSearch className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400 pointer-events-none" />
-                          <input
-                            id="location-input"
-                            ref={(el) => {
-                              locationAutocompleteRef.current = el;
-                              const isMounted = !!el;
-                              setLocationInputMounted(isMounted);
-                            }}
-                            type="text"
-                            autoComplete="off"
-                          value={locationQuery || watch('city') || ''}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              setLocationQuery(value);
-                          }}
-                          className="w-full pl-11 pr-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
-                          placeholder="New York, NY"
-                        />
-                        </div>
-                      {(watch('city') || watch('state')) && (
-                        <div className="mt-2 bg-yellow-50 border border-yellow-200 rounded-lg p-3 flex items-center gap-2">
-                          <FiCheckCircle className="w-5 h-5 text-yellow-600" />
-                          <p className="text-sm text-yellow-900">
-                            Auto-detected. We've set your location based on your profile preferences.
-                          </p>
-                      </div>
-                          )}
-                        </div>
-                    <button
-                      type="button"
-                      onClick={detectLocation}
-                      disabled={isDetectingLocation}
-                      className="px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-                      title="Auto Detect Location"
-                    >
-                      <FiNavigation className="w-5 h-5 text-gray-600" />
-                    </button>
-                      </div>
-
-                  {/* Map Preview */}
-                        {mapCoordinates && 
-                         typeof mapCoordinates.lat === 'number' && 
-                         typeof mapCoordinates.lng === 'number' &&
-                         !isNaN(mapCoordinates.lat) &&
-                         !isNaN(mapCoordinates.lng) ? (
-                    <div className="relative h-48 rounded-lg overflow-hidden border border-gray-200">
-                            <div 
-                              ref={mapRef}
-                        className="w-full h-full"
-                        style={{ minHeight: '200px' }}
-                      />
-                          </div>
-                        ) : (
-                    <div className="h-48 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center">
-                      <div className="text-center">
-                        <FiMapPin className="w-10 h-10 text-gray-400 mx-auto mb-2" />
-                        <p className="text-sm text-gray-500">Map will appear when location is selected</p>
-                            </div>
-                          </div>
-                        )}
-                </div>
-              </div>
-
-
-              {/* Business Package Status - Modern Design */}
+              {/* Step 5: Business Package Status (only if active) OR Premium Features (only if no active package) */}
+              {(hasActiveBusinessPackage || !hasActiveBusinessPackage) && (
               <div 
                 data-premium-section
-                className="bg-white rounded-lg p-6 shadow-sm border border-gray-200"
+                className="bg-white rounded-xl shadow-md border border-gray-200"
               >
-                <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-yellow-500 rounded-lg flex items-center justify-center">
-                      <FiCheckCircle className="w-6 h-6 text-white" />
+                {/* Business Package Status: only when user has an active business package */}
+                {hasActiveBusinessPackage && (
+                  <>
+                    <div className="bg-gradient-to-r from-primary-600 to-primary-700 p-5">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start gap-3">
+                          <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center">
+                            <FiBriefcase className="w-6 h-6 text-white" />
                           </div>
                           <div>
-                      <h2 className="text-xl font-semibold text-gray-900">Business Package Status</h2>
-                      <p className="text-sm text-gray-600">Select premium features to boost your ad visibility.</p>
+                            <h2 className="text-lg font-bold text-white mb-1">Business Package Status</h2>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {currentPackageDisplayName && (
+                                <span className="inline-flex items-center gap-1 bg-white/90 text-primary-700 px-2 py-0.5 rounded-full text-xs font-semibold">
+                                  <FiShield className="w-3 h-3" />
+                                  {currentPackageDisplayName}
+                                </span>
+                              )}
+                              <span className="text-primary-50 text-xs">Manage your ad credits</span>
+                            </div>
                           </div>
                         </div>
-                  {adLimitStatus && adLimitStatus.businessAdsRemaining > 0 && (
-                    <span className="bg-orange-600 text-white text-xs font-semibold px-3 py-1 rounded-full">
-                      {adLimitStatus.businessAdsRemaining} CREDITS AVAILABLE
-                    </span>
-                  )}
-              </div>
-
-                {/* Premium Features with Toggles */}
-                        {isLoadingOffers ? (
-                          <div className="flex items-center justify-center py-8">
-                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
-                            <span className="ml-3 text-gray-600">Loading premium options...</span>
+                        {adLimitStatus && adLimitStatus.businessAdsRemaining > 0 && (
+                          <div className="bg-white/20 rounded-lg px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <FiZap className="w-4 h-4 text-white" />
+                              <span className="text-xl font-bold text-white">{adLimitStatus.businessAdsRemaining}</span>
+                            </div>
+                            <span className="text-xs text-primary-100 font-medium">Credits Left</span>
                           </div>
-                ) : (
-                  <div className="space-y-4">
+                        )}
+                      </div>
+                    </div>
+
+                    {adLimitStatus && adLimitStatus.packages && adLimitStatus.packages.length > 0 && (
+                      <div className="p-4 bg-gray-50">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          <div className="bg-white rounded-lg p-3 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center">
+                                <FiPackage className="w-5 h-5 text-primary-600" />
+                              </div>
+                              <div>
+                                <p className="text-xs text-gray-500 font-medium uppercase">Total Credits</p>
+                                <p className="text-xl font-bold text-gray-900">
+                                  {adLimitStatus.packages.reduce((sum: number, pkg: any) => sum + (pkg.totalAds || 0), 0)}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="bg-white rounded-lg p-3 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
+                                <FiCheckCircle className="w-5 h-5 text-gray-600" />
+                              </div>
+                              <div>
+                                <p className="text-xs text-gray-500 font-medium uppercase">Used</p>
+                                <p className="text-xl font-bold text-gray-900">
+                                  {adLimitStatus.packages.reduce((sum: number, pkg: any) => sum + ((pkg.totalAds || 0) - (pkg.adsRemaining || 0)), 0)}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="bg-white rounded-lg p-3 border-2 border-primary-200 shadow-sm hover:shadow-md transition-shadow">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-primary-600 rounded-lg flex items-center justify-center">
+                                <FiZap className="w-5 h-5 text-white" />
+                              </div>
+                              <div>
+                                <p className="text-xs text-primary-700 font-bold uppercase">Remaining</p>
+                                <p className="text-xl font-bold text-primary-600">
+                                  {adLimitStatus.businessAdsRemaining || 0}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Premium Features: show when no business package OR when business package but free ads finished (user can post via premium) */}
+                {(!hasActiveBusinessPackage || (hasActiveBusinessPackage && !hasFreeAdsRemaining)) && (
+                <div className={`p-5 bg-white ${hasActiveBusinessPackage ? 'border-t border-gray-200' : ''}`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <FiStar className="w-5 h-5 text-primary-600" />
+                      <h3 className="text-base font-bold text-gray-900">Premium Features</h3>
+                    </div>
+                    <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full font-medium">Optional</span>
+                  </div>
+
+                  {/* Premium Features with Toggles */}
+                  {isLoadingOffers ? (
+                    <div className="flex items-center justify-center py-12 bg-white rounded-lg border border-gray-200">
+                      <div className="animate-spin rounded-full h-10 w-10 border-b-3 border-primary-500"></div>
+                      <span className="ml-3 text-gray-600 font-medium">Loading premium options...</span>
+                    </div>
+                  ) : safePremiumSettings.length === 0 ? (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center gap-3">
+                      <FiInfo className="w-5 h-5 text-amber-600 flex-shrink-0" />
+                      <p className="text-sm text-amber-800 font-medium">Premium options are not available right now. You can still post your ad.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {/* TOP Ads */}
                     {safePremiumSettings.find((o: any) => o.type === 'TOP') && (
-                      <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
-                        <div className="flex items-center gap-3 flex-1">
-                          <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
-                            <span className="text-white font-bold">T</span>
+                      <div
+                        className={`relative flex flex-col h-full rounded-2xl p-5 transition-all duration-200 bg-gradient-to-b border-2 ${
+                          selectedPremium === 'TOP'
+                            ? 'from-primary-50 to-white border-primary-500 shadow-md'
+                            : 'from-white to-gray-50 border-gray-200 hover:border-primary-300 hover:shadow-md hover:-translate-y-0.5'
+                        }`}
+                      >
+                        {selectedPremium === 'TOP' && (
+                          <div className="absolute top-0 right-0 bg-primary-600 text-white text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-lg">
+                            SELECTED
                           </div>
-                          <div className="flex-1">
-                            <div className="font-semibold text-gray-900">TOP Ads</div>
-                            <div className="text-sm text-gray-600">Display in the exclusive top section of search results.</div>
+                        )}
+                        {/* Top row: icon + toggle */}
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="w-9 h-9 bg-primary-600 rounded-xl flex items-center justify-center">
+                            <FiFlag className="w-5 h-5 text-white" />
                           </div>
-                          <div className="text-right mr-4">
-                            <span className="text-sm font-semibold text-gray-900">
-                              {safePremiumSettings.find((o: any) => o.type === 'TOP')?.price || 0} CREDITS
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedPremium === 'TOP'}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedPremium('TOP');
+                                } else {
+                                  setSelectedPremium(null);
+                                }
+                              }}
+                              className="sr-only peer"
+                            />
+                            <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600 shadow-inner" />
+                          </label>
+                        </div>
+
+                        {/* Text body: full width */}
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className="text-base font-bold text-gray-900">TOP Ads</h4>
+                            <span className="bg-primary-100 text-primary-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                              PREMIUM
                             </span>
                           </div>
+                          <p className="mt-1 text-xs text-gray-600 leading-snug">
+                            Display in the exclusive top section of search results for maximum visibility.
+                          </p>
                         </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                                  <input
-                            type="checkbox"
-                            checked={selectedPremium === 'TOP'}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedPremium('TOP');
-                              } else {
-                                setSelectedPremium(null);
-                              }
-                            }}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
-                        </label>
-                                      </div>
-                                    )}
+
+                        {/* Cost row */}
+                        <div className="mt-3 pt-3 border-t border-primary-100 flex items-center justify-between">
+                          <span className="text-xs text-gray-500">Cost</span>
+                          <span className="text-sm font-bold text-primary-600">
+                            {safePremiumSettings.find((o: any) => o.type === 'TOP')?.price || 0} Credits
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Featured Ad */}
                     {safePremiumSettings.find((o: any) => o.type === 'FEATURED') && (
-                      <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
-                        <div className="flex items-center gap-3 flex-1">
-                          <FiStar className="w-10 h-10 text-yellow-500" />
-                          <div className="flex-1">
-                            <div className="font-semibold text-gray-900">Featured Ad</div>
-                            <div className="text-sm text-gray-600">Pin your ad to the top of the category for 7 days.</div>
-                                  </div>
-                          <div className="text-right mr-4">
-                            <span className="text-sm font-semibold text-gray-900">
-                              {safePremiumSettings.find((o: any) => o.type === 'FEATURED')?.price || 0} CREDIT
+                      <div
+                        className={`relative flex flex-col h-full rounded-2xl p-5 transition-all duration-200 bg-gradient-to-b border-2 ${
+                          selectedPremium === 'FEATURED'
+                            ? 'from-yellow-50 to-white border-yellow-500 shadow-md'
+                            : 'from-white to-gray-50 border-gray-200 hover:border-yellow-300 hover:shadow-md hover:-translate-y-0.5'
+                        }`}
+                      >
+                        {selectedPremium === 'FEATURED' && (
+                          <div className="absolute top-0 right-0 bg-yellow-500 text-white text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-lg">
+                            SELECTED
+                          </div>
+                        )}
+                        {/* Top row: icon + toggle */}
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="w-9 h-9 bg-yellow-500 rounded-xl flex items-center justify-center">
+                            <FiStar className="w-5 h-5 text-white" />
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedPremium === 'FEATURED'}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedPremium('FEATURED');
+                                } else {
+                                  setSelectedPremium(null);
+                                }
+                              }}
+                              className="sr-only peer"
+                            />
+                            <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-yellow-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-yellow-500 shadow-inner" />
+                          </label>
+                        </div>
+
+                        {/* Text body: full width */}
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className="text-base font-bold text-gray-900">Featured Ad</h4>
+                            <span className="bg-yellow-100 text-yellow-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                              7 DAYS
                             </span>
-                                      </div>
-                                  </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={selectedPremium === 'FEATURED'}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedPremium('FEATURED');
-                              } else {
-                                setSelectedPremium(null);
-                              }
-                            }}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
-                                </label>
-                              </div>
+                          </div>
+                          <p className="mt-1 text-xs text-gray-600 leading-snug">
+                            Pin your ad to the top of the category for 7 days with a featured badge.
+                          </p>
+                        </div>
+
+                        {/* Cost row */}
+                        <div className="mt-3 pt-3 border-t border-yellow-100 flex items-center justify-between">
+                          <span className="text-xs text-gray-500">Cost</span>
+                          <span className="text-sm font-bold text-yellow-600">
+                            {safePremiumSettings.find((o: any) => o.type === 'FEATURED')?.price || 0} Credits
+                          </span>
+                        </div>
+                      </div>
                     )}
 
                     {/* Bump Up */}
                     {safePremiumSettings.find((o: any) => o.type === 'BUMP_UP') && (
-                      <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
-                        <div className="flex items-center gap-3 flex-1">
-                          <FiTrendingUp className="w-10 h-10 text-green-500" />
-                          <div className="flex-1">
-                            <div className="font-semibold text-gray-900">Bump Up</div>
-                            <div className="text-sm text-gray-600">Move your ad to the top of the list every 24h.</div>
+                      <div
+                        className={`relative flex flex-col h-full rounded-2xl p-5 transition-all duration-200 bg-gradient-to-b border-2 ${
+                          selectedPremium === 'BUMP_UP'
+                            ? 'from-green-50 to-white border-green-500 shadow-md'
+                            : 'from-white to-gray-50 border-gray-200 hover:border-green-300 hover:shadow-md hover:-translate-y-0.5'
+                        }`}
+                      >
+                        {selectedPremium === 'BUMP_UP' && (
+                          <div className="absolute top-0 right-0 bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-bl-lg rounded-tr-lg">
+                            SELECTED
                           </div>
-                          <div className="text-right mr-4">
-                            <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded">
-                              INCLUDED IN PACKAGE
+                        )}
+                        {/* Top row: icon + toggle */}
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="w-9 h-9 bg-green-500 rounded-xl flex items-center justify-center">
+                            <FiTrendingUp className="w-5 h-5 text-white" />
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedPremium === 'BUMP_UP'}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedPremium('BUMP_UP');
+                                } else {
+                                  setSelectedPremium(null);
+                                }
+                              }}
+                              className="sr-only peer"
+                            />
+                            <div className="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-green-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600 shadow-inner" />
+                          </label>
+                        </div>
+
+                        {/* Text body: full width */}
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className="text-base font-bold text-gray-900">Bump Up</h4>
+                            <span className="bg-green-100 text-green-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                              INCLUDED
                             </span>
                           </div>
+                          <p className="mt-1 text-xs text-gray-600 leading-snug">
+                            Automatically move your ad to the top of the list every 24 hours.
+                          </p>
                         </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={selectedPremium === 'BUMP_UP'}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedPremium('BUMP_UP');
-                              } else {
-                                setSelectedPremium(null);
-                              }
-                            }}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
-                        </label>
-                      </div>
-                    )}
-                      </div>
-                    )}
-              </div>
 
-              {/* Footer Actions - Modern Design */}
-              <div className="flex justify-between items-center mt-8 pt-6 border-t border-gray-200">
-                <button
-                  type="button"
-                  onClick={() => router.push('/my-ads')}
-                  className="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
-                >
-                  Save Draft
-                </button>
+                        {/* Cost row */}
+                        <div className="mt-3 pt-3 border-t border-green-100 flex items-center justify-between">
+                          <span className="text-xs text-gray-500">Cost</span>
+                          <div className="flex items-center gap-1">
+                            <FiCheckCircle className="w-4 h-4 text-green-600" />
+                            <span className="text-sm font-semibold text-green-700">Free</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  )}
+                </div>
+                )}
+              </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-4 mt-8">
                 <button
                   type="submit"
                   disabled={
                     !canSubmit ||
+                    isSubmittingForm ||
                     createAd.isPending || 
                     createPaymentOrder.isPending
                   }
-                  className="px-8 py-3 bg-orange-600 text-white rounded-lg font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="flex-1 px-6 py-3 bg-primary-700 text-white rounded-lg font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {createAd.isPending || createPaymentOrder.isPending ? (
+                  {isSubmittingForm || createAd.isPending || createPaymentOrder.isPending ? (
                     <>
                       <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white inline-block mr-2"></div>
                       Processing...
@@ -4332,6 +6256,13 @@ export default function PostAdPage() {
                   ) : (
                     'Post Ad Now'
                   )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => router.push('/my-ads')}
+                  className="px-6 py-3 bg-white text-gray-700 border border-gray-300 rounded-lg font-semibold hover:bg-gray-50 transition-colors"
+                >
+                  Save as Draft
                 </button>
               </div>
 
@@ -4341,16 +6272,199 @@ export default function PostAdPage() {
               </div>
 
             </form>
+          </div>
+
+          {/* Right Sidebar */}
+          <div className="lg:col-span-1">
+            <div className="sticky top-6 space-y-6">
+              {/* Upload Photos */}
+              <div className="bg-white rounded-xl p-5 shadow-md border border-gray-200">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="flex items-center justify-center w-9 h-9 rounded-lg bg-primary-50 text-primary-600">
+                    <FiCamera className="w-5 h-5" />
+                  </span>
+                  <h3 className="text-lg font-semibold text-gray-900">Upload Photos</h3>
+                </div>
+                <p className="text-sm text-gray-500 mb-4">First photo is the cover. JPG, PNG · Max 5MB each.</p>
+                <div className="space-y-4">
+                  <label className="block">
+                    <div
+                      className={`
+                        relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer
+                        transition-all duration-200 ease-out
+                        bg-gray-50 hover:bg-primary-50/50 hover:border-primary-400
+                        border-gray-300
+                        focus-within:ring-2 focus-within:ring-primary-400 focus-within:ring-offset-2
+                        min-h-[140px] flex flex-col items-center justify-center
+                      `}
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('border-primary-500', 'bg-primary-50'); }}
+                      onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-primary-500', 'bg-primary-50'); }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.currentTarget.classList.remove('border-primary-500', 'bg-primary-50');
+                        const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+                        if (files.length === 0) return;
+                        const input = e.currentTarget.querySelector('input[type="file"]') as HTMLInputElement;
+                        if (input) {
+                          const dt = new DataTransfer();
+                          [...images, ...files].slice(0, 20).forEach((f) => dt.items.add(f));
+                          input.files = dt.files;
+                          input.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                      }}
+                    >
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={handleImageChange}
+                        className="hidden"
+                      />
+                      <span className="flex items-center justify-center w-14 h-14 rounded-2xl bg-white border border-gray-200 text-gray-400 mb-3 shadow-sm">
+                        <FiImage className="w-7 h-7" />
+                      </span>
+                      <span className="text-sm font-semibold text-gray-700 mb-0.5 block">Add photos</span>
+                      <span className="text-xs text-gray-500">Click or drag and drop</span>
+                      {images.length > 0 && (
+                        <span className="mt-2 inline-flex items-center rounded-full bg-primary-100 px-2.5 py-0.5 text-xs font-medium text-primary-700">
+                          {images.length} photo{images.length !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                  {previews.length > 0 && (
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {previews.map((preview, index) => (
+                        <div key={index} className="relative group group/preview">
+                          <div className="aspect-square rounded-xl overflow-hidden border border-gray-200 bg-gray-100 shadow-sm ring-1 ring-black/5">
+                            <img
+                              src={preview}
+                              alt={`Preview ${index + 1}`}
+                              className="w-full h-full object-cover transition-transform group-hover/preview:scale-105"
+                            />
+                          </div>
+                          {index === 0 && (
+                            <span className="absolute bottom-1.5 left-1.5 bg-primary-600 text-white text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md shadow-sm">
+                              Cover
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => removeImage(index)}
+                            aria-label="Remove photo"
+                            className="absolute top-1.5 right-1.5 bg-red-500 hover:bg-red-600 text-white rounded-full p-1.5 shadow-md opacity-0 group-hover/preview:opacity-100 transition-all focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-red-400"
+                          >
+                            <FiX className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {images.length === 0 && (
+                    <p className="text-red-500 text-xs flex items-center gap-1.5">
+                      <FiAlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      At least one image required
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={autoFillDetailsFromImage}
+                  disabled={images.length === 0 || isImageAiLoading}
+                  className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-primary-200 bg-primary-50 text-primary-700 font-medium text-sm hover:bg-primary-100 hover:border-primary-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <FiZap className={`w-4 h-4 flex-shrink-0 ${isImageAiLoading ? 'animate-pulse' : ''}`} />
+                  <span>{isImageAiLoading ? 'Analyzing image...' : 'AI Auto Generate'}</span>
+                </button>
+              </div>
+
+              {/* Selling Tips */}
+              <div className="bg-gradient-to-br from-primary-50 to-white rounded-xl p-6 shadow-md border-2 border-primary-100">
+                <div className="flex items-center gap-2 mb-5">
+                  <div className="w-8 h-8 bg-primary-500 rounded-lg flex items-center justify-center">
+                    <FiZap className="w-5 h-5 text-white" />
+                  </div>
+                  <h3 className="text-lg font-bold text-gray-900">Selling Tips</h3>
+                </div>
+                <div className="space-y-4">
+                  <div className="flex items-start gap-4 p-3 bg-white rounded-lg border border-gray-100 hover:border-primary-200 transition-colors">
+                    <div className="w-10 h-10 bg-gradient-to-br from-green-500 to-emerald-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                      <FiCamera className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900 mb-1">Clear Photos</p>
+                      <p className="text-sm text-gray-600 leading-relaxed">Ads with clear, high-quality photos get 10x more replies.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-4 p-3 bg-white rounded-lg border border-gray-100 hover:border-primary-200 transition-colors">
+                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                      <FiFileText className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900 mb-1">Be Specific</p>
+                      <p className="text-sm text-gray-600 leading-relaxed">Be honest about your item's condition to build trust with buyers.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-4 p-3 bg-white rounded-lg border border-gray-100 hover:border-primary-200 transition-colors">
+                    <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-amber-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                      <FiDollarSign className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900 mb-1">Price Fairly</p>
+                      <p className="text-sm text-gray-600 leading-relaxed">Research similar ads to ensure your price is competitive.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Safe Selling */}
+              <div className="bg-gradient-to-br from-green-50 to-white rounded-xl p-6 shadow-md border-2 border-green-100">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 bg-gradient-to-br from-green-500 to-emerald-600 rounded-lg flex items-center justify-center">
+                    <FiShield className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-gray-900">Safe Selling</h3>
+                    <p className="text-xs text-green-700">Your security matters</p>
+                  </div>
+                </div>
+                <div className="bg-white rounded-lg p-4 border border-green-100">
+                  <p className="text-sm text-gray-700 leading-relaxed">
+                    Your privacy and safety are important to us. Always meet buyers in public places and never share sensitive bank details.
+                  </p>
+                  <div className="mt-3 flex items-center gap-2 text-xs text-green-700 font-semibold">
+                    <FiCheckCircle className="w-4 h-4" />
+                    <span>Stay safe, sell smart</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
         </div>
       </div>
 
 
-      {/* Payment Required Modal - Free Ads Limit Reached */}
-      {showPaymentRequiredModal && (
+      {/* Upgrade popup: shown only when backend returns showUpgradePopup === true (no local logic) */}
+      <UpgradePopup
+        open={adLimitStatus?.showUpgradePopup === true && !upgradePopupDismissed}
+        onClose={() => setUpgradePopupDismissed(true)}
+        onSelectPremium={() => {
+          const el = document.querySelector('[data-premium-section]');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            (el as HTMLElement).classList.add('ring-4', 'ring-amber-400');
+            setTimeout(() => (el as HTMLElement).classList.remove('ring-4', 'ring-amber-400'), 3000);
+          }
+        }}
+      />
+
+      {/* Payment Required Modal - only when user has no free/business ads left (ubhekum kanikaruthu) */}
+      {showPaymentRequiredModal && totalRemaining === 0 && (
         <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden">
             {/* Header with Gradient */}
-            <div className="bg-gradient-to-r from-orange-500 to-red-500 p-6 text-white">
+            <div className="bg-gradient-to-r from-primary-600 to-red-500 p-6 text-white">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-3">
                   <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm">
@@ -4416,7 +6530,8 @@ export default function PostAdPage() {
               
               {/* Options Cards */}
               <div className="space-y-3 mb-6">
-                {/* Option 1: Premium Features */}
+                {/* Option 1: Select Premium Features (Single Buy) - visibility from backend hideSingleBuy only */}
+                {!hideSingleBuy && (
                 <button
                   onClick={() => {
                     setShowPaymentRequiredModal(false);
@@ -4431,12 +6546,13 @@ export default function PostAdPage() {
                       }
                     }, 100);
                   }}
-                  className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 text-white px-6 py-4 rounded-xl font-semibold hover:from-yellow-600 hover:to-orange-600 flex items-center justify-center gap-3 transition-all shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
+                  className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 text-white px-6 py-4 rounded-xl font-semibold hover:from-yellow-600 hover:to-primary-700 flex items-center justify-center gap-3 transition-all shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
                 >
                   <FiStar className="w-5 h-5" />
                   <span>Select Premium Features</span>
                   <span className="text-xs bg-white/20 px-2 py-1 rounded-full">Quick</span>
                 </button>
+                )}
                 
                 {/* Option 2: Business Package */}
                 <button
@@ -4485,6 +6601,7 @@ export default function PostAdPage() {
                       
                       console.log('📤 Sending payment order request:', orderData);
                       createPaymentOrder.mutate(orderData, {
+                        onSettled: () => setIsSubmittingForm(false),
                         onSuccess: (response) => {
                           console.log('✅ Payment order response received:', response);
                           console.log('   requiresPayment:', response.requiresPayment);
@@ -4498,7 +6615,8 @@ export default function PostAdPage() {
                             formData.append('price', String(adFormData.price || ''));
                             if (adFormData.originalPrice) formData.append('originalPrice', adFormData.originalPrice);
                             if (adFormData.discount) formData.append('discount', adFormData.discount);
-                            if (adFormData.condition) formData.append('condition', adFormData.condition);
+                            const condVal = normalizeCondition(adFormData.condition || adFormData.attributes?.condition);
+                            if (condVal) formData.append('condition', condVal);
                             formData.append('categoryId', adFormData.categoryId);
                             if (adFormData.subcategoryId) formData.append('subcategoryId', adFormData.subcategoryId);
                             if (adFormData.state) formData.append('state', adFormData.state);
@@ -4515,6 +6633,7 @@ export default function PostAdPage() {
                             });
 
                             createAd.mutate(formData, {
+                              onSettled: () => setIsSubmittingForm(false),
                               onSuccess: (data) => {
                                 toast.success('Ad posted successfully! Waiting for approval.');
                                 queryClient.invalidateQueries({ queryKey: ['ad-limit-status'] });
@@ -4562,8 +6681,8 @@ export default function PostAdPage() {
                           
                           setPaymentOrder(response);
                           // Directly open Razorpay checkout instead of showing payment modal popup
-                          // Pass form data to capture in closure
-                          openRazorpayCheckout(response, adFormData);
+                          // Pass form data to capture in closure (normalize so price is always at root)
+                          openRazorpayCheckout(response, normalizeFormDataWithPrice(adFormData));
                           console.log('✅ Opening Razorpay checkout directly');
                         },
                         onError: (error: any) => {
@@ -4641,7 +6760,7 @@ export default function PostAdPage() {
                 : selectedPremium === 'FEATURED'
                 ? ['Featured placement in listings', 'Enhanced visibility', 'Featured badge on ad', 'Better search ranking', '14 days premium visibility']
                 : ['Bump ad to top of listings', '24-hour visibility boost', 'Immediate top placement', 'Quick visibility increase'])
-            : ['Post your ad on SellIt', 'Reach thousands of buyers', 'Manage your listings'],
+            : ['Post your ad on Sell Box', 'Reach thousands of buyers', 'Manage your listings'],
           visibilityLevel: selectedPremium 
             ? (selectedPremium === 'TOP' ? 'Maximum' : selectedPremium === 'FEATURED' ? 'Enhanced' : 'Boosted')
             : 'Standard',
@@ -4681,3 +6800,6 @@ export default function PostAdPage() {
     </div>
   );
 }
+
+
+

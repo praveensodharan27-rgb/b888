@@ -25,6 +25,17 @@ interface SpecificationOption {
   label?: string;
 }
 
+export interface AttributeField {
+  name: string;
+  label: string;
+  type: 'text' | 'number' | 'select' | 'multiselect';
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
+  min?: number;
+  max?: number;
+}
+
 interface CategoryAttributesProps {
   categorySlug?: string;
   subcategorySlug?: string;
@@ -818,12 +829,137 @@ export default function CategoryAttributes({
 
   // If using fallback (hardcoded attributes)
   if (useFallback) {
+    const isVehicleCategory = categorySlug === 'vehicles';
+    const vehicleSubcategories = [
+      'cars',
+      'motorcycles',
+      'scooters',
+      'bicycles',
+      'commercial-vehicles',
+    ];
+    const isVehicleSpec =
+      isVehicleCategory && vehicleSubcategories.includes(subcategorySlug);
+
+    const currentYear = new Date().getFullYear();
+    const yearOptions = Array.from(
+      { length: currentYear - 2000 + 1 },
+      (_, idx) => currentYear - idx
+    );
+
+    const VEHICLE_COLOUR_OPTIONS = [
+      'White',
+      'Black',
+      'Silver',
+      'Grey',
+      'Red',
+      'Blue',
+      'Green',
+      'Yellow',
+      'Orange',
+      'Brown',
+      'Beige',
+      'Maroon',
+      'Gold',
+      'Other',
+    ] as const;
+
     return (
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {fallbackAttributes.map((attr) => {
             const fieldName = `attributes.${attr.name}`;
             const error = (errors.attributes as any)?.[attr.name];
+
+            // Vehicle-specific Year field: dropdown 2000 → current year (latest first)
+            if (isVehicleSpec && attr.name === 'year') {
+              return (
+                <div key={attr.name}>
+                  <label className="block text-sm font-medium mb-2">
+                    {attr.label}{' '}
+                    {attr.required && <span className="text-red-500">*</span>}
+                  </label>
+                  <select
+                    {...register(fieldName, {
+                      required: attr.required
+                        ? `${attr.label} is required`
+                        : false,
+                      valueAsNumber: true,
+                      validate: (value) => {
+                        // Allow empty when not required
+                        if (
+                          !attr.required &&
+                          (value === undefined || Number.isNaN(value))
+                        ) {
+                          return true;
+                        }
+
+                        const numValue =
+                          typeof value === 'number'
+                            ? value
+                            : Number(value ?? NaN);
+
+                        if (Number.isNaN(numValue)) {
+                          return `${attr.label} is required`;
+                        }
+
+                        if (numValue < 2000 || numValue > currentYear) {
+                          return `Year must be between 2000 and ${currentYear}`;
+                        }
+
+                        return true;
+                      },
+                    })}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                    defaultValue=""
+                  >
+                    <option value="">Select year</option>
+                    {yearOptions.map((year) => (
+                      <option key={year} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+                  {error && (
+                    <div className="text-red-500 text-sm mt-1">
+                      {error.message as string}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
+            // Vehicle-specific Colour field: dropdown with common car colours
+            if (isVehicleSpec && attr.name === 'color') {
+              return (
+                <div key={attr.name}>
+                  <label className="block text-sm font-medium mb-2">
+                    Colour{' '}
+                    {attr.required && <span className="text-red-500">*</span>}
+                  </label>
+                  <select
+                    {...register(fieldName, {
+                      required: attr.required
+                        ? 'Colour is required'
+                        : false,
+                    })}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                    defaultValue=""
+                  >
+                    <option value="">Select colour</option>
+                    {VEHICLE_COLOUR_OPTIONS.map((colour) => (
+                      <option key={colour} value={colour}>
+                        {colour}
+                      </option>
+                    ))}
+                  </select>
+                  {error && (
+                    <div className="text-red-500 text-sm mt-1">
+                      {error.message as string}
+                    </div>
+                  )}
+                </div>
+              );
+            }
 
             if (attr.type === 'select') {
               return (

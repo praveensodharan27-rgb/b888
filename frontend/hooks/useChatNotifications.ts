@@ -31,15 +31,12 @@ export const useChatNotifications = () => {
   const { data: unreadCount = 0 } = useQuery({
     queryKey: ['chat', 'unread-count'],
     queryFn: async () => {
+      // Temporarily disable unread counts if chat backend is not fully configured
       if (!isAuthenticated) return 0;
-      const response = await api.get('/chat/rooms');
-      const rooms = response.data.rooms || [];
-      return rooms.reduce((total: number, room: any) => {
-        return total + (room._count?.messages || 0);
-      }, 0);
+      return 0;
     },
     enabled: isAuthenticated,
-    refetchInterval: 30000, // Refetch every 30 seconds
+    refetchInterval: false as any,
   });
 
   // Play notification sound using Web Audio API

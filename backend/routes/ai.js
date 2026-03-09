@@ -3,9 +3,16 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { generateSalesReply } = require('../services/salesAssistantService');
 const { PrismaClient } = require('@prisma/client');
+const multer = require('multer');
 require('dotenv').config();
 
 const prisma = new PrismaClient();
+
+// Simple in-memory upload for AI image analysis (no disk write)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+});
 
 // OpenAI API configuration (use single OPENAI_API_KEY in .env, no space around =)
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
@@ -16,6 +23,160 @@ router.get('/status', (req, res) => {
   const configured = !!OPENAI_API_KEY && OPENAI_API_KEY.startsWith('sk-');
   res.json({ ok: configured, message: configured ? 'AI chatbot configured' : 'Set OPENAI_API_KEY in .env for AI suggest reply and auto-reply' });
 });
+
+// Analyze product image and return structured ad details
+router.post(
+  '/generate-ad-details-from-image',
+  authenticate,
+  upload.single('image'),
+  async (req, res) => {
+    try {
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({
+          success: false,
+          message: 'Image file is required',
+        });
+      }
+
+      if (!OPENAI_API_KEY || !OPENAI_API_KEY.startsWith('sk-')) {
+        return res.status(500).json({
+          success: false,
+          message:
+            'OpenAI API key is not configured. Please add a valid OPENAI_API_KEY to backend/.env.',
+        });
+      }
+
+      const mimeType = req.file.mimetype || 'image/jpeg';
+      const base64Image = req.file.buffer.toString('base64');
+      const dataUrl = `data:${mimeType};base64,${base64Image}`;
+
+      const systemPrompt =
+        'You are a marketplace assistant that analyzes product images and returns ONLY JSON with detected product details. ' +
+        'Never include explanations or extra text.';
+
+      const userTextPrompt =
+        'Analyze this product image and return a single JSON object with these keys: ' +
+        'category, subcategory, brand, model, color, title, seoDescription, priceSuggestion. ' +
+        'Use simple values (strings). ' +
+        'For priceSuggestion, output an approximate fair selling price in INR for the Indian market, as a plain number or numeric string without currency symbols (e.g. "450000"). ' +
+        'For seoDescription, write a short SEO-friendly marketplace description (1-3 sentences, keyword-rich, no emojis). ' +
+        'If unsure for a field, use an empty string. ' +
+        'Example shape: {"category":"Vehicles","subcategory":"Cars","brand":"BMW","model":"X5","color":"Black","title":"BMW X5 Black SUV for Sale","seoDescription":"Well-maintained BMW X5 luxury SUV for sale in excellent condition, single owner, perfect for family city and highway drives.","priceSuggestion":"450000"} ' +
+        'Return ONLY valid JSON, nothing else.';
+
+      const response = await fetch(OPENAI_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: userTextPrompt },
+                {
+                  type: 'image_url',
+                  image_url: { url: dataUrl },
+                },
+              ],
+            },
+          ],
+          max_tokens: 400,
+          temperature: 0.3,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('OpenAI image analysis error', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorData,
+        });
+
+        if (response.status === 401) {
+          return res.status(500).json({
+            success: false,
+            message: 'Invalid OpenAI API key. Please check OPENAI_API_KEY in backend/.env.',
+          });
+        }
+
+        if (response.status === 429) {
+          return res.status(429).json({
+            success: false,
+            message: 'AI rate limit exceeded. Please try again later.',
+          });
+        }
+
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to analyze image with AI.',
+        });
+      }
+
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content?.trim();
+
+      if (!content) {
+        return res.status(500).json({
+          success: false,
+          message: 'AI did not return any content.',
+        });
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(content);
+      } catch (jsonError) {
+        // Try to extract JSON substring if model wrapped it
+        const match = content.match(/\{[\s\S]*\}/);
+        if (match) {
+          try {
+            parsed = JSON.parse(match[0]);
+          } catch {
+            console.error('Failed to parse AI JSON from image content:', content);
+          }
+        }
+      }
+
+      if (!parsed || typeof parsed !== 'object') {
+        return res.status(500).json({
+          success: false,
+          message: 'AI response was not valid JSON.',
+        });
+      }
+
+      // Normalize keys to expected fields
+      const result = {
+        category: parsed.category || '',
+        subcategory: parsed.subcategory || '',
+        brand: parsed.brand || '',
+        model: parsed.model || '',
+        color: parsed.color || '',
+        title: parsed.title || '',
+        // Prefer explicit seoDescription key; fall back to description if provided
+        seoDescription: parsed.seoDescription || parsed.description || '',
+        // Price suggestion as string (frontend will normalize to number)
+        priceSuggestion: parsed.priceSuggestion || parsed.price || parsed.suggestedPrice || '',
+      };
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error('Error in generate-ad-details-from-image:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to analyze image.',
+      });
+    }
+  }
+);
 
 // Generate product description using OpenAI
 router.post('/generate-description', authenticate, async (req, res) => {

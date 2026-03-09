@@ -4,6 +4,11 @@ const { PrismaClient } = require('@prisma/client');
 const router = express.Router();
 const prisma = new PrismaClient();
 
+// Valid MongoDB ObjectId: 24 hex characters
+function isValidObjectId(id) {
+  return typeof id === 'string' && /^[a-fA-F0-9]{24}$/.test(id);
+}
+
 // Get active interstitial ads by position
 router.get('/', async (req, res) => {
   try {
@@ -52,31 +57,57 @@ router.get('/', async (req, res) => {
 
 // Track interstitial ad view
 router.post('/:id/view', async (req, res) => {
+  const id = req.params.id;
+  if (!isValidObjectId(id)) {
+    return res.status(400).json({ success: false, message: 'Invalid ad id' });
+  }
   try {
-    await prisma.interstitialAd.update({
-      where: { id: req.params.id },
-      data: { views: { increment: 1 } }
+    const ad = await prisma.interstitialAd.findUnique({
+      where: { id },
+      select: { views: true }
     });
-
-    res.json({ success: true });
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+    await prisma.interstitialAd.update({
+      where: { id },
+      data: { views: ad.views + 1 }
+    });
+    return res.json({ success: true });
   } catch (error) {
-    console.error('Track interstitial ad view error:', error);
-    res.status(500).json({ success: false, message: 'Failed to track view' });
+    console.error('Track interstitial ad view error:', error?.message || error);
+    if (error?.code === 'P2025') {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to track view' });
   }
 });
 
 // Track interstitial ad click
 router.post('/:id/click', async (req, res) => {
+  const id = req.params.id;
+  if (!isValidObjectId(id)) {
+    return res.status(400).json({ success: false, message: 'Invalid ad id' });
+  }
   try {
-    await prisma.interstitialAd.update({
-      where: { id: req.params.id },
-      data: { clicks: { increment: 1 } }
+    const ad = await prisma.interstitialAd.findUnique({
+      where: { id },
+      select: { clicks: true }
     });
-
-    res.json({ success: true });
+    if (!ad) {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+    await prisma.interstitialAd.update({
+      where: { id },
+      data: { clicks: ad.clicks + 1 }
+    });
+    return res.json({ success: true });
   } catch (error) {
-    console.error('Track interstitial ad click error:', error);
-    res.status(500).json({ success: false, message: 'Failed to track click' });
+    console.error('Track interstitial ad click error:', error?.message || error);
+    if (error?.code === 'P2025') {
+      return res.status(404).json({ success: false, message: 'Ad not found' });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to track click' });
   }
 });
 

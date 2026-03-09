@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
 export type SortOption = 'newest' | 'oldest' | 'price_low' | 'price_high' | 'featured' | 'bumped';
@@ -79,37 +79,38 @@ export function useListingFilters(options: UseListingFiltersOptions = {}) {
     }
   }, [searchParams]);
 
-  const handleFilterChange = (newFilters: Partial<ListingFilters>, updateUrl: boolean = true) => {
-    const updatedFilters = { ...filters, ...newFilters, page: 1 };
-    setFilters(updatedFilters);
+  const handleFilterChange = useCallback((newFilters: Partial<ListingFilters>, updateUrl: boolean = true) => {
+    setFilters((prev) => {
+      const updatedFilters = { ...prev, ...newFilters, page: 1 };
+      if (updateUrl && typeof window !== 'undefined') {
+        const urlParams = new URLSearchParams();
+        Object.entries(updatedFilters).forEach(([key, value]) => {
+          if (
+            value &&
+            key !== 'page' &&
+            key !== 'limit' &&
+            !excludeFromUrl.includes(key)
+          ) {
+            urlParams.append(key, String(value));
+          }
+        });
+        const queryString = urlParams.toString();
+        const currentPath = window.location.pathname;
+        router.push(`${currentPath}${queryString ? `?${queryString}` : ''}`, { scroll: false });
+      }
+      return updatedFilters;
+    });
+  }, [router, excludeFromUrl]);
 
-    if (updateUrl) {
-      const urlParams = new URLSearchParams();
-      Object.entries(updatedFilters).forEach(([key, value]) => {
-        if (
-          value &&
-          key !== 'page' &&
-          key !== 'limit' &&
-          !excludeFromUrl.includes(key)
-        ) {
-          urlParams.append(key, String(value));
-        }
-      });
-      const queryString = urlParams.toString();
-      const currentPath = window.location.pathname;
-      router.push(`${currentPath}${queryString ? `?${queryString}` : ''}`, { scroll: false });
-    }
-  };
-
-  const handleRemoveFilter = (key: keyof ListingFilters) => {
+  const handleRemoveFilter = useCallback((key: keyof ListingFilters) => {
     if (key === 'minPrice' || key === 'maxPrice') {
       handleFilterChange({ minPrice: undefined, maxPrice: undefined });
     } else {
       handleFilterChange({ [key]: undefined } as Partial<ListingFilters>);
     }
-  };
+  }, [handleFilterChange]);
 
-  const handleClearAllFilters = () => {
+  const handleClearAllFilters = useCallback(() => {
     const clearedFilters: Partial<ListingFilters> = {
       page: 1,
       location: undefined,
@@ -126,7 +127,7 @@ export function useListingFilters(options: UseListingFiltersOptions = {}) {
       clearedFilters.subcategory = undefined;
     }
     handleFilterChange(clearedFilters);
-  };
+  }, [defaultCategory, defaultSubcategory, handleFilterChange]);
 
   return {
     filters,

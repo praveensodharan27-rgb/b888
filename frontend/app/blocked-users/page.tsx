@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { FiArrowLeft, FiShield, FiUser } from 'react-icons/fi';
 import Link from 'next/link';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import ImageWithFallback from '@/components/ImageWithFallback';
 
 interface BlockedUser {

@@ -1255,15 +1255,53 @@ router.get('/brands-models',
     
     // If specific category/subcategory requested, filter the data
     if (categorySlug || subcategorySlug) {
+      // Prefer database (SubcategoryBrands) when both slugs provided
+      if (categorySlug && subcategorySlug) {
+        try {
+          const normCat = normalizeSlug(categorySlug);
+          const normSub = normalizeSlug(subcategorySlug);
+          const fromDb = await prisma.subcategoryBrands.findUnique({
+            where: {
+              categorySlug_subcategorySlug: {
+                categorySlug: normCat,
+                subcategorySlug: normSub,
+              },
+            },
+          });
+          if (fromDb && fromDb.brands && Array.isArray(fromDb.brands) && fromDb.brands.length > 0) {
+            const filteredBrands = filterBrandsModels({ categories: [{ subcategories: [{ brands: fromDb.brands }] }] });
+            const brands = filteredBrands?.categories?.[0]?.subcategories?.[0]?.brands || fromDb.brands;
+            return res.json({
+              success: true,
+              categories: [{
+                id: categorySlug,
+                slug: categorySlug,
+                name: categorySlug,
+                subcategories: [{
+                  id: subcategorySlug,
+                  slug: subcategorySlug,
+                  name: subcategorySlug,
+                  brands,
+                }],
+              }],
+            });
+          }
+        } catch (err) {
+          if (process.env.NODE_ENV === 'development') console.warn('SubcategoryBrands read:', err.message);
+        }
+      }
+
       const categorySlugMap = { 'mobiles': 'electronics', 'electronics': 'electronics', 'smartphone': 'electronics' };
-      const mappedCategorySlug = categorySlugMap[categorySlug] || categorySlug;
-      // Get brands from brands-models.json (full list) for mobiles/electronics + mobile-phones
+      const normCat = normalizeSlug(categorySlug);
+      const normSub = normalizeSlug(subcategorySlug);
+      const mappedCategorySlug = categorySlugMap[normCat] || normCat;
+      // Get brands from brands-models.json (full list) — use normalized slugs for lookup
       let brandsFromJson = [];
       const jsonCategory = brandsModelsData?.categories?.find(
-        (c) => c.slug === mappedCategorySlug || c.id === mappedCategorySlug
+        (c) => normalizeSlug(c.slug) === mappedCategorySlug || normalizeSlug(c.id) === mappedCategorySlug
       );
       if (jsonCategory && subcategorySlug) {
-        const jsonSub = jsonCategory.subcategories?.find((s) => s.slug === subcategorySlug || s.id === subcategorySlug);
+        const jsonSub = jsonCategory.subcategories?.find((s) => normalizeSlug(s.slug) === normSub || normalizeSlug(s.id) === normSub);
         if (jsonSub?.brands?.length) brandsFromJson = jsonSub.brands;
       }
       // Also get spec-config brands (in case JSON missing this combo)

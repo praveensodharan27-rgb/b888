@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useAuth } from '@/hooks/useAuth';
+import { useOTPTimer } from '@/hooks/useOTPTimer';
 import { FiX, FiMail, FiLock, FiEye, FiEyeOff, FiLogIn } from 'react-icons/fi';
 import Link from 'next/link';
 import { getOrCreateSessionAuthQuote } from '@/lib/authQuotes';
@@ -11,39 +12,40 @@ interface LoginModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSwitchToSignup?: () => void;
+  /** Called after successful login - used by auth modal to continue previous action */
+  onLoginSuccess?: () => void;
 }
 
-// Array of dark green/nature background images (free from Pexels/Unsplash)
+// Array of marketplace/selling vector illustrations
+// Add more images to /public/images/ folder and they will be randomly selected
 const BACKGROUND_IMAGES = [
-  'https://images.pexels.com/photos/1072824/pexels-photo-1072824.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/1440476/pexels-photo-1440476.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/167699/pexels-photo-167699.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/167698/pexels-photo-167698.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/1179229/pexels-photo-1179229.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.pexels.com/photos/1323712/pexels-photo-1323712.jpeg?auto=compress&cs=tinysrgb&w=1920',
-  'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?q=80&w=1920&auto=format&fit=crop',
-  'https://images.unsplash.com/photo-1472214103451-9374bd1c798e?q=80&w=1920&auto=format&fit=crop',
+  '/images/login-ecommerce-illustration.png',
+  '/images/liggraphy-olive-tree-3579922_1280.jpg',
+  '/images/naster-forest-231066_1280.jpg',
+  '/images/pexels-forest-1868885_1280.jpg',
+  '/images/pexels-river-1866579_1280.jpg',
+  '/images/pezibear-wolf-647528_1280.jpg',
 ];
 
-export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginModalProps) {
+export default function LoginModal({ isOpen, onClose, onSwitchToSignup, onLoginSuccess }: LoginModalProps) {
   const { login, sendOTP, verifyOTP } = useAuth();
   const [mode, setMode] = useState<'password' | 'otp'>('password');
   const [otpSent, setOtpSent] = useState(false);
+  const otpTimer = useOTPTimer(60);
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [backgroundImage, setBackgroundImage] = useState<string>('');
   const { register, handleSubmit, formState: { errors }, reset, setError } = useForm();
   
   // Typing effect for quote
-  const [quoteText, setQuoteText] = useState<string>('');
   const [displayQuote, setDisplayQuote] = useState('');
   const [quoteIndex, setQuoteIndex] = useState(0);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const QUOTE_TEXT = '"A green earth is a living earth."';
 
   // Change background image every time modal opens
   useEffect(() => {
     if (isOpen) {
-      // Randomly select a new image each time modal opens
+      // Randomly select an image from the array
       const randomIndex = Math.floor(Math.random() * BACKGROUND_IMAGES.length);
       setBackgroundImage(BACKGROUND_IMAGES[randomIndex]);
     }
@@ -57,34 +59,34 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
       setOtpSent(false);
       setShowPassword(false);
       setIsSubmitting(false);
+      otpTimer.reset();
       setDisplayQuote('');
       setQuoteIndex(0);
-      setIsDeleting(false);
     }
   }, [isOpen, reset]);
 
-  // Pick ONE random quote per browser session (same for entire session)
+  // Typing animation for quote
   useEffect(() => {
-    if (!isOpen) return;
-    const q = getOrCreateSessionAuthQuote();
-    // Wrap in quotes for display
-    setQuoteText(q ? `"${q}"` : '');
-  }, [isOpen]);
-
-  // Show full quote immediately when modal opens (no typing animation to prevent flickering)
-  useEffect(() => {
-    if (!isOpen || !quoteText) {
+    if (!isOpen) {
       setDisplayQuote('');
       setQuoteIndex(0);
-      setIsDeleting(false);
       return;
     }
 
-    // Immediately show full quote without animation
-    setDisplayQuote(quoteText);
-    setQuoteIndex(quoteText.length);
-    setIsDeleting(false);
-  }, [quoteText, isOpen]);
+    // Start typing animation after a short delay
+    const startDelay = setTimeout(() => {
+      if (quoteIndex < QUOTE_TEXT.length) {
+        const typingTimer = setTimeout(() => {
+          setDisplayQuote(QUOTE_TEXT.substring(0, quoteIndex + 1));
+          setQuoteIndex(quoteIndex + 1);
+        }, 80); // 80ms per character for faster typing
+
+        return () => clearTimeout(typingTimer);
+      }
+    }, 300); // 300ms delay before starting
+
+    return () => clearTimeout(startDelay);
+  }, [isOpen, quoteIndex]);
 
   // Close modal on ESC key
   useEffect(() => {
@@ -133,9 +135,11 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
       }
       
       login(credentials, {
+        skipRedirect: !!onLoginSuccess,
         onSuccess: () => {
           setIsSubmitting(false);
-          onClose(); // Close modal on successful login
+          onLoginSuccess?.();
+          onClose();
         },
         onError: (error: any) => {
           setIsSubmitting(false);
@@ -184,6 +188,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
         sendOTP(otpData, {
           onSuccess: () => {
             setOtpSent(true);
+            otpTimer.start();
             setIsSubmitting(false);
           },
           onError: (error: any) => {
@@ -209,9 +214,11 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
         }
         
         verifyOTP(otpData, {
+          skipRedirect: !!onLoginSuccess,
           onSuccess: () => {
             setIsSubmitting(false);
-            onClose(); // Close modal on successful OTP verification
+            onLoginSuccess?.();
+            onClose();
           },
           onError: (error: any) => {
             setIsSubmitting(false);
@@ -236,17 +243,23 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop - dark overlay, close on click */}
       <div 
-        className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 transition-opacity"
+        className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[110] animate-[fadeIn_0.2s_ease-out]"
         onClick={onClose}
+        role="button"
+        tabIndex={-1}
+        aria-label="Close modal"
       />
       
-      {/* Modal */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto">
+      {/* Modal - centered, scale and fade animation */}
+      <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 overflow-y-auto pointer-events-none">
         <div 
-          className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl transform transition-all my-8 relative overflow-hidden"
+          className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl my-8 relative overflow-hidden pointer-events-auto animate-fade-in-scale"
           onClick={(e) => e.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="login-modal-title"
         >
           {/* Close Button */}
           <button
@@ -260,39 +273,53 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
           <div className="flex flex-col lg:flex-row min-h-[600px]">
             {/* Left Side - Image Background with Overlay Text Only (No Container/Card) */}
             <div 
-              className="hidden lg:block lg:w-1/2 bg-cover bg-center relative"
+              className="hidden lg:block lg:w-1/2 relative overflow-hidden"
               style={{
-                backgroundImage: backgroundImage 
-                  ? `url('${backgroundImage}')`
-                  : 'linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))',
-                transition: 'background-image 0.5s ease-in-out',
+                backgroundColor: '#f3f4f6',
               }}
             >
-              {/* Dark overlay for readability */}
-              <div className="absolute inset-0 bg-gradient-to-b from-black/55 via-black/35 to-black/65" />
+              {/* Background Image */}
+              <div 
+                className="absolute inset-0 bg-cover bg-center"
+                style={{
+                  backgroundImage: backgroundImage 
+                    ? `url('${backgroundImage}')`
+                    : 'linear-gradient(to bottom right, rgb(20, 83, 45), rgb(22, 101, 52), rgb(20, 83, 45))',
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundRepeat: 'no-repeat',
+                }}
+              />
+              {/* Gradient overlay from bottom for readability */}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
 
-              {/* Overlay Text - Directly on Image, No Container */}
-              <div className="absolute inset-0 flex flex-col justify-between p-12 text-white z-10">
-                {/* Top: Logo */}
-                <div className="flex items-center gap-2">
-                  <span className="text-2xl">🌱</span>
-                  <span className="text-2xl font-bold text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)]">SellIt</span>
-                </div>
+              {/* Top Logo */}
+              <div className="absolute top-8 left-8 flex items-center gap-2 z-10">
+                <span className="text-2xl">🌱</span>
+                <span className="text-2xl font-bold text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.6)]">Sell Box</span>
+              </div>
 
-                {/* Center: Main Heading and Sub-heading */}
-                <div className="flex flex-col gap-4">
-                  <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight drop-shadow-[0_2px_10px_rgba(0,0,0,0.7)]">
+              {/* Hero Text - Bottom Aligned */}
+              <div className="absolute bottom-0 left-0 right-0 px-8 pb-8 z-10">
+                <div className="max-w-xl">
+                  {/* Main Heading */}
+                  <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight mb-4 drop-shadow-[0_2px_10px_rgba(0,0,0,0.7)] animate-[fadeInUp_0.4s_ease-out]">
                     Join the Green Revolution
                   </h1>
-                  <p className="text-white/95 text-lg leading-relaxed max-w-md drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)]">
+                  
+                  {/* Sub-heading with max width */}
+                  <p className="text-white/95 text-lg leading-relaxed max-w-md mb-4 drop-shadow-[0_2px_10px_rgba(0,0,0,0.6)] animate-[fadeInUp_0.5s_ease-out_0.1s_both]">
                     Connect with eco-conscious innovators and build a sustainable future together.
                   </p>
+                  
+                  {/* Quote with typing animation */}
+                  <p className="text-white/90 text-base italic min-h-[1.5rem] drop-shadow-[0_2px_10px_rgba(0,0,0,0.65)]">
+                    {displayQuote}
+                    {quoteIndex < QUOTE_TEXT.length && (
+                      <span className="inline-block w-[2px] h-5 bg-white/90 ml-[2px] typing-cursor" />
+                    )}
+                  </p>
                 </div>
-
-                {/* Bottom: Quote (Static - No Animation) */}
-                <p className="text-white text-base italic min-h-[1.5rem] drop-shadow-[0_2px_10px_rgba(0,0,0,0.65)]">
-                  {displayQuote}
-                </p>
               </div>
             </div>
 
@@ -539,10 +566,11 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
                     </button>
                     <button
                       type="button"
+                      disabled={otpTimer.isActive}
                       onClick={() => setOtpSent(false)}
-                      className="w-full text-blue-600 hover:text-blue-700 font-semibold text-sm transition-colors"
+                      className="w-full text-blue-600 hover:text-blue-700 font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Resend OTP
+                      {otpTimer.isActive ? `Resend OTP in ${otpTimer.formatted}` : 'Resend OTP'}
                     </button>
                   </>
                 )}

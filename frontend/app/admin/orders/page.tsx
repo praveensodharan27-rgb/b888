@@ -9,6 +9,7 @@ import { FiCreditCard, FiPackage, FiClock, FiCheckCircle, FiXCircle, FiAlertCirc
 import { format, differenceInDays, isAfter } from 'date-fns';
 import Link from 'next/link';
 import ImageWithFallback from '@/components/ImageWithFallback';
+import { getAdUrl } from '@/lib/directory';
 
 export default function AdminOrdersPage() {
   const router = useRouter();
@@ -106,7 +107,7 @@ export default function AdminOrdersPage() {
     .reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-7xl">
+    <div className="container mx-auto px-4 py-8 max-w-[1400px]">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">All Orders</h1>
         <p className="text-gray-600">Manage all payment orders and transactions</p>
@@ -239,7 +240,7 @@ export default function AdminOrdersPage() {
                           <p className="text-xs text-gray-500">Status: {order.ad.status}</p>
                           {order.ad.id && (
                             <Link
-                              href={`/ads/${order.ad.id}`}
+                              href={getAdUrl(order.ad)}
                               className="text-sm text-primary-600 hover:underline flex items-center gap-1 mt-1"
                             >
                               <FiEye className="w-3 h-3" /> View Ad

@@ -7,7 +7,7 @@ export default function TermsOfService() {
   const sections = [
     {
       title: '1. Acceptance of Terms',
-      content: 'By accessing and using SellIt, you accept and agree to be bound by the terms and provision of this agreement. If you do not agree to these terms, please do not use our services.'
+      content: 'By accessing and using Sell Box, you accept and agree to be bound by the terms and provision of this agreement. If you do not agree to these terms, please do not use our services.'
     },
     {
       title: '2. User Accounts',
@@ -15,7 +15,7 @@ export default function TermsOfService() {
     },
     {
       title: '3. Listing and Selling',
-      content: 'Users may list items for sale on our platform. All listings must comply with local laws and regulations. SellIt reserves the right to remove any listing that violates our policies or applicable laws. Sellers are responsible for the accuracy of their listings and for fulfilling their obligations to buyers.'
+      content: 'Users may list items for sale on our platform. All listings must comply with local laws and regulations. Sell Box reserves the right to remove any listing that violates our policies or applicable laws. Sellers are responsible for the accuracy of their listings and for fulfilling their obligations to buyers.'
     },
     {
       title: '4. Prohibited Items',
@@ -23,7 +23,7 @@ export default function TermsOfService() {
     },
     {
       title: '5. Payments and Fees',
-      content: 'SellIt may charge fees for certain services, including premium listings and featured ads. All fees are clearly displayed before purchase. Payments are processed securely through our payment partners. Users are responsible for any applicable taxes.'
+      content: 'Sell Box may charge fees for certain services, including premium listings and featured ads. All fees are clearly displayed before purchase. Payments are processed securely through our payment partners. Users are responsible for any applicable taxes.'
     },
     {
       title: '6. User Conduct',
@@ -31,23 +31,23 @@ export default function TermsOfService() {
     },
     {
       title: '7. Content Rights',
-      content: 'By posting content on SellIt, you grant us a non-exclusive, worldwide, royalty-free license to use, display, and distribute your content on our platform. You retain all ownership rights to your content and can remove it at any time.'
+      content: 'By posting content on Sell Box, you grant us a non-exclusive, worldwide, royalty-free license to use, display, and distribute your content on our platform. You retain all ownership rights to your content and can remove it at any time.'
     },
     {
       title: '8. Disclaimer of Warranties',
-      content: 'SellIt is provided "as is" without warranties of any kind. We do not guarantee that the service will be uninterrupted, secure, or error-free. We are not responsible for transactions between users.'
+      content: 'Sell Box is provided "as is" without warranties of any kind. We do not guarantee that the service will be uninterrupted, secure, or error-free. We are not responsible for transactions between users.'
     },
     {
       title: '9. Limitation of Liability',
-      content: 'SellIt and its affiliates shall not be liable for any indirect, incidental, special, consequential, or punitive damages resulting from your use of the service. Our total liability shall not exceed the amount you paid us in the past 12 months.'
+      content: 'Sell Box and its affiliates shall not be liable for any indirect, incidental, special, consequential, or punitive damages resulting from your use of the service. Our total liability shall not exceed the amount you paid us in the past 12 months.'
     },
     {
       title: '10. Dispute Resolution',
-      content: 'Disputes between users should be resolved directly between the parties involved. SellIt may provide mediation services but is not obligated to do so. Any disputes with SellIt shall be resolved through binding arbitration.'
+      content: 'Disputes between users should be resolved directly between the parties involved. Sell Box may provide mediation services but is not obligated to do so. Any disputes with Sell Box shall be resolved through binding arbitration.'
     },
     {
       title: '11. Privacy',
-      content: 'Your use of SellIt is also governed by our Privacy Policy. Please review our Privacy Policy to understand how we collect, use, and protect your personal information.'
+      content: 'Your use of Sell Box is also governed by our Privacy Policy. Please review our Privacy Policy to understand how we collect, use, and protect your personal information.'
     },
     {
       title: '12. Changes to Terms',
@@ -59,7 +59,7 @@ export default function TermsOfService() {
     },
     {
       title: '14. Governing Law',
-      content: 'These terms shall be governed by and construed in accordance with the laws of the jurisdiction in which SellIt operates, without regard to its conflict of law provisions.'
+      content: 'These terms shall be governed by and construed in accordance with the laws of the jurisdiction in which Sell Box operates, without regard to its conflict of law provisions.'
     },
     {
       title: '15. Contact Information',
@@ -82,7 +82,7 @@ export default function TermsOfService() {
             </p>
             <div className="bg-white/10 backdrop-blur-sm rounded-lg p-4 border border-white/20">
               <p className="text-sm text-white">
-                Please read these terms carefully before using SellIt. By using our platform, you agree to be bound by these terms.
+                Please read these terms carefully before using Sell Box. By using our platform, you agree to be bound by these terms.
               </p>
             </div>
           </div>
@@ -126,7 +126,7 @@ export default function TermsOfService() {
               <div>
                 <h3 className="font-bold text-white mb-2">Important Notice</h3>
                 <p className="text-sm text-white">
-                  These terms constitute a legally binding agreement between you and SellIt. If you do not agree with any part of these terms, you must not use our services. For questions or concerns, please contact our legal team at legal@sellit.com.
+                  These terms constitute a legally binding agreement between you and Sell Box. If you do not agree with any part of these terms, you must not use our services. For questions or concerns, please contact our legal team at legal@sellit.com.
                 </p>
               </div>
             </div>

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
-import { toast } from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { FiMail, FiSettings, FiBarChart2, FiTrash2, FiRefreshCw, FiClock, FiUsers, FiSearch, FiCheck, FiX } from 'react-icons/fi';
 
 interface SearchAlertSettings {

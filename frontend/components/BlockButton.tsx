@@ -3,13 +3,14 @@
 import { useState, useEffect } from 'react';
 import { FiShield, FiAlertCircle } from 'react-icons/fi';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 interface BlockButtonProps {
   userId: string;
   userName: string;
   onBlockChange?: (isBlocked: boolean) => void;
   className?: string;
+  variant?: 'button' | 'link' | 'icon' | 'menu';
 }
 
 export default function BlockButton({ userId, userName, onBlockChange, className = '', variant = 'button' }: BlockButtonProps) {

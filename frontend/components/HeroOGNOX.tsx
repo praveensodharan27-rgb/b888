@@ -70,36 +70,20 @@ export default function HeroOGNOX({ onLocationChange }: HeroOGNOXProps = {}) {
       console.error('Error reading localStorage:', error);
     }
 
-    // If no location in localStorage, try automatic geolocation detection
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          // Location detected successfully - show "near you"
+    // If no location in localStorage, try automatic geolocation detection (Firefox-compatible)
+    if (typeof window !== 'undefined' && navigator.geolocation) {
+      import('@/utils/geolocation')
+        .then(({ getCurrentPosition }) => getCurrentPosition())
+        .then(({ latitude, longitude }) => {
           updateExamplesWithLocation(true);
-          
-          // Optionally save to localStorage for future use
           try {
-            const coords = {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude
-            };
-            localStorage.setItem('selected_location_coords', JSON.stringify(coords));
-          } catch (error) {
-            console.error('Error saving coordinates:', error);
+            localStorage.setItem('selected_location_coords', JSON.stringify({ latitude, longitude }));
+          } catch (e) {
+            console.error('Error saving coordinates:', e);
           }
-        },
-        (error) => {
-          // Geolocation failed or denied - use default examples
-          updateExamplesWithLocation(false);
-        },
-        {
-          enableHighAccuracy: false,
-          timeout: 5000,
-          maximumAge: 300000 // Accept cached position up to 5 minutes
-        }
-      );
+        })
+        .catch(() => updateExamplesWithLocation(false));
     } else {
-      // Geolocation not supported - use default examples
       updateExamplesWithLocation(false);
     }
   }, []);
@@ -223,12 +207,12 @@ export default function HeroOGNOX({ onLocationChange }: HeroOGNOXProps = {}) {
     <div className="relative w-full h-[350px] md:h-[400px] overflow-hidden">
       {/* Dark blurred background with bokeh effect */}
       <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
-        <div className="absolute inset-0 opacity-30">
-          {/* Bokeh lights effect */}
-          <div className="absolute top-20 left-10 w-32 h-32 bg-yellow-400 rounded-full blur-3xl opacity-20 animate-pulse"></div>
-          <div className="absolute top-40 right-20 w-40 h-40 bg-orange-400 rounded-full blur-3xl opacity-15 animate-pulse" style={{ animationDelay: '0.5s' }}></div>
-          <div className="absolute bottom-32 left-1/4 w-36 h-36 bg-blue-400 rounded-full blur-3xl opacity-10 animate-pulse" style={{ animationDelay: '1s' }}></div>
-          <div className="absolute bottom-20 right-1/3 w-28 h-28 bg-purple-400 rounded-full blur-3xl opacity-15 animate-pulse" style={{ animationDelay: '1.5s' }}></div>
+        <div className="absolute inset-0 opacity-15">
+          {/* Bokeh lights - reduced opacity for better text visibility */}
+          <div className="absolute top-20 left-10 w-32 h-32 bg-yellow-400 rounded-full blur-3xl opacity-90 animate-pulse"></div>
+          <div className="absolute top-40 right-20 w-40 h-40 bg-orange-400 rounded-full blur-3xl opacity-80 animate-pulse" style={{ animationDelay: '0.5s' }}></div>
+          <div className="absolute bottom-32 left-1/4 w-36 h-36 bg-blue-400 rounded-full blur-3xl opacity-70 animate-pulse" style={{ animationDelay: '1s' }}></div>
+          <div className="absolute bottom-20 right-1/3 w-28 h-28 bg-purple-400 rounded-full blur-3xl opacity-80 animate-pulse" style={{ animationDelay: '1.5s' }}></div>
         </div>
       </div>
 
@@ -239,7 +223,7 @@ export default function HeroOGNOX({ onLocationChange }: HeroOGNOXProps = {}) {
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-white mb-3 md:mb-4">
             Find anything in your city
           </h1>
-          <p className="text-lg md:text-xl text-gray-200">
+          <p className="text-lg md:text-xl text-gray-100">
             Buy and sell cars, properties, and more near you
           </p>
         </div>
@@ -252,7 +236,7 @@ export default function HeroOGNOX({ onLocationChange }: HeroOGNOXProps = {}) {
             {/* Search Input */}
             <div className="flex-1 flex items-center px-4 md:px-6 py-4 md:py-5">
               <div className="flex items-center gap-3 flex-1">
-                <span className="text-sm md:text-base text-gray-500 hidden sm:inline">Looking for?</span>
+                <span className="text-sm md:text-base text-gray-600 hidden sm:inline">Looking for?</span>
                 <div className="flex-1 relative">
                   <input
                     ref={inputRef}
@@ -267,7 +251,7 @@ export default function HeroOGNOX({ onLocationChange }: HeroOGNOXProps = {}) {
                   />
                   {!search && (
                     <div className="absolute inset-0 flex items-center pointer-events-none">
-                      <span className="text-sm md:text-base text-gray-400">
+                      <span className="text-sm md:text-base text-gray-500">
                         {placeholder}
                         <span className={`inline-block w-0.5 h-4 md:h-5 bg-yellow-400 ml-0.5 align-middle ${showCursor ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`}>
                           {' '}

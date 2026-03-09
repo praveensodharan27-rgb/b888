@@ -12,6 +12,7 @@ const { logger } = require('../../config/logger');
 const { createRateLimitedLogger } = require('../../../utils/rateLimitedLog');
 const { slugify } = require('../../../utils/slug');
 const { enrichAdForSeoUrl, enrichAdsResult, computeAdSlugFields } = require('../../../utils/adSeo');
+const { toCanonicalBrand } = require('../../../config/canonicalBrands');
 
 const rlLog = createRateLimitedLogger(logger, 120 * 1000); // once per 2 min for fallback
 
@@ -31,7 +32,6 @@ class AdService {
     const reservedKeys = new Set([
       'page', 'limit', 'category', 'subcategory', 'location', 'city', 'state',
       'minPrice', 'maxPrice', 'search', 'condition', 'sort', 'latitude', 'longitude', 'radius', 'userId',
-      'brand', 'model'
     ]);
     const attributeFilters = {};
     for (const [key, value] of Object.entries(filters)) {
@@ -56,8 +56,6 @@ class AdService {
       longitude,
       radius = 50,
       userId,
-      brand: filterBrand,
-      model: filterModel,
     } = filters;
 
     const where = {
@@ -234,7 +232,13 @@ class AdService {
             const attrs = ad.attributes && typeof ad.attributes === 'object' ? ad.attributes : {};
             for (const [key, filterVal] of Object.entries(attributeFilters)) {
               const attrVal = attrs[key];
-              if (attrVal == null || String(attrVal).trim() !== String(filterVal).trim()) return false;
+              if (attrVal == null || String(attrVal).trim() === '') return false;
+              const a = String(attrVal).trim();
+              const b = String(filterVal).trim();
+              const match = (key === 'brand' || key === 'model')
+                ? a.toLowerCase() === b.toLowerCase()
+                : a === b;
+              if (!match) return false;
             }
             return true;
           };
@@ -277,7 +281,14 @@ class AdService {
         const attrs = ad.attributes && typeof ad.attributes === 'object' ? ad.attributes : {};
         for (const [key, filterVal] of Object.entries(attributeFilters)) {
           const attrVal = getAttrVal(attrs, key);
-          if (attrVal == null || String(attrVal).trim() !== String(filterVal).trim()) return false;
+          if (attrVal == null || String(attrVal).trim() === '') return false;
+          const a = String(attrVal).trim();
+          const b = String(filterVal).trim();
+          // Brand and model: case-insensitive so /ads?brand=bmw matches "BMW"
+          const match = (key === 'brand' || key === 'model')
+            ? a.toLowerCase() === b.toLowerCase()
+            : a === b;
+          if (!match) return false;
         }
         return true;
       };
@@ -412,15 +423,61 @@ class AdService {
       });
     }
 
+    // Enforce strict premium priority for non-ranked, non-attribute queries:
+    // TOP > FEATURED > BUMP_UP > NORMAL
+    // Also rotate ads within the same premium tier for fair exposure.
+    if (Array.isArray(result.ads) && (sort === 'featured' || sort === 'bumped')) {
+      const ads = result.ads.slice();
+
+      const buckets = {
+        TOP: [],
+        FEATURED: [],
+        BUMP_UP: [],
+        NORMAL: [],
+      };
+
+      // Bucket ads by premium tier
+      for (const ad of ads) {
+        if (ad.premiumType === 'TOP') buckets.TOP.push(ad);
+        else if (ad.premiumType === 'FEATURED') buckets.FEATURED.push(ad);
+        else if (ad.premiumType === 'BUMP_UP') buckets.BUMP_UP.push(ad);
+        else buckets.NORMAL.push(ad);
+      }
+
+      const sortByTime = (list) => {
+        return list.sort((a, b) => {
+          const aTime = new Date(sort === 'bumped' ? (a.updatedAt || a.createdAt) : a.createdAt).getTime() || 0;
+          const bTime = new Date(sort === 'bumped' ? (b.updatedAt || b.createdAt) : b.createdAt).getTime() || 0;
+          return bTime - aTime;
+        });
+      };
+
+      const rotate = (list) => {
+        if (!list.length) return list;
+        // Simple rotation index based on current minute so order changes over time
+        const offset = new Date().getMinutes() % list.length;
+        return list.slice(offset).concat(list.slice(0, offset));
+      };
+
+      // Sort each bucket by recency, then rotate within the premium tiers
+      const topAds = rotate(sortByTime(buckets.TOP));
+      const featuredAds = rotate(sortByTime(buckets.FEATURED));
+      const bumpAds = rotate(sortByTime(buckets.BUMP_UP));
+      const normalAds = sortByTime(buckets.NORMAL);
+
+      result.ads = [...topAds, ...featuredAds, ...bumpAds, ...normalAds];
+    }
+
     return enrichAdsResult(result);
   }
 
   /**
    * Aggregate filter options from actual ads (attributes) for a category/subcategory.
-   * Returns only spec values that exist in currently available products — no master JSON only.
-   * Used by filter page to show e.g. only RAM 8GB, 16GB if no 32GB product exists.
+   * Returns options, brandModels, and counts per value for sidebar (e.g. "BMW (3)").
+   * options: { locationSlug?, brand? } — location filters the query; brand filters ads in memory for model/spec counts.
    */
-  async getFilterOptionsFromAds(categorySlug, subcategorySlug) {
+  async getFilterOptionsFromAds(categorySlug, subcategorySlug, options = {}) {
+    const { locationSlug, brand: filterBrand } = options;
     const slugMap = { smartphone: 'mobiles' };
     const mappedCat = slugMap[categorySlug] || categorySlug;
     const where = {
@@ -446,14 +503,34 @@ class AdService {
       if (subcategory) where.subcategoryId = subcategory.id;
     }
 
+    if (locationSlug) {
+      const location = await prisma.location.findFirst({
+        where: { slug: locationSlug },
+        select: { id: true }
+      });
+      if (location) where.locationId = location.id;
+    }
+
     const ads = await prisma.ad.findMany({
       where,
       select: { attributes: true },
       take: 5000
     });
 
+    // Ads to use for "model" and other non-brand dimensions (when brand filter is set, only those ads)
+    const adsForModel = filterBrand
+      ? ads.filter((ad) => {
+          const attrs = ad.attributes && typeof ad.attributes === 'object' ? ad.attributes : {};
+          const b = attrs.brand;
+          const v = b == null ? '' : Array.isArray(b) ? b.map(String).join(',') : String(b).trim();
+          return toCanonicalBrand(v) === toCanonicalBrand(filterBrand);
+        })
+      : ads;
+
     const agg = {};
-    const brandModels = {}; // brand -> Set of models (for filter: only models that exist for selected brand)
+    const countByKey = {}; // key -> Map(value -> count) for brand (from all ads)
+    const countByKeyForModel = {}; // key -> Map(value -> count) for model/specs (from adsForModel)
+    const brandModels = {};
     for (const ad of ads) {
       const attrs = ad.attributes && typeof ad.attributes === 'object' ? ad.attributes : {};
       let brandVal = null;
@@ -462,14 +539,27 @@ class AdService {
         if (value == null || value === '') continue;
         const v = Array.isArray(value) ? value.map(String).join(',') : String(value).trim();
         if (!v) continue;
+        const valueToUse = key === 'brand' ? toCanonicalBrand(v) : v;
         if (!agg[key]) agg[key] = new Set();
-        agg[key].add(v);
-        if (key === 'brand') brandVal = v;
+        agg[key].add(valueToUse);
+        if (!countByKey[key]) countByKey[key] = new Map();
+        countByKey[key].set(valueToUse, (countByKey[key].get(valueToUse) || 0) + 1);
+        if (key === 'brand') brandVal = valueToUse;
         if (key === 'model') modelVal = v;
       }
       if (brandVal && modelVal) {
         if (!brandModels[brandVal]) brandModels[brandVal] = new Set();
         brandModels[brandVal].add(modelVal);
+      }
+    }
+    for (const ad of adsForModel) {
+      const attrs = ad.attributes && typeof ad.attributes === 'object' ? ad.attributes : {};
+      for (const [key, value] of Object.entries(attrs)) {
+        if (value == null || value === '') continue;
+        const v = Array.isArray(value) ? value.map(String).join(',') : String(value).trim();
+        if (!v) continue;
+        if (!countByKeyForModel[key]) countByKeyForModel[key] = new Map();
+        countByKeyForModel[key].set(v, (countByKeyForModel[key].get(v) || 0) + 1);
       }
     }
 
@@ -482,7 +572,27 @@ class AdService {
       brandModelsSorted[brand] = [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
     }
 
-    return { filterOptions, brandModels: brandModelsSorted };
+    // Counts for Brand use all ads; for Model and other specs use adsForModel (respects selected brand)
+    const filterOptionCounts = {};
+    for (const key of Object.keys(agg)) {
+      const countMap = key === 'brand' ? countByKey[key] : countByKeyForModel[key];
+      if (countMap) {
+        filterOptionCounts[key] = Object.fromEntries([...countMap].sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: 'base' })));
+      }
+    }
+    const totalCount = ads.length;
+
+    return { filterOptions, brandModels: brandModelsSorted, filterOptionCounts, totalCount };
+  }
+
+  /** Increment ad view count (fire-and-forget) and set ad.views on the object for response. */
+  _incrementAdViews(ad) {
+    if (!ad?.id) return;
+    const next = (typeof ad.views === 'number' ? ad.views : 0) + 1;
+    ad.views = next;
+    prisma.ad
+      .update({ where: { id: ad.id }, data: { views: { increment: 1 } } })
+      .catch((err) => logger.warn({ err: err?.message, adId: ad.id }, 'Failed to increment ad views'));
   }
 
   async getAdById(id) {
@@ -495,6 +605,15 @@ class AdService {
 
     if (!ad) {
       throw new Error('Ad not found');
+    }
+
+    this._incrementAdViews(ad);
+
+    if (ad.user?.id) {
+      const adsCount = await prisma.ad.count({
+        where: { userId: ad.user.id, status: 'APPROVED' }
+      });
+      ad.user = { ...ad.user, adsCount };
     }
 
     return enrichAdForSeoUrl(ad);
@@ -525,7 +644,10 @@ class AdService {
           location: { select: { id: true, name: true, slug: true } },
         },
       });
-      if (byPath) return byPath;
+      if (byPath) {
+        this._incrementAdViews(byPath);
+        return byPath;
+      }
     }
 
     // Fallback: ads not yet backfilled or URL missing state/city (resolve by categoryId + state/city/slug)
@@ -554,6 +676,7 @@ class AdService {
       const adCitySlug = slugify(ad.city || '');
       const adSlug = (ad.slug && ad.slug.trim()) ? ad.slug.toLowerCase().trim() : slugify(ad.title || '', 70);
       if (adStateSlug === s && adCitySlug === c && (adSlug === sl || slugify(ad.title || '', 70) === sl)) {
+        this._incrementAdViews(ad);
         return ad;
       }
     }
@@ -606,7 +729,10 @@ class AdService {
         location: { select: { id: true, name: true, slug: true, city: true, state: true } },
       },
     });
-    if (ad) return enrichAdForSeoUrl(ad);
+    if (ad) {
+      this._incrementAdViews(ad);
+      return enrichAdForSeoUrl(ad);
+    }
 
     const ads = await prisma.ad.findMany({
       where: {
@@ -628,7 +754,10 @@ class AdService {
     });
     for (const a of ads) {
       const adSlugVal = (a.slug && a.slug.trim()) ? a.slug.toLowerCase().trim() : slugify(a.title || '', 70);
-      if (adSlugVal === sl || slugify(a.title || '', 70) === sl) return enrichAdForSeoUrl(a);
+      if (adSlugVal === sl || slugify(a.title || '', 70) === sl) {
+        this._incrementAdViews(a);
+        return enrichAdForSeoUrl(a);
+      }
     }
     return null;
   }

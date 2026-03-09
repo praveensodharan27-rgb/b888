@@ -12,8 +12,8 @@ export async function generateMetadata({
     .join(' ');
 
   return {
-    title: `${categoryName} - Buy & Sell Online | SellIt`,
-    description: `Browse ${categoryName} on SellIt. Find the best deals, compare prices, and buy or sell ${categoryName} in your area. Thousands of listings updated daily.`,
+    title: `${categoryName} - Buy & Sell Online | Sell Box`,
+    description: `Browse ${categoryName} on Sell Box. Find the best deals, compare prices, and buy or sell ${categoryName} in your area. Thousands of listings updated daily.`,
     keywords: [
       categoryName,
       `buy ${categoryName}`,

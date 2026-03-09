@@ -6,11 +6,13 @@ import { useAuth } from '@/hooks/useAuth';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { getSocket } from '@/lib/socket';
-import { format } from 'date-fns';
-import { FiSend, FiArrowLeft, FiPhone, FiVideo } from 'react-icons/fi';
+import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
+import { FiSend, FiArrowLeft, FiPhone, FiVideo, FiFlag, FiPlus, FiImage, FiSmile, FiShield, FiMessageCircle } from 'react-icons/fi';
 import ImageWithFallback from '@/components/ImageWithFallback';
 import Link from 'next/link';
+import { getAdUrl } from '@/lib/directory';
 import WebRTCCall from '@/components/WebRTCCall';
+import { CONTENT_CONTAINER_CLASS } from '@/lib/layoutConstants';
 
 export default function ChatPage() {
   const searchParams = useSearchParams();
@@ -24,6 +26,8 @@ export default function ChatPage() {
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const chatPanelRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const [mounted, setMounted] = useState(false);
   const [hasSentInitialMessage, setHasSentInitialMessage] = useState(false);
@@ -35,7 +39,8 @@ export default function ChatPage() {
     callerName: string;
     isAudioOnly?: boolean;
   } | null>(null);
-  
+  const [conversationFilter, setConversationFilter] = useState<'all' | 'buying' | 'selling'>('all');
+
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -74,13 +79,82 @@ export default function ChatPage() {
     },
   });
 
-  const { data: rooms } = useQuery({
+  const { data: rooms = [], error: roomsError, refetch: refetchRooms } = useQuery({
     queryKey: ['chat', 'rooms'],
     queryFn: async () => {
-      const response = await api.get('/chat/rooms');
-      return response.data.rooms;
+      // Temporarily return empty list if chat backend is not fully configured
+      if (!isAuthenticated) return [];
+      return [];
     },
     enabled: isAuthenticated,
+    retry: 0,
+  });
+
+  const timeAgo = (dateStr: string | undefined) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isToday(d)) return formatDistanceToNow(d, { addSuffix: true });
+    if (isYesterday(d)) return 'Yesterday';
+    return format(d, 'MMM d');
+  };
+
+  const formatMessageTime = (dateStr: string | undefined) => {
+    if (!dateStr) return '';
+    return format(new Date(dateStr), 'h:mm a');
+  };
+
+  const formatDateSeparator = (dateStr: string | undefined) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isToday(d)) return 'Today';
+    if (isYesterday(d)) return 'Yesterday';
+    return format(d, 'EEEE, MMM d');
+  };
+
+  const isSameDay = (a: string | undefined, b: string | undefined) => {
+    if (!a || !b) return false;
+    const d1 = new Date(a);
+    const d2 = new Date(b);
+    return d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate();
+  };
+
+  const suggestReplyMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedRoom) throw new Error('No room selected');
+      const { data } = await api.post<{ success: boolean; reply?: string; message?: string }>('/ai/sales-reply', { roomId: selectedRoom });
+      if (!data.success || !data.reply) throw new Error(data.message || 'Could not get suggestion');
+      return data.reply;
+    },
+    onSuccess: (reply) => {
+      setMessage(reply);
+    },
+    onError: (err: any) => {
+      const msg = err.response?.data?.message || err.message || 'AI suggest failed';
+      alert(msg);
+    },
+  });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: async () => {
+      if (!rooms?.length) return;
+      await Promise.all(
+        (rooms as any[]).map((room: any) =>
+          api.post(`/chat/rooms/${room.id}/read-all`).catch(() => {})
+        )
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['chat', 'rooms'] });
+      queryClient.invalidateQueries({ queryKey: ['chat', 'unread-count'] });
+    },
+  });
+
+  const filteredRooms = (rooms ?? []).filter((room: any) => {
+    if (conversationFilter === 'all') return true;
+    const amSeller = room.ad?.userId === user?.id;
+    if (conversationFilter === 'selling') return amSeller;
+    if (conversationFilter === 'buying') return !amSeller;
+    return true;
   });
 
   // Fetch online users status
@@ -130,23 +204,35 @@ export default function ChatPage() {
     }
   }, [isAuthenticated, adIdFromQuery, userIdFromQuery, rooms, selectedRoom, roomIdFromQuery, createRoomMutation, router]);
 
-  const { data: messages } = useQuery({
+  const { data: messages, refetch: refetchMessages } = useQuery({
     queryKey: ['chat', 'messages', selectedRoom],
     queryFn: async () => {
       const response = await api.get(`/chat/rooms/${selectedRoom}/messages`);
-      // Invalidate unread count when messages are loaded (they're marked as read)
       queryClient.invalidateQueries({ queryKey: ['chat', 'unread-count'] });
-      return response.data.messages;
+      // Backend already returns oldest-first (desc then .reverse()); keep that order so latest is at bottom
+      const list = response.data.messages || [];
+      return [...list];
     },
     enabled: !!selectedRoom,
+    refetchOnWindowFocus: true,
+    refetchInterval: selectedRoom ? 5000 : false,
   });
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (!isAuthenticated) return;
+    const applySocket = () => {
       const sock = getSocket();
-      setSocket(sock);
+      setSocket((prev: any) => (prev !== sock ? sock : prev));
+      return sock;
+    };
+    applySocket();
+    const interval = setInterval(applySocket, 2000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
 
-      if (sock) {
+  useEffect(() => {
+    const sock = socket;
+    if (sock) {
         // Handle new messages
         sock.on('new_message', (newMessage: any) => {
           const isCurrentUser = newMessage.senderId === user?.id;
@@ -154,13 +240,29 @@ export default function ChatPage() {
           
           queryClient.setQueryData(['chat', 'messages', newMessage.roomId], (old: any) => {
             if (!old) return [newMessage];
-            // Check if message already exists (prevent duplicates)
-            if (old.some((msg: any) => msg.id === newMessage.id)) {
-              return old;
-            }
-            return [...old, newMessage];
+            if (old.some((msg: any) => msg.id === newMessage.id)) return old;
+            // Replace optimistic message (temp id) with real one to avoid duplicate
+            const withoutOpt = old.filter((msg: any) => !String(msg.id).startsWith('temp-'));
+            return [...withoutOpt, newMessage];
           });
-          queryClient.invalidateQueries({ queryKey: ['chat', 'rooms'] });
+          // Update room list only when message is from other user (skip for our own send to avoid flicker)
+          if (!isCurrentUser) {
+            queryClient.setQueryData(['chat', 'rooms'], (oldRooms: any[]) => {
+              if (!oldRooms) return oldRooms;
+              const updated = oldRooms.map((room: any) =>
+                room.id === newMessage.roomId
+                  ? {
+                      ...room,
+                      updatedAt: new Date().toISOString(),
+                      messages: [{ ...newMessage, sender: newMessage.sender || { id: newMessage.senderId, name: '' } }],
+                    }
+                  : room
+              );
+              return updated.sort((a: any, b: any) =>
+                new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()
+              );
+            });
+          }
           queryClient.invalidateQueries({ queryKey: ['chat', 'unread-count'] });
           
           // Play sound and show notification only if:
@@ -199,12 +301,8 @@ export default function ChatPage() {
             }
           }
           
-          // Scroll to bottom when new message arrives in current room
-          if (isCurrentRoom) {
-            setTimeout(() => {
-              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-            }, 100);
-          }
+          // Scroll behavior for new messages is handled centrally in the
+          // [messages, selectedRoom] effect to avoid double-scrolling/flicker.
         });
 
         // Handle typing indicators
@@ -224,9 +322,9 @@ export default function ChatPage() {
           }
         });
 
-        // Handle connection events
+        // Handle connection events – refetch messages so any received while disconnected appear
         sock.on('connect', () => {
-          console.log('✅ Socket connected');
+          if (selectedRoom) refetchMessages();
         });
 
         sock.on('disconnect', () => {
@@ -252,8 +350,8 @@ export default function ChatPage() {
 
         // Handle incoming WebRTC call
         sock.on('webrtc_incoming_call', (data: { roomId: string; callerId: string; callerName: string; isAudioOnly?: boolean }) => {
-          // Show incoming call regardless of selected room
-          const currentRoom = rooms?.find((room: any) => room.id === data.roomId);
+          const roomsData = queryClient.getQueryData<any[]>(['chat', 'rooms']);
+          const currentRoom = roomsData?.find((room: any) => room.id === data.roomId);
           const otherUser = currentRoom 
             ? (currentRoom.user1.id === user?.id ? currentRoom.user2 : currentRoom.user1)
             : null;
@@ -282,8 +380,7 @@ export default function ChatPage() {
           sock.off('webrtc_incoming_call');
         }
       };
-    }
-  }, [isAuthenticated, queryClient, selectedRoom, user?.id, rooms]);
+  }, [socket, queryClient, selectedRoom, user?.id, refetchMessages]);
 
   useEffect(() => {
     if (selectedRoom && socket) {
@@ -323,9 +420,30 @@ export default function ChatPage() {
     }
   }, [selectedRoom, socket, adIdFromQuery, hasSentInitialMessage, messages, queryClient]);
 
+  // Scroll messages container to bottom when room or messages change (WhatsApp-style: latest at bottom)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    let cancelled = false;
+    const scrollToBottom = () => {
+      if (!cancelled) el.scrollTop = el.scrollHeight;
+    };
+    const t = setTimeout(scrollToBottom, 100);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [messages, selectedRoom]);
+
+  // When user selects a chat, scroll the chat panel into view (mobile / small screens)
+  useEffect(() => {
+    if (selectedRoom && chatPanelRef.current) {
+      const t = setTimeout(() => {
+        chatPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      }, 100);
+      return () => clearTimeout(t);
+    }
+  }, [selectedRoom]);
 
   // Handle typing indicator
   const handleTyping = () => {
@@ -348,31 +466,64 @@ export default function ChatPage() {
     }, 2000);
   };
 
-  const sendMessage = (customMessage?: string) => {
+  const sendMessage = async (customMessage?: string) => {
     const messageToSend = customMessage || message.trim();
-    if (!messageToSend || !selectedRoom || !socket) return;
+    if (!messageToSend || !selectedRoom || !user) return;
 
     // Stop typing indicator
-    if (isTyping) {
-      setIsTyping(false);
-      socket.emit('stop_typing', { roomId: selectedRoom });
-    }
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
+    if (socket) {
+      if (isTyping) {
+        setIsTyping(false);
+        socket.emit('stop_typing', { roomId: selectedRoom });
+      }
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
     }
 
-    socket.emit('send_message', {
-      roomId: selectedRoom,
+    // Optimistic update: show message immediately to avoid flicker
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMessage = {
+      id: tempId,
       content: messageToSend,
       type: 'TEXT',
-    });
+      senderId: user.id,
+      receiverId: '',
+      roomId: selectedRoom,
+      createdAt: new Date().toISOString(),
+      sender: { id: user.id, name: user.name || '', avatar: user.avatar || null },
+    };
+    queryClient.setQueryData(['chat', 'messages', selectedRoom], (old: any) => (old ? [...old, optimisticMessage] : [optimisticMessage]));
+
+    // Always send via REST so chat works even when socket is disconnected
+    try {
+      const { data } = await api.post<{ success: boolean; message: any }>(`/chat/rooms/${selectedRoom}/messages`, {
+        content: messageToSend,
+        type: 'TEXT',
+      });
+      if (data.success && data.message) {
+        queryClient.setQueryData(['chat', 'messages', selectedRoom], (old: any) => {
+          if (!old) return [data.message];
+          const withoutTemp = old.filter((msg: any) => !String(msg.id).startsWith('temp-'));
+          const withoutDup = withoutTemp.filter((m: any) => String(m.id) !== String(data.message.id));
+          return [...withoutDup, data.message];
+        });
+        queryClient.invalidateQueries({ queryKey: ['chat', 'rooms'] });
+        queryClient.invalidateQueries({ queryKey: ['chat', 'unread-count'] });
+      }
+    } catch (err: any) {
+      const msg = err.response?.data?.message || err.message || 'Failed to send message';
+      queryClient.setQueryData(['chat', 'messages', selectedRoom], (old: any) =>
+        old ? old.filter((m: any) => m.id !== tempId) : old
+      );
+      alert(msg);
+    }
 
     setMessage('');
-    
-    // Scroll to bottom after sending
     setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, 100);
+      const el = messagesContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 0);
   };
 
   if (!isAuthenticated) {
@@ -383,10 +534,11 @@ export default function ChatPage() {
     );
   }
 
-  const currentRoom = rooms?.find((room: any) => room.id === selectedRoom);
-  const otherUser = currentRoom 
+  const currentRoom = rooms?.find((room: any) => String(room?.id) === String(selectedRoom));
+  const otherUser = currentRoom?.user1 && currentRoom?.user2
     ? (currentRoom.user1.id === user?.id ? currentRoom.user2 : currentRoom.user1)
     : null;
+  const isSeller = Boolean(currentRoom?.ad && (currentRoom.ad as { userId?: string })?.userId === user?.id);
 
   return (
     <>
@@ -401,317 +553,364 @@ export default function ChatPage() {
           onEndCall={() => setActiveCall(null)}
         />
       )}
-      <div className="container mx-auto px-4 py-8">
-        <h1 className="text-3xl font-bold mb-8">Messages</h1>
-
-      <div className="flex h-[600px] bg-white rounded-lg shadow">
-        <div className="w-1/3 border-r overflow-y-auto">
-          {rooms?.map((room: any) => {
-            const otherUser = room.user1.id === user?.id ? room.user2 : room.user1;
-            const lastMessage = room.messages[0];
-            const unreadCount = room._count?.messages || 0;
-
-            return (
-              <div
-                key={room.id}
-                onClick={() => setSelectedRoom(room.id)}
-                className={`p-4 border-b cursor-pointer hover:bg-gray-50 ${
-                  selectedRoom === room.id ? 'bg-primary-50' : ''
-                }`}
+      <div className="h-[calc(100vh-var(--navbar-height))] bg-gray-50 flex items-center">
+        <div className={`${CONTENT_CONTAINER_CLASS} w-full`}>
+      <div className="flex min-w-0 h-[calc(100vh-var(--navbar-height)-2rem)] min-h-[420px] overflow-hidden bg-white rounded-xl shadow border border-gray-200">
+        {/* Sidebar: fixed width on desktop, does not shrink */}
+        <div className="w-full sm:w-[380px] flex-shrink-0 flex flex-col min-h-0 border-r border-gray-200 bg-gray-50/30">
+          <div className="p-4 border-b border-gray-200 bg-white">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-bold text-gray-900">Chats</h2>
+              <button
+                type="button"
+                onClick={() => markAllReadMutation.mutate()}
+                disabled={markAllReadMutation.isPending}
+                className="text-sm text-blue-600 hover:text-blue-700 font-medium"
               >
-                <div className="flex items-center gap-3">
-                  {otherUser.avatar ? (
-                    <div className="relative">
-                      <ImageWithFallback
-                        src={otherUser.avatar}
-                        alt={otherUser.name}
-                        width={48}
-                        height={48}
-                        className="rounded-full"
-                      />
-                      {onlineUsers.has(otherUser.id) && (
-                        <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></span>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="w-12 h-12 bg-primary-100 rounded-full flex items-center justify-center relative">
-                      {otherUser.name[0]}
-                      {onlineUsers.has(otherUser.id) && (
-                        <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></span>
-                      )}
-                    </div>
+                Archive All
+              </button>
+            </div>
+            <div className="flex gap-1 p-1 bg-gray-100 rounded-lg">
+              {[
+                { id: 'all', label: 'All Messages' },
+                { id: 'buying', label: 'Buying' },
+                { id: 'selling', label: 'Selling' },
+              ].map(({ id, label }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setConversationFilter(id as 'all' | 'buying' | 'selling')}
+                  className={`flex-1 py-2 px-2 rounded-md text-xs font-medium transition-colors ${
+                    conversationFilter === id ? 'bg-blue-600 text-white' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
+            {roomsError && (
+              <div className="p-4 text-center">
+                <p className="text-sm text-red-600 mb-2">Could not load conversations. Check your connection.</p>
+                <button type="button" onClick={() => refetchRooms()} className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                  Retry
+                </button>
+              </div>
+            )}
+            {!roomsError && filteredRooms.map((room: any) => {
+              if (!room?.id) return null;
+              const other = room.user1?.id === user?.id ? room.user2 : room.user1;
+              if (!other) return null;
+              const lastMessage = room.messages?.[0];
+              const unreadCount = room._count?.messages ?? 0;
+              const isSelected = String(selectedRoom) === String(room.id);
+              const preview = lastMessage?.content ?? (room.ad ? room.ad.title : '');
+              const lastTime = lastMessage?.createdAt ?? room.updatedAt;
+
+              return (
+                <div
+                  key={room.id}
+                  onClick={() => setSelectedRoom(room.id)}
+                  className={`relative flex items-center gap-3 px-4 py-3 cursor-pointer border-b border-gray-100 transition-colors ${
+                    isSelected ? 'bg-blue-50' : 'hover:bg-gray-50 bg-white'
+                  }`}
+                >
+                  {isSelected && (
+                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-600 rounded-r" />
                   )}
-                  <div className="flex-1 min-w-0">
-                    <p 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        router.push(`/user/${otherUser.id}`);
-                      }}
-                      className="font-semibold truncate hover:text-primary-600 transition-colors cursor-pointer"
-                    >
-                      {otherUser.name}
-                    </p>
-                    {room.ad && (
-                      <p className="text-xs text-gray-400 truncate">{room.ad.title}</p>
+                  <div className="relative flex-shrink-0">
+                    {other.avatar ? (
+                      <ImageWithFallback src={other.avatar} alt={other.name} width={48} height={48} className="rounded-full object-cover" />
+                    ) : (
+                      <div className="w-12 h-12 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-white font-semibold text-sm">
+                        {(other?.name?.[0] ?? '?').toUpperCase()}
+                      </div>
                     )}
-                    {lastMessage && (
-                      <p className="text-sm text-gray-500 truncate mt-1">{lastMessage.content}</p>
+                    {onlineUsers.has(other.id) && (
+                      <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full" />
                     )}
                   </div>
-                  {unreadCount > 0 && (
-                    <span className="bg-primary-600 text-white text-xs px-2 py-1 rounded-full">
-                      {unreadCount}
-                    </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-semibold text-gray-900 truncate">{other?.name ?? 'User'}</p>
+                      {isSelected && onlineUsers.has(other.id) && (
+                        <span className="text-[10px] font-semibold text-green-600 bg-green-50 px-1.5 py-0.5 rounded">ONLINE NOW</span>
+                      )}
+                    </div>
+                    <p className="text-sm text-gray-500 truncate mt-0.5">{preview || 'No messages yet'}</p>
+                    {room.ad && <p className="text-xs text-gray-400 truncate mt-0.5">{room.ad.title}</p>}
+                  </div>
+                  <div className="flex flex-col items-end flex-shrink-0">
+                    <span className="text-xs text-gray-400 whitespace-nowrap">{timeAgo(lastTime)}</span>
+                    {unreadCount > 0 && <span className="mt-1 w-2 h-2 bg-blue-500 rounded-full" />}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Message panel: fills remaining space, min-w-0 prevents flex overflow */}
+        <div ref={chatPanelRef} className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-white">
+          {selectedRoom && currentRoom ? (
+            <>
+              {/* Chat header: name, ONLINE NOW, flag, Mark as Sold */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white">
+                <div className="flex items-center gap-3">
+                  {otherUser && (
+                    <>
+                      <div className="relative flex-shrink-0">
+                        {otherUser.avatar ? (
+                          <ImageWithFallback src={otherUser.avatar} alt={otherUser.name} width={44} height={44} className="rounded-full object-cover" />
+                        ) : (
+                          <div className="w-11 h-11 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-white font-semibold text-sm">
+                            {(otherUser?.name?.[0] ?? '?').toUpperCase()}
+                          </div>
+                        )}
+                        {onlineUsers.has(otherUser.id) && (
+                          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-white rounded-full" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">{otherUser.name}</p>
+                        <p className="text-xs text-green-600 font-medium">
+                          {onlineUsers.has(otherUser.id) ? 'ONLINE NOW' : 'Offline'}
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button type="button" className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Report">
+                    <FiFlag className="w-5 h-5" />
+                  </button>
+                  {currentRoom?.ad?.userId === user?.id && (
+                    <Link
+                      href={currentRoom?.ad?.id ? `/edit-ad/${currentRoom.ad.id}` : '#'}
+                      className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                    >
+                      Mark as Sold
+                    </Link>
+                  )}
+                  {socket && otherUser && (
+                    <div className="flex gap-1">
+                      <button onClick={() => { if (selectedRoom && otherUser) { socket.emit('webrtc_initiate_call', { roomId: selectedRoom, receiverId: otherUser.id, isAudioOnly: false }); setActiveCall({ roomId: selectedRoom, callerId: user?.id || '', receiverId: otherUser.id, isIncoming: false, callerName: user?.name || 'You', isAudioOnly: false }); } }} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Video call" disabled={!onlineUsers.has(otherUser.id)}>
+                        <FiVideo className="w-5 h-5" />
+                      </button>
+                      <button onClick={() => { if (selectedRoom && otherUser) { socket.emit('webrtc_initiate_call', { roomId: selectedRoom, receiverId: otherUser.id, isAudioOnly: true }); setActiveCall({ roomId: selectedRoom, callerId: user?.id || '', receiverId: otherUser.id, isIncoming: false, callerName: user?.name || 'You', isAudioOnly: true }); } }} className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg" title="Audio call" disabled={!onlineUsers.has(otherUser.id)}>
+                        <FiPhone className="w-5 h-5" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
-            );
-          })}
-        </div>
 
-        <div className="flex-1 flex flex-col">
-          {selectedRoom && currentRoom ? (
-            <>
-              {/* Chat Header with Product Info */}
-              <div className="border-b p-4 bg-gray-50">
-                <div className="flex items-center gap-4">
-                  <Link 
-                    href={`/ads/${currentRoom.ad.id}`}
-                    className="flex items-center gap-3 flex-1 hover:opacity-80 transition-opacity"
-                  >
-                    {currentRoom.ad.images && currentRoom.ad.images.length > 0 && (
-                      <ImageWithFallback
-                        src={currentRoom.ad.images[0]}
-                        alt={currentRoom.ad.title}
-                        width={60}
-                        height={60}
-                        className="rounded-lg object-cover"
-                      />
-                    )}
+              {/* Listed item card */}
+              {currentRoom?.ad && (
+                <div className="px-4 py-3 border-b border-gray-200 bg-gray-50/50">
+                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Listed Item</p>
+                  <div className="flex gap-3 items-center">
+                    <div className="w-20 h-20 rounded-lg overflow-hidden bg-gray-200 flex-shrink-0">
+                      {currentRoom.ad.images?.[0] ? (
+                        <ImageWithFallback src={currentRoom.ad.images[0]} alt={currentRoom.ad.title} width={80} height={80} className="w-full h-full object-cover opacity-90" />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-gray-300 to-gray-400 opacity-80" />
+                      )}
+                    </div>
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm truncate">{currentRoom.ad.title}</p>
-                      <p className="text-primary-600 font-bold text-sm">
-                        ₹{currentRoom.ad.price.toLocaleString('en-IN')}
+                      <p className="font-semibold text-gray-900 truncate">{currentRoom.ad.title}</p>
+                      <p className="text-blue-600 font-bold mt-0.5">
+                        {currentRoom.ad.price != null ? `₹${Number(currentRoom.ad.price).toLocaleString('en-IN')}` : ''}
                       </p>
                     </div>
-                  </Link>
-                  <div className="flex items-center gap-2">
-                    {otherUser && (
-                      <>
-                        {otherUser.avatar ? (
-                          <div className="relative">
-                            <ImageWithFallback
-                              src={otherUser.avatar}
-                              alt={otherUser.name}
-                              width={32}
-                              height={32}
-                              className="rounded-full"
-                            />
-                            {onlineUsers.has(otherUser.id) && (
-                              <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></span>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <Link href={currentRoom.ad.id ? getAdUrl(currentRoom.ad) : '#'} className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
+                        View Listing
+                      </Link>
+                      <button type="button" className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
+                        Make Offer
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-hide px-4 py-4">
+                {messages?.length ? (
+                  <>
+                    {(() => {
+                      const uniqueMessages = (messages as any[])
+                        .filter((msg, i, arr) => arr.findIndex((m) => String(m.id) === String(msg.id)) === i)
+                        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+                      return uniqueMessages.map((msg: any, idx: number, arr: any[]) => {
+                        const prevMsg = idx > 0 ? arr[idx - 1] : null;
+                        const showDateSeparator = !prevMsg || !isSameDay(prevMsg.createdAt, msg.createdAt);
+                        return (
+                          <div key={String(msg.id)}>
+                            {showDateSeparator && (
+                              <div className="flex justify-center my-3">
+                                <span className="text-xs font-medium text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+                                  {formatDateSeparator(msg.createdAt)}
+                                </span>
+                              </div>
                             )}
-                          </div>
-                        ) : (
-                          <div className="w-8 h-8 bg-primary-100 rounded-full flex items-center justify-center relative">
-                            <span className="text-xs">{otherUser.name[0]}</span>
-                            {onlineUsers.has(otherUser.id) && (
-                              <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></span>
+                      <div
+                        className={`flex gap-2 mb-4 ${msg.senderId === user?.id ? 'justify-end' : 'justify-start'}`}
+                      >
+                        {msg.senderId !== user?.id && (
+                          <div className="flex-shrink-0">
+                            {msg.isAI || (msg as any).senderType === 'bot' ? (
+                              <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600" title="AI assistant">
+                                <FiMessageCircle className="w-4 h-4" aria-hidden />
+                              </div>
+                            ) : otherUser?.avatar ? (
+                              <ImageWithFallback
+                                src={otherUser.avatar}
+                                alt={`${otherUser?.name || 'User'} avatar`}
+                                width={32}
+                                height={32}
+                                className="rounded-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-white text-xs font-semibold">
+                                {(otherUser?.name?.[0] ?? '?').toUpperCase()}
+                              </div>
                             )}
                           </div>
                         )}
-                        <div className="flex flex-col">
-                          <div className="flex items-center gap-2">
-                            <span 
-                              onClick={() => router.push(`/user/${otherUser.id}`)}
-                              className="text-sm font-medium hover:text-primary-600 transition-colors cursor-pointer"
-                            >
-                              {otherUser.name}
+                        <div
+                          className={`max-w-[75%] px-4 py-2.5 rounded-2xl ${
+                            msg.senderId === user?.id
+                              ? 'bg-blue-600 text-white rounded-br-md'
+                              : 'bg-gray-200 text-gray-800 rounded-bl-md'
+                          }`}
+                        >
+                          {msg.type === 'IMAGE' && msg.imageUrl && (
+                            <div className="mb-2">
+                              <img
+                                src={msg.imageUrl}
+                                alt="Shared"
+                                className="max-w-full h-auto rounded-lg"
+                              />
+                            </div>
+                          )}
+                          <p className="whitespace-pre-wrap break-words text-sm">{msg.content}</p>
+                          <div className={`flex items-center gap-1 mt-1 ${msg.senderId === user?.id ? 'justify-end' : 'justify-start'}`}>
+                            <span className="text-xs opacity-75">
+                              {formatMessageTime(msg.createdAt)}
                             </span>
-                            {onlineUsers.has(otherUser.id) && (
-                              <span className="w-2 h-2 bg-green-500 rounded-full" title="Online"></span>
+                            {msg.senderId === user?.id && (
+                              <span className="opacity-75" title="Read">
+                                {otherUser?.avatar && !(msg.isAI || (msg as any).senderType === 'bot') ? (
+                                  <ImageWithFallback
+                                    src={otherUser.avatar}
+                                    alt={`${otherUser?.name || 'User'} avatar`}
+                                    width={14}
+                                    height={14}
+                                    className="rounded-full inline-block"
+                                  />
+                                ) : (
+                                  <span className="w-3.5 h-3.5 rounded-full bg-gray-400 inline-block" />
+                            )}
+                          </span>
                             )}
                           </div>
-                          {otherUser.phone && (
-                            <a 
-                              href={`tel:${otherUser.phone}`}
-                              className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <FiPhone className="w-3 h-3" />
-                              {otherUser.phone}
-                            </a>
-                          )}
-                        </div>
-                        {/* Call Buttons */}
-                        <div className="flex items-center gap-2 ml-2">
-                          <button
-                            onClick={() => {
-                              if (socket && selectedRoom && otherUser) {
-                                socket.emit('webrtc_initiate_call', {
-                                  roomId: selectedRoom,
-                                  receiverId: otherUser.id,
-                                  isAudioOnly: false,
-                                });
-                                setActiveCall({
-                                  roomId: selectedRoom,
-                                  callerId: user?.id || '',
-                                  receiverId: otherUser.id,
-                                  isIncoming: false,
-                                  callerName: user?.name || 'You',
-                                  isAudioOnly: false,
-                                });
-                              }
-                            }}
-                            className="bg-primary-600 hover:bg-primary-700 text-white p-2 rounded-lg transition-colors"
-                            title="Start video call"
-                            disabled={!onlineUsers.has(otherUser.id)}
-                          >
-                            <FiVideo className="w-5 h-5" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (socket && selectedRoom && otherUser) {
-                                socket.emit('webrtc_initiate_call', {
-                                  roomId: selectedRoom,
-                                  receiverId: otherUser.id,
-                                  isAudioOnly: true,
-                                });
-                                setActiveCall({
-                                  roomId: selectedRoom,
-                                  callerId: user?.id || '',
-                                  receiverId: otherUser.id,
-                                  isIncoming: false,
-                                  callerName: user?.name || 'You',
-                                  isAudioOnly: true,
-                                });
-                              }
-                            }}
-                            className="bg-green-600 hover:bg-green-700 text-white p-2 rounded-lg transition-colors"
-                            title="Start audio call"
-                            disabled={!onlineUsers.has(otherUser.id)}
-                          >
-                            <FiPhone className="w-5 h-5" />
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {messages?.map((msg: any) => (
-                  <div
-                    key={msg.id}
-                    className={`flex ${
-                      msg.senderId === user?.id ? 'justify-end' : 'justify-start'
-                    }`}
-                  >
-                    <div
-                      className={`max-w-xs px-4 py-2 rounded-lg ${
-                        msg.senderId === user?.id
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-gray-200 text-gray-800'
-                      }`}
-                    >
-                      {msg.type === 'IMAGE' && msg.imageUrl && (
-                        <div className="mb-2">
-                          <img 
-                            src={msg.imageUrl} 
-                            alt="Shared image" 
-                            className="max-w-full h-auto rounded"
-                          />
-                        </div>
-                      )}
-                      <p className="whitespace-pre-wrap break-words">{msg.content}</p>
-                      <p className={`text-xs mt-1 ${msg.senderId === user?.id ? 'opacity-70' : 'opacity-60'}`}>
-                        {format(new Date(msg.createdAt), 'HH:mm')}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-                {/* Typing indicator */}
-                {typingUsers.size > 0 && (
-                  <div className="flex justify-start">
-                    <div className="bg-gray-200 text-gray-800 px-4 py-2 rounded-lg">
-                      <div className="flex items-center gap-1">
-                        <span className="text-sm">Typing</span>
-                        <div className="flex gap-1">
-                          <div className="w-1 h-1 bg-gray-600 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                          <div className="w-1 h-1 bg-gray-600 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                          <div className="w-1 h-1 bg-gray-600 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
                         </div>
                       </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </>
+                ) : null}
+                {/* Typing indicator - show when other user is typing */}
+                {typingUsers.size > 0 && (
+                  <div className="flex justify-start gap-2 mb-4">
+                    <div className="w-8 h-8 rounded-full bg-gray-200 flex-shrink-0 overflow-hidden">
+                      {otherUser?.avatar ? (
+                        <ImageWithFallback src={otherUser.avatar} alt={`${otherUser?.name || 'User'} avatar`} width={32} height={32} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-white text-xs font-semibold">
+                          {(otherUser?.name?.[0] ?? '?').toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+                    <div className="bg-gray-200 text-gray-800 px-4 py-2.5 rounded-2xl rounded-bl-md">
+                      <span className="text-sm text-gray-600">
+                        {otherUser?.name ? `${otherUser.name} is typing` : 'Typing'}
+                      </span>
+                      <span className="inline-flex gap-1 ml-1.5">
+                        <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </span>
                     </div>
                   </div>
                 )}
                 <div ref={messagesEndRef} />
               </div>
-              
-              {/* Quick Action Buttons - Show when there are few messages, placed above input for easy access */}
-              {messages && messages.length <= 3 && currentRoom?.ad && (
-                <div className="border-t border-b bg-gray-50 px-4 py-3">
-                  <p className="text-xs text-gray-600 mb-2 font-semibold">Quick questions:</p>
+
+              {/* Quick questions */}
+              {currentRoom?.ad && (
+                <div className="px-4 py-2 border-t border-gray-100">
                   <div className="flex flex-wrap gap-2">
-                    {[
-                      'Is this product available?',
-                      "What's the best price?",
-                      'Can you share more photos?',
-                      'Where can I see it?',
-                      "What's the condition?",
-                      'Is it negotiable?',
-                      'When can I pick it up?',
-                      'Do you have the original box/receipt?',
-                      'Can you share your contact number?'
-                    ].map((question) => (
-                      <button
-                        key={question}
-                        onClick={() => sendMessage(question)}
-                        className="px-3 py-1.5 text-xs bg-white hover:bg-primary-50 hover:text-primary-700 text-gray-700 rounded-full transition-all border border-gray-300 hover:border-primary-300 shadow-sm"
-                      >
-                        {question}
+                    {['Is this available?', "What's the best price?", 'Where can I see it?'].map((q) => (
+                      <button key={q} type="button" onClick={() => sendMessage(q)} className="px-3 py-1.5 text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-full">
+                        {q}
                       </button>
                     ))}
                   </div>
                 </div>
               )}
-              
-              <div className="border-t p-4">
-                <div className="flex gap-2">
-                  {/* One-click Share Contact Number Button */}
-                  {user?.phone && (
-                    <button
-                      onClick={() => sendMessage(`My contact number: ${user.phone}`)}
-                      className="bg-primary-100 hover:bg-primary-200 text-primary-700 px-3 py-2 rounded-lg transition-all border border-primary-300 flex items-center gap-1.5 text-sm font-medium flex-shrink-0"
-                      title="Share my contact number"
-                    >
-                      <FiPhone className="w-4 h-4" />
-                      <span className="hidden sm:inline">Share Number</span>
-                    </button>
-                  )}
+
+              {/* Message input: plus, image, input, emoji, circular send */}
+              <div className="p-4 bg-white border-t border-gray-200">
+                <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+                  <button type="button" className="p-2 text-gray-500 hover:text-gray-700 rounded-lg" title="Attach">
+                    <FiPlus className="w-5 h-5" />
+                  </button>
+                  <button type="button" className="p-2 text-gray-500 hover:text-gray-700 rounded-lg" title="Image">
+                    <FiImage className="w-5 h-5" />
+                  </button>
                   <input
                     type="text"
                     value={message}
-                    onChange={(e) => {
-                      setMessage(e.target.value);
-                      handleTyping();
-                    }}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        sendMessage();
-                      }
-                    }}
-                    placeholder="Type a message..."
-                    className="flex-1 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    onChange={(e) => { setMessage(e.target.value); handleTyping(); }}
+                    onInput={() => handleTyping()}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                    placeholder="Write your message here..."
+                    className="flex-1 min-w-0 bg-transparent border-0 outline-none text-gray-900 placeholder-gray-500 text-sm py-1"
                   />
+                  <button type="button" className="p-2 text-gray-500 hover:text-gray-700 rounded-lg" title="Emoji">
+                    <FiSmile className="w-5 h-5" />
+                  </button>
                   <button
+                    type="button"
                     onClick={() => sendMessage()}
-                    className="bg-primary-600 text-white px-6 py-2 rounded-lg hover:bg-primary-700 flex items-center gap-2"
+                    className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700"
+                    title="Send"
                   >
-                    <FiSend /> Send
+                    <FiSend className="w-5 h-5" />
                   </button>
                 </div>
+                {isSeller && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => suggestReplyMutation.mutate()}
+                      disabled={suggestReplyMutation.isPending || !selectedRoom}
+                      className="text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                    >
+                      {suggestReplyMutation.isPending ? '…' : 'Suggest reply (AI)'}
+                    </button>
+                  </div>
+                )}
+                <p className="flex items-center gap-2 mt-2 text-[10px] text-gray-500 uppercase tracking-wide">
+                  <FiShield className="w-3.5 h-3.5 flex-shrink-0" />
+                  Secure transaction protocol active
+                </p>
               </div>
             </>
           ) : createRoomMutation.isPending ? (
@@ -733,7 +932,8 @@ export default function ChatPage() {
           )}
         </div>
       </div>
-    </div>
+        </div>
+      </div>
     </>
   );
 }

@@ -1,5 +1,5 @@
 import api from '@/lib/api';
-import { Ad, AdFilters, AdCreateData } from '@/domain/entities/Ad';
+import { Ad, AdFilters, AdCreateData } from '@/src/domain/entities/Ad';
 
 /**
  * Ad Service
@@ -51,11 +51,11 @@ export class AdService {
 
     // Append images
     if (adData.images && adData.images.length > 0) {
-      adData.images.forEach((image, index) => {
+      adData.images.forEach((image) => {
         // If image is a File object, append it
         // If it's a URL string, it should already be uploaded
-        if (image instanceof File) {
-          formData.append('images', image);
+        if ((image as unknown) instanceof File) {
+          formData.append('images', image as unknown as File);
         }
       });
     }
@@ -86,8 +86,8 @@ export class AdService {
 
     if (adData.images) {
       adData.images.forEach((image) => {
-        if (image instanceof File) {
-          formData.append('images', image);
+        if ((image as unknown) instanceof File) {
+          formData.append('images', image as unknown as File);
         }
       });
     }

@@ -1,0 +1,50 @@
+📁 ADD YOUR LOGIN BACKGROUND IMAGES HERE
+==========================================
+
+HOW TO ADD IMAGES:
+------------------
+
+1. Copy or drag your image files into this folder:
+   E:\marketplace\sellit\frontend\public\images\
+
+2. Supported formats:
+   - PNG (.png)
+   - JPEG (.jpg, .jpeg)
+   - WebP (.webp)
+
+3. Recommended image specifications:
+   - Size: 1920x1080 or 1600x900 pixels
+   - File size: Under 200KB for fast loading
+   - Theme: E-commerce, shopping, marketplace, online store
+   - Style: Vector illustrations, modern graphics, or photos
+
+4. After adding images, update the code:
+   Open: frontend/components/LoginModal.tsx
+   Find: const BACKGROUND_IMAGES = [...]
+   Add your image path: '/images/your-image-name.png'
+
+EXAMPLE:
+--------
+If you add a file named "shopping-cart.png" to this folder,
+add this line to BACKGROUND_IMAGES array:
+'/images/shopping-cart.png',
+
+FREE IMAGE SOURCES:
+-------------------
+- Unsplash.com (free high-quality photos)
+- Pexels.com (free stock photos)
+- Pixabay.com (free images and vectors)
+- Freepik.com (free vectors - attribution required)
+- Iconscout.com (free illustrations)
+
+SEARCH TERMS:
+-------------
+- "e-commerce illustration"
+- "online shopping vector"
+- "marketplace graphic"
+- "digital shopping"
+- "mobile commerce"
+- "online store illustration"
+
+Current folder location:
+E:\marketplace\sellit\frontend\public\images\

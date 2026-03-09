@@ -5,24 +5,24 @@ import api from '@/lib/api';
 import Link from 'next/link';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { FiGrid, FiChevronDown } from 'react-icons/fi';
-import { useState, useRef, useEffect, memo } from 'react';
-import { dummyCategories } from '@/lib/dummyData';
-
-interface Category {
-  id: string;
-  name: string;
-  slug: string;
-  icon?: string;
-  image?: string;
-  _count?: { ads: number };
-  subcategories?: Subcategory[];
-}
+import { useState, useRef, useEffect, memo, useMemo } from 'react';
+import { useCategories, type Category } from '@/hooks/useCategories';
 
 interface Subcategory {
   id: string;
   name: string;
   slug: string;
   _count?: { ads: number };
+}
+
+// Shuffle function for randomizing dropdown categories
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
 }
 
 function CategoryNav() {
@@ -34,68 +34,80 @@ function CategoryNav() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [activeCategorySlug, setActiveCategorySlug] = useState<string>('');
 
+  const { categories: allCategories, isLoading } = useCategories();
+
   // Get current category from URL
   const currentCategory = pathname.startsWith('/category/') 
     ? pathname.split('/')[2] 
     : searchParams.get('category');
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      try {
-        const response = await api.get('/categories');
-        return response.data.categories;
-      } catch (error) {
-        return null;
-      }
-    },
-    staleTime: 10 * 60 * 1000,
-    gcTime: 30 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
+  // DESKTOP: Get top 4 categories for navbar, rest go to dropdown (shuffled)
+  const { visibleCategories, dropdownCategories } = useMemo(() => {
+    if (!allCategories || allCategories.length === 0) {
+      return { visibleCategories: [], dropdownCategories: [] };
+    }
 
-  // Get all categories for mega menu
-  const allCategories = (data as Category[]) || dummyCategories;
-
-  // Get top 12 most popular categories based on ad count for quick links
-  const topCategories = [...allCategories]
-    .sort((a, b) => {
+    // Sort by ad count and take top 4 for desktop
+    const sortedByAdCount = [...allCategories].sort((a, b) => {
       const countA = a._count?.ads || 0;
       const countB = b._count?.ads || 0;
-      return countB - countA; // Sort descending by ad count
-    })
-    .slice(0, 12);
+      return countB - countA;
+    });
+
+    const visible = sortedByAdCount.slice(0, 4);
+    const remaining = sortedByAdCount.slice(4);
+    
+    // Shuffle remaining categories for dropdown (randomize on each load)
+    const shuffled = shuffleArray(remaining);
+
+    return {
+      visibleCategories: visible,
+      dropdownCategories: shuffled,
+    };
+  }, [allCategories]);
+
+  // MOBILE: Fixed categories (Cars, Bikes, Motorcycles) + remaining scrollable
+  const { mobileFixedCategories, mobileScrollableCategories } = useMemo(() => {
+    if (!allCategories || allCategories.length === 0) {
+      return { mobileFixedCategories: [], mobileScrollableCategories: [] };
+    }
+
+    // Find fixed categories by slug
+    const fixedSlugs = ['cars', 'bikes', 'motorcycles'];
+    const fixed: Category[] = [];
+    const remaining: Category[] = [];
+
+    // First, extract fixed categories in order
+    fixedSlugs.forEach(slug => {
+      const category = allCategories.find(cat => cat.slug === slug);
+      if (category) {
+        fixed.push(category);
+      }
+    });
+
+    // Then get remaining categories (excluding fixed ones)
+    allCategories.forEach(cat => {
+      if (!fixedSlugs.includes(cat.slug)) {
+        remaining.push(cat);
+      }
+    });
+
+    return {
+      mobileFixedCategories: fixed,
+      mobileScrollableCategories: remaining,
+    };
+  }, [allCategories]);
 
   // Track active category based on URL only (no default selection)
   useEffect(() => {
     if (currentCategory) {
       setActiveCategorySlug(currentCategory);
     } else {
-      // Clear active category if no category in URL (no default)
       setActiveCategorySlug('');
     }
   }, [currentCategory]);
 
-  // Fetch subcategories / popular searches for the active category
-  const { data: subcategoriesData, isLoading: isSubLoading } = useQuery({
-    queryKey: ['subcategories', activeCategorySlug],
-    queryFn: async () => {
-      if (!activeCategorySlug) return [];
-      const response = await api.get(`/categories/${activeCategorySlug}/subcategories`);
-      return response.data?.subcategories || [];
-    },
-    enabled: Boolean(activeCategorySlug),
-    staleTime: 10 * 60 * 1000,
-    gcTime: 30 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
-
-  const fallbackSubcategories =
-    allCategories.find((cat) => cat.slug === activeCategorySlug)?.subcategories || [];
-
-  const subcategories = (subcategoriesData as Subcategory[] | undefined) ?? fallbackSubcategories;
-
-  // Auto-scroll to active category
+  // Auto-scroll to active category on mobile
   useEffect(() => {
     const targetSlug = activeCategorySlug || currentCategory;
     if (targetSlug && scrollContainerRef.current) {
@@ -106,7 +118,7 @@ function CategoryNav() {
     }
   }, [activeCategorySlug, currentCategory]);
 
-  // Close mega menu when clicking outside
+  // Close dropdown when clicking outside
   useEffect(() => {
     if (!showMegaMenu) return;
 
@@ -117,7 +129,6 @@ function CategoryNav() {
       }
     };
 
-    // Use setTimeout to avoid immediate closure on button click
     const timeoutId = setTimeout(() => {
       document.addEventListener('click', handleClickOutside);
     }, 0);
@@ -128,10 +139,9 @@ function CategoryNav() {
     };
   }, [showMegaMenu]);
 
-  // Handle category navigation - filter on home page
+  // Handle category navigation
   const handleCategoryClick = (categorySlug: string) => {
     setActiveCategorySlug(categorySlug);
-    // Navigate to home page with category filter (stays on home)
     router.push(`/?category=${categorySlug}`, { scroll: false });
     setShowMegaMenu(false);
   };
@@ -139,13 +149,14 @@ function CategoryNav() {
   if (isLoading) {
     return (
       <div 
-        className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-800 sticky top-20 z-40 shadow-sm"
+        className="bg-white border-b border-gray-200 sticky z-40"
+        style={{ top: '64px' }}
       >
         <div className="w-full px-4">
-          <div className="flex items-center h-14">
-            <div className="flex gap-4 animate-pulse">
-              {[...Array(8)].map((_, i) => (
-                <div key={i} className="h-8 w-24 bg-gray-200 rounded"></div>
+          <div className="flex items-center h-12">
+            <div className="flex gap-2 animate-pulse">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="h-8 w-20 bg-gray-200 rounded-lg"></div>
               ))}
             </div>
           </div>
@@ -153,6 +164,41 @@ function CategoryNav() {
       </div>
     );
   }
+
+  // Render category button
+  const renderCategoryButton = (category: Category, isMobile = false) => {
+    const isActive = activeCategorySlug === category.slug;
+    
+    return (
+      <Link
+        key={category.id}
+        href={`/?category=${category.slug}`}
+        data-slug={category.slug}
+        onClick={(e) => {
+          if (e.ctrlKey || e.metaKey || e.button === 1) return;
+          e.preventDefault();
+          handleCategoryClick(category.slug);
+        }}
+        onAuxClick={(e) => {
+          if (e.button === 1) {
+            window.open(`/?category=${category.slug}`, '_blank');
+          }
+        }}
+        className={`
+          flex-shrink-0 px-3 py-2 rounded-lg text-sm font-medium
+          transition-all duration-200 whitespace-nowrap
+          hover:shadow-sm
+          ${isActive 
+            ? 'bg-blue-600 text-white shadow-md' 
+            : 'bg-gray-100 text-gray-700 hover:bg-gray-200 hover:text-gray-900'
+          }
+        `}
+      >
+        {category.icon && <span className="mr-1.5">{category.icon}</span>}
+        {category.name}
+      </Link>
+    );
+  };
 
   return (
     <>
@@ -166,250 +212,98 @@ function CategoryNav() {
         }
       `}</style>
       
-      <div 
-        className="bg-gray-100 border-b border-gray-200 sticky z-40 -mt-px"
+      <nav 
+        className="bg-white border-b border-gray-200 sticky z-40"
         style={{ top: '64px' }}
+        aria-label="Categories navigation"
       >
-        <div className="w-full px-4">
-          <div className="flex items-center gap-2 py-2">
-            {/* Quick Category Links - Top 12 Most Popular with Active State - Left aligned */}
-            <div 
-              ref={scrollContainerRef}
-              className="flex items-center gap-1 overflow-x-auto hide-scrollbar flex-1 scroll-smooth"
-              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-            >
-              {topCategories.map((category) => {
-              const isActive = activeCategorySlug === category.slug;
-              
-              return (
-                <Link
-                  key={category.id}
-                  href={`/?category=${category.slug}`}
-                  data-slug={category.slug}
-                  onClick={(e) => {
-                    // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
-                    if (e.ctrlKey || e.metaKey || e.button === 1) {
-                      return; // Let browser handle it
-                    }
-                    e.preventDefault();
-                    // For regular clicks, update active state and filter on home
-                    handleCategoryClick(category.slug);
-                  }}
-                  onAuxClick={(e) => {
-                    // Handle middle-click (mouse wheel click)
-                    if (e.button === 1) {
-                      window.open(`/?category=${category.slug}`, '_blank');
-                    }
-                  }}
-                  className={`
-                    flex-shrink-0 px-3 py-2 rounded-lg text-sm font-medium
-                    transition-colors duration-200 whitespace-nowrap
-                    ${isActive 
-                      ? 'bg-blue-600 text-white' 
-                      : 'text-gray-700'
-                    }
-                  `}
-                >
-                  {category.icon && <span className="mr-1.5">{category.icon}</span>}
-                  {category.name}
-                  {isActive && category._count?.ads ? (
-                    <span className="ml-2 px-2 py-0.5 text-xs bg-white/20 rounded-full">
-                      {category._count.ads}
-                    </span>
-                  ) : null}
-                </Link>
-              );
-              })}
-            </div>
-
-            {/* All Categories Mega Menu Button - Fixed on Right side */}
-            <div className="relative flex-shrink-0 ml-auto" ref={megaMenuRef}>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowMegaMenu(!showMegaMenu);
-              }}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 transition-colors"
-            >
-              <FiGrid className="w-4 h-4" />
-              <span>All</span>
-              <FiChevronDown className={`w-4 h-4 transition-transform ${showMegaMenu ? 'rotate-180' : ''}`} />
-            </button>
-
-            {/* Sell Box Style Mega Menu */}
-            {showMegaMenu && (
-              <div 
-                className="fixed left-0 right-0 bg-white dark:bg-slate-800 shadow-2xl border-t border-gray-200 dark:border-slate-700"
-                style={{ top: '120px', zIndex: 60 }}
-              >
-                <div className="max-w-7xl mx-auto px-4 py-6">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
-                    {allCategories.map((category) => (
-                      <div key={category.id} className="space-y-3">
-                        {/* Category Title */}
-                        <Link
-                          href={`/?category=${category.slug}`}
-                          onClick={(e) => {
-                            // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
-                            if (e.ctrlKey || e.metaKey || e.button === 1) {
-                              return; // Let browser handle it
-                            }
-                            e.preventDefault();
-                            handleCategoryClick(category.slug);
-                          }}
-                          onAuxClick={(e) => {
-                            // Handle middle-click (mouse wheel click)
-                            if (e.button === 1) {
-                              window.open(`/?category=${category.slug}`, '_blank');
-                            }
-                          }}
-                          className="w-full flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white hover:text-blue-600 transition-colors group pb-2 border-b border-gray-200 dark:border-slate-700 text-left"
-                        >
-                          {category.icon && (
-                            <span className="text-xl group-hover:scale-110 transition-transform">
-                              {category.icon}
-                            </span>
-                          )}
-                          <span className="flex-1">{category.name}</span>
-                        </Link>
-
-                        {/* Subcategories List */}
-                        {category.subcategories && category.subcategories.length > 0 ? (
-                          <div className="space-y-2">
-                            {/* View All Link */}
-                        <Link
-                          href={`/?category=${category.slug}`}
-                          onClick={(e) => {
-                            // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
-                            if (e.ctrlKey || e.metaKey || e.button === 1) {
-                              return; // Let browser handle it
-                            }
-                            e.preventDefault();
-                            handleCategoryClick(category.slug);
-                          }}
-                          onAuxClick={(e) => {
-                            // Handle middle-click (mouse wheel click)
-                            if (e.button === 1) {
-                              window.open(`/?category=${category.slug}`, '_blank');
-                            }
-                          }}
-                              className="block text-xs font-semibold text-primary-600 hover:text-primary-700 hover:translate-x-1 transition-all text-left w-full"
-                            >
-                              View All
-                            </Link>
-
-                            {/* Subcategories */}
-                            {category.subcategories.map((subcategory) => (
-                              <Link
-                                key={subcategory.id}
-                                href={`/category/${category.slug}?subcategory=${subcategory.slug}`}
-                                onClick={(e) => {
-                                  // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
-                                  if (e.ctrlKey || e.metaKey || e.button === 1) {
-                                    return; // Let browser handle it
-                                  }
-                                  setShowMegaMenu(false);
-                                }}
-                                onAuxClick={(e) => {
-                                  // Handle middle-click (mouse wheel click)
-                                  if (e.button === 1) {
-                                    window.open(`/category/${category.slug}?subcategory=${subcategory.slug}`, '_blank');
-                                  }
-                                }}
-                                className="block text-xs text-gray-600 hover:text-primary-600 hover:translate-x-1 transition-all text-left w-full"
-                              >
-                                {subcategory.name}
-                                {subcategory._count?.ads !== undefined && (
-                                  <span className="ml-1 text-xs text-gray-400">
-                                    ({subcategory._count.ads})
-                                  </span>
-                                )}
-                              </Link>
-                            ))}
-                          </div>
-                        ) : (
-                        <Link
-                          href={`/?category=${category.slug}`}
-                          onClick={(e) => {
-                            // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
-                            if (e.ctrlKey || e.metaKey || e.button === 1) {
-                              return; // Let browser handle it
-                            }
-                            e.preventDefault();
-                            handleCategoryClick(category.slug);
-                          }}
-                          onAuxClick={(e) => {
-                            // Handle middle-click (mouse wheel click)
-                            if (e.button === 1) {
-                              window.open(`/?category=${category.slug}`, '_blank');
-                            }
-                          }}
-                            className="block text-xs text-gray-600 hover:text-primary-600 hover:translate-x-1 transition-all text-left w-full"
-                          >
-                            View All
-                          </Link>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+        <div className="w-full">
+          {/* DESKTOP VIEW: 4 visible + All Categories dropdown */}
+          <div className="hidden md:block">
+            <div className="max-w-[1400px] mx-auto px-4">
+              <div className="flex items-center gap-2 h-12">
+                {/* 4 Visible Categories */}
+                <div className="flex items-center gap-2 flex-1">
+                  {visibleCategories.map((category) => renderCategoryButton(category))}
                 </div>
+
+                {/* All Categories Dropdown */}
+                {dropdownCategories.length > 0 && (
+                  <div className="relative flex-shrink-0" ref={megaMenuRef}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowMegaMenu(!showMegaMenu);
+                      }}
+                      onMouseEnter={() => setShowMegaMenu(true)}
+                      className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-md hover:shadow-lg"
+                      aria-expanded={showMegaMenu}
+                      aria-haspopup="true"
+                    >
+                      <FiGrid className="w-4 h-4" />
+                      <span>All Categories</span>
+                      <FiChevronDown className={`w-4 h-4 transition-transform duration-200 ${showMegaMenu ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {/* Dropdown Menu */}
+                    {showMegaMenu && (
+                      <div
+                        className="absolute top-full right-0 mt-2 w-72 bg-white rounded-lg shadow-2xl border border-gray-200 py-2 max-h-96 overflow-y-auto z-50"
+                        onMouseLeave={() => setShowMegaMenu(false)}
+                        role="menu"
+                      >
+                        {dropdownCategories.map((category) => (
+                          <Link
+                            key={category.id}
+                            href={`/?category=${category.slug}`}
+                            onClick={(e) => {
+                              if (e.ctrlKey || e.metaKey || e.button === 1) return;
+                              e.preventDefault();
+                              handleCategoryClick(category.slug);
+                            }}
+                            onAuxClick={(e) => {
+                              if (e.button === 1) {
+                                window.open(`/?category=${category.slug}`, '_blank');
+                              }
+                            }}
+                            className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-gray-700 hover:text-blue-600"
+                            role="menuitem"
+                          >
+                            {category.icon && (
+                              <span className="text-lg flex-shrink-0">{category.icon}</span>
+                            )}
+                            <span className="text-sm font-medium flex-1">{category.name}</span>
+                            {category._count?.ads !== undefined && (
+                              <span className="text-xs text-gray-400">
+                                {category._count.ads}
+                              </span>
+                            )}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
 
-          {/* Subcategory / Popular Searches Row */}
-          {activeCategorySlug && (
-            <div className="pt-2 pb-3">
-              {isSubLoading ? (
-                <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar">
-                  {[...Array(8)].map((_, idx) => (
-                    <div key={idx} className="h-8 w-28 bg-gray-200 rounded animate-pulse"></div>
-                  ))}
-                </div>
-              ) : subcategories && subcategories.length > 0 ? (
-                <div
-                  className="flex items-center gap-2 overflow-x-auto hide-scrollbar"
-                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-                >
-                  {subcategories.map((subcat) => (
-                    <Link
-                      key={subcat.id}
-                      href={`/category/${activeCategorySlug}?subcategory=${subcat.slug}`}
-                      onClick={(e) => {
-                        // Allow Ctrl+Click / Cmd+Click / Middle-click to open in new tab
-                        if (e.ctrlKey || e.metaKey || e.button === 1) {
-                          return; // Let browser handle it
-                        }
-                        // For regular clicks, close mega menu if open
-                        setShowMegaMenu(false);
-                      }}
-                      onAuxClick={(e) => {
-                        // Handle middle-click (mouse wheel click)
-                        if (e.button === 1) {
-                          window.open(`/category/${activeCategorySlug}?subcategory=${subcat.slug}`, '_blank');
-                        }
-                      }}
-                      className="
-                        flex-shrink-0 px-3 py-2 rounded-full text-sm
-                        bg-gray-100 text-gray-800 hover:bg-primary-50 hover:text-primary-700
-                        border border-gray-200 hover:border-primary-300 transition-all
-                      "
-                    >
-                      {subcat.name}
-                      {subcat._count?.ads !== undefined && (
-                        <span className="ml-1 text-xs text-gray-500">({subcat._count.ads})</span>
-                      )}
-                    </Link>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-sm text-gray-500">No popular searches found.</div>
-              )}
+          {/* MOBILE VIEW: Fixed (Cars, Bikes, Motorcycles) + Scrollable rest */}
+          <div className="md:hidden">
+            <div 
+              ref={scrollContainerRef}
+              className="flex items-center gap-2 px-4 py-2 overflow-x-auto hide-scrollbar scroll-smooth"
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+            >
+              {/* Fixed Categories First (Cars, Bikes, Motorcycles) */}
+              {mobileFixedCategories.map((category) => renderCategoryButton(category, true))}
+              
+              {/* Remaining Categories (Scrollable) */}
+              {mobileScrollableCategories.map((category) => renderCategoryButton(category, true))}
             </div>
-          )}
+          </div>
         </div>
-      </div>
-    </div>
+      </nav>
     </>
   );
 }

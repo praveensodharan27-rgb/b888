@@ -7,12 +7,15 @@ import { FiCheckCircle, FiCalendar, FiFolder, FiVolume2, FiSave, FiMail, FiShiel
 import Link from 'next/link';
 import Image from 'next/image';
 import api from '@/lib/api';
-import { useQuery } from '@tanstack/react-query';
-import toast from 'react-hot-toast';
+import Cookies from 'js-cookie';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import toast from '@/lib/toast';
+import { FiMessageCircle } from 'react-icons/fi';
 
 export default function SettingsPage() {
   const { user, isLoading, updateUser, logout } = useAuth();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
   
   const [formData, setFormData] = useState({
@@ -23,7 +26,8 @@ export default function SettingsPage() {
     bio: '',
     showProfile: true,
     showOnlineStatus: true,
-    showEmailOnListings: false
+    showEmailOnListings: false,
+    showPhone: true
   });
 
   // Fetch full profile data
@@ -37,6 +41,30 @@ export default function SettingsPage() {
     staleTime: 5 * 1000,
   });
 
+  // AI Chat (chatbot) – Business Package: AI replies when seller is offline
+  const { data: aiChatData } = useQuery({
+    queryKey: ['user', 'ai-chat', user?.id],
+    queryFn: async () => {
+      const res = await api.get('/user/ai-chat');
+      return res.data;
+    },
+    enabled: !!user,
+  });
+  const aiChatMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const res = await api.put('/user/ai-chat', { enabled });
+      return res.data;
+    },
+    onSuccess: (_, enabled) => {
+      queryClient.setQueryData(['user', 'ai-chat', user?.id], { success: true, aiChatEnabled: enabled });
+      toast.success(enabled ? 'AI Chat is on' : 'AI Chat is off');
+    },
+    onError: (err: any) => {
+      toast.error(err.response?.data?.message || 'Failed to update AI Chat');
+    },
+  });
+  const aiChatEnabled = aiChatData?.aiChatEnabled ?? false;
+
   useEffect(() => {
     if (!isLoading && !user) {
       router.push('/login');
@@ -49,7 +77,8 @@ export default function SettingsPage() {
         bio: user.bio || '',
         showProfile: user.showProfile !== undefined ? user.showProfile : true,
         showOnlineStatus: user.showOnlineStatus !== undefined ? user.showOnlineStatus : true,
-        showEmailOnListings: user.showEmailOnListings !== undefined ? user.showEmailOnListings : false
+        showEmailOnListings: user.showEmailOnListings !== undefined ? user.showEmailOnListings : false,
+        showPhone: user.showPhone !== undefined ? user.showPhone : true
       });
     }
   }, [user, isLoading, router]);
@@ -59,12 +88,18 @@ export default function SettingsPage() {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleToggle = (field: 'showProfile' | 'showOnlineStatus' | 'showEmailOnListings') => {
+  const handleToggle = (field: 'showProfile' | 'showOnlineStatus' | 'showEmailOnListings' | 'showPhone') => {
     setFormData(prev => ({ ...prev, [field]: !prev[field] }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const token = typeof window !== 'undefined' ? Cookies.get('token') : null;
+    if (typeof window !== 'undefined' && !token) {
+      toast.error('Session expired. Please log in again.');
+      router.push('/login?redirect=/settings');
+      return;
+    }
     setSaving(true);
 
     try {
@@ -76,7 +111,8 @@ export default function SettingsPage() {
         bio: formData.bio,
         showProfile: formData.showProfile,
         showOnlineStatus: formData.showOnlineStatus,
-        showEmailOnListings: formData.showEmailOnListings
+        showEmailOnListings: formData.showEmailOnListings,
+        showPhone: formData.showPhone
       });
       
       if (response.data.success) {
@@ -87,7 +123,14 @@ export default function SettingsPage() {
       }
     } catch (error: any) {
       console.error('Update profile error:', error);
-      toast.error(error.response?.data?.message || 'Failed to update profile. Please try again.');
+      const status = error.response?.status;
+      const message = error.response?.data?.message;
+      if (status === 401) {
+        toast.error('Session expired. Please log in again.');
+        router.push('/login?redirect=/settings');
+        return;
+      }
+      toast.error(message || 'Failed to update profile. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -103,7 +146,7 @@ export default function SettingsPage() {
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
       </div>
     );
   }
@@ -123,7 +166,7 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="container mx-auto px-4 max-w-7xl">
+      <div className="container mx-auto px-4 max-w-[1400px]">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Column - Profile & Stats */}
           <div className="lg:col-span-1 space-y-6">
@@ -141,15 +184,15 @@ export default function SettingsPage() {
                       className="w-32 h-32 rounded-full object-cover border-4 border-white shadow-lg"
                     />
                   ) : (
-                    <div className="w-32 h-32 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center text-white text-4xl font-bold border-4 border-white shadow-lg">
+                    <div className="w-32 h-32 rounded-full bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center text-white text-4xl font-bold border-4 border-white shadow-lg">
                       {user.name.charAt(0).toUpperCase()}
                     </div>
                   )}
-                  <div className="absolute -bottom-1 -right-1 bg-emerald-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg">
+                  <div className="absolute -bottom-1 -right-1 bg-primary-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg">
                     ACTIVE
                   </div>
                   {user.isVerified && (
-                    <div className="absolute top-0 right-0 w-8 h-8 bg-emerald-600 rounded-full border-2 border-white flex items-center justify-center shadow-lg">
+                    <div className="absolute top-0 right-0 w-8 h-8 bg-primary-600 rounded-full border-2 border-white flex items-center justify-center shadow-lg">
                       <FiCheckCircle className="w-5 h-5 text-white" />
                     </div>
                   )}
@@ -158,7 +201,7 @@ export default function SettingsPage() {
                 <p className="text-gray-600 text-sm mb-4">{user.email}</p>
                 <div className="flex flex-col gap-2 mb-4">
                   {user.isVerified && (
-                    <div className="flex items-center justify-center gap-2 text-emerald-600">
+                    <div className="flex items-center justify-center gap-2 text-primary-600">
                       <FiCheckCircle className="w-4 h-4" />
                       <span className="text-sm font-medium">Verified Seller</span>
                     </div>
@@ -178,7 +221,7 @@ export default function SettingsPage() {
                 <span className="text-2xl font-bold text-gray-900">{freeAdsPercentage}%</span>
                 <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
                   <div 
-                    className="bg-emerald-600 h-2 rounded-full transition-all"
+                    className="bg-primary-600 h-2 rounded-full transition-all"
                     style={{ width: `${freeAdsPercentage}%` }}
                   />
                 </div>
@@ -188,11 +231,11 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            {/* Business Packages */}
-            {profileData?.businessPackage && (profileData.businessPackage.allPackages?.length > 0 || profileData.businessPackage.activePackages?.length > 0) && (
+            {/* Business Packages - hidden on profile/settings (kanikaruthu) */}
+            {false && profileData?.businessPackage && (profileData.businessPackage.allPackages?.length > 0 || profileData.businessPackage.activePackages?.length > 0) && (
               <div className="bg-white rounded-2xl shadow-sm p-6">
                 <div className="flex items-center gap-2 mb-4">
-                  <FiFolder className="w-5 h-5 text-emerald-600" />
+                  <FiFolder className="w-5 h-5 text-primary-600" />
                   <h3 className="text-lg font-semibold text-gray-900">Business Packages</h3>
                 </div>
                 <div className="space-y-4">
@@ -212,7 +255,7 @@ export default function SettingsPage() {
                             <p className="text-sm text-gray-600 mt-1">Auto-Refresh Boost</p>
                           )}
                           {remaining > 0 && (
-                            <p className="text-sm text-emerald-600 font-medium mt-1">{remaining} remaining</p>
+                            <p className="text-sm text-primary-600 font-medium mt-1">{remaining} remaining</p>
                           )}
                           {pkg.packageType?.includes('VISIBILITY') || packageName.includes('Visibility') && (
                             <p className="text-sm text-gray-600 mt-1">Active on {pkg.activeItemsCount || 0} items</p>
@@ -223,7 +266,7 @@ export default function SettingsPage() {
                             <span className="text-xs text-gray-500">
                               Ends {expiresAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                             </span>
-                            <Link href="/settings" className="text-sm text-emerald-600 hover:text-emerald-700 font-medium">
+                            <Link href="/settings" className="text-sm text-primary-600 hover:text-primary-700 font-medium">
                               Manage
                             </Link>
                           </div>
@@ -236,14 +279,14 @@ export default function SettingsPage() {
             )}
 
             {/* Total Capacity */}
-            <div className="bg-emerald-600 rounded-2xl shadow-sm p-6 text-white relative overflow-hidden">
+            <div className="bg-primary-600 rounded-2xl shadow-sm p-6 text-white relative overflow-hidden">
               <div className="absolute top-2 right-2">
                 <FiVolume2 className="w-8 h-8 text-white opacity-30" />
               </div>
               <div className="relative z-10">
                 <div className="text-4xl font-bold mb-2">{totalAds} Ads</div>
-                <p className="text-emerald-50 text-sm">
-                  Combine free and premium credits to reach more buyers.
+                <p className="text-primary-50 text-sm">
+                  Use free and promoted listings to reach more buyers.
                 </p>
               </div>
             </div>
@@ -259,7 +302,7 @@ export default function SettingsPage() {
                   <button
                     type="submit"
                     disabled={saving}
-                    className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold flex items-center gap-2"
+                    className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold flex items-center gap-2"
                   >
                     {saving ? (
                       <>
@@ -278,7 +321,7 @@ export default function SettingsPage() {
                 {/* Edit Profile Section */}
                 <div>
                   <div className="flex items-center gap-2 mb-6">
-                    <FiCheckCircle className="w-5 h-5 text-emerald-600" />
+                    <FiCheckCircle className="w-5 h-5 text-primary-600" />
                     <h3 className="text-lg font-semibold text-gray-900">Edit Profile</h3>
                   </div>
                   <div className="space-y-4">
@@ -292,7 +335,7 @@ export default function SettingsPage() {
                         name="name"
                         value={formData.name}
                         onChange={handleChange}
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                         placeholder="John Doe"
                       />
                     </div>
@@ -306,7 +349,7 @@ export default function SettingsPage() {
                         name="username"
                         value={formData.username}
                         onChange={handleChange}
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                         placeholder="johndoe__99"
                       />
                     </div>
@@ -321,7 +364,7 @@ export default function SettingsPage() {
                         onChange={handleChange}
                         rows={4}
                         maxLength={500}
-                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none"
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none"
                         placeholder="I've been an active buyer and seller since 2024. My focus is primarily on vintage electronics and high-quality home furniture."
                       />
                     </div>
@@ -331,7 +374,7 @@ export default function SettingsPage() {
                 {/* Change Phone / Email Section */}
                 <div>
                   <div className="flex items-center gap-2 mb-6">
-                    <FiMail className="w-5 h-5 text-emerald-600" />
+                    <FiMail className="w-5 h-5 text-primary-600" />
                     <h3 className="text-lg font-semibold text-gray-900">Change Phone / Email</h3>
                   </div>
                   <div className="space-y-4">
@@ -346,11 +389,11 @@ export default function SettingsPage() {
                           name="email"
                           value={formData.email}
                           onChange={handleChange}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent pr-24"
+                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent pr-24"
                           placeholder="johndoe@example.com"
                         />
                         {user.isVerified && (
-                          <span className="absolute right-3 top-1/2 -translate-y-1/2 bg-emerald-100 text-emerald-700 text-xs font-semibold px-2 py-1 rounded">
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 bg-primary-100 text-primary-700 text-xs font-semibold px-2 py-1 rounded">
                             VERIFIED
                           </span>
                         )}
@@ -367,7 +410,7 @@ export default function SettingsPage() {
                           name="phone"
                           value={formData.phone}
                           onChange={handleChange}
-                          className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                          className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                           placeholder="+1 (555) 000-0000"
                         />
                         <button
@@ -384,7 +427,7 @@ export default function SettingsPage() {
                 {/* Privacy Settings Section */}
                 <div>
                   <div className="flex items-center gap-2 mb-6">
-                    <FiShield className="w-5 h-5 text-emerald-600" />
+                    <FiShield className="w-5 h-5 text-primary-600" />
                     <h3 className="text-lg font-semibold text-gray-900">Privacy Settings</h3>
                   </div>
                   <div className="space-y-6">
@@ -397,8 +440,8 @@ export default function SettingsPage() {
                       <button
                         type="button"
                         onClick={() => handleToggle('showProfile')}
-                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
-                          formData.showProfile ? 'bg-emerald-600' : 'bg-gray-200'
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
+                          formData.showProfile ? 'bg-primary-600' : 'bg-gray-200'
                         }`}
                       >
                         <span
@@ -418,8 +461,8 @@ export default function SettingsPage() {
                       <button
                         type="button"
                         onClick={() => handleToggle('showOnlineStatus')}
-                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
-                          formData.showOnlineStatus ? 'bg-emerald-600' : 'bg-gray-200'
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
+                          formData.showOnlineStatus ? 'bg-primary-600' : 'bg-gray-200'
                         }`}
                       >
                         <span
@@ -439,8 +482,8 @@ export default function SettingsPage() {
                       <button
                         type="button"
                         onClick={() => handleToggle('showEmailOnListings')}
-                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
-                          formData.showEmailOnListings ? 'bg-emerald-600' : 'bg-gray-200'
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
+                          formData.showEmailOnListings ? 'bg-primary-600' : 'bg-gray-200'
                         }`}
                       >
                         <span
@@ -450,6 +493,59 @@ export default function SettingsPage() {
                         />
                       </button>
                     </div>
+
+                    {/* Hide Phone Number in Ads */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <h4 className="text-sm font-medium text-gray-900">Hide Phone Number in Ads</h4>
+                        <p className="text-sm text-gray-600 mt-1">
+                          When enabled, your phone number will be hidden on ad pages. Buyers can still contact you via chat.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleToggle('showPhone')}
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
+                          formData.showPhone ? 'bg-primary-600' : 'bg-gray-200'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            formData.showPhone ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* AI Chat (Chat bot) – Business Package sellers: AI replies when you're offline */}
+                <div>
+                  <div className="flex items-center gap-2 mb-6">
+                    <FiMessageCircle className="w-5 h-5 text-primary-600" />
+                    <h3 className="text-lg font-semibold text-gray-900">AI Chat (Chat bot)</h3>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                    <div className="flex-1">
+                      <h4 className="text-sm font-medium text-gray-900">Turn on AI Chat</h4>
+                      <p className="text-sm text-gray-600 mt-1">
+                        When you're offline or not viewing the chat, AI will reply to buyers in Manglish. Business Package required.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => aiChatMutation.mutate(!aiChatEnabled)}
+                      disabled={aiChatMutation.isPending}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 ${
+                        aiChatEnabled ? 'bg-primary-600' : 'bg-gray-200'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          aiChatEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
                   </div>
                 </div>
 

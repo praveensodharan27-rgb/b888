@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { FiSettings, FiSave, FiDollarSign, FiClock, FiBriefcase, FiUsers } from 'react-icons/fi';
 
 export default function AdminBusinessPackages() {

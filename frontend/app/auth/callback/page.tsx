@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 export default function AuthCallbackPage() {
   const router = useRouter();

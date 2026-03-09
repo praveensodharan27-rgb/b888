@@ -1,292 +1,287 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { FiX, FiDownload, FiLoader } from 'react-icons/fi';
-import Image from 'next/image';
-import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import { useRef } from 'react';
+import { FiDownload, FiPrinter, FiMail } from 'react-icons/fi';
 
-interface InvoiceData {
-  invoiceNumber: string;
-  date: string;
-  billedTo: {
-    name: string;
-    email: string;
-    phone: string;
-    address: string;
-  };
-  from: {
-    name: string;
-    email: string;
-    phone: string;
-    address: string;
-  };
-  items: Array<{
-    description: string;
-    quantity: number;
-    price: number;
-    amount: number;
-  }>;
+interface InvoiceItem {
+  description: string;
+  details?: string;
+  quantity: number;
+  price: number;
   total: number;
-  paymentMethod: string;
-  note: string;
 }
 
 interface InvoiceProps {
-  orderId: string;
-  orderType: string;
-  isOpen: boolean;
-  onClose: () => void;
+  invoiceNumber: string;
+  dateIssued: string;
+  dueDate: string;
+  seller: {
+    name: string;
+    address: string;
+    email: string;
+    phone?: string;
+  };
+  buyer: {
+    name: string;
+    address: string;
+    email: string;
+    phone?: string;
+  };
+  items: InvoiceItem[];
+  subtotal: number;
+  tax: number;
+  taxRate: number;
+  total: number;
+  paymentInfo?: {
+    bank: string;
+    accountName: string;
+    accountNumber: string;
+    ifsc?: string;
+  };
+  notes?: string;
 }
 
-export default function Invoice({ orderId, orderType, isOpen, onClose }: InvoiceProps) {
-  const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
+export default function Invoice({
+  invoiceNumber,
+  dateIssued,
+  dueDate,
+  seller,
+  buyer,
+  items,
+  subtotal,
+  tax,
+  taxRate,
+  total,
+  paymentInfo,
+  notes
+}: InvoiceProps) {
+  const invoiceRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (isOpen && orderId) {
-      loadInvoiceData();
-    }
-  }, [isOpen, orderId, orderType]);
-
-  const loadInvoiceData = async () => {
-    setIsLoading(true);
+  const handleDownloadPDF = async () => {
     try {
-      const response = await api.get(`/user/orders/${orderId}/invoice-data?type=${orderType}`);
-      if (response.data.success) {
-        setInvoiceData(response.data.invoice);
-      } else {
-        toast.error('Failed to load invoice data');
-      }
-    } catch (error: any) {
-      console.error('Error loading invoice:', error);
-      toast.error(error.response?.data?.message || 'Failed to load invoice');
-    } finally {
-      setIsLoading(false);
+      // Dynamic import to reduce bundle size
+      const html2pdf = (await import('html2pdf.js')).default;
+      
+      const element = invoiceRef.current;
+      if (!element) return;
+
+      const opt = {
+        margin: 10,
+        filename: `invoice-${invoiceNumber}.pdf`,
+        image: { type: 'jpeg' as const, quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
+      };
+
+      await html2pdf().set(opt).from(element).save();
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Failed to generate PDF. Please try again.');
     }
   };
 
-  const handleDownload = async () => {
-    setIsDownloading(true);
-    try {
-      const response = await api.get(`/user/orders/${orderId}/invoice?type=${orderType}`, {
-        responseType: 'blob',
-      });
-
-      const blob = new Blob([response.data], { type: 'application/pdf' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `invoice-${orderId}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      toast.success('Invoice downloaded successfully');
-    } catch (error: any) {
-      console.error('Error downloading invoice:', error);
-      toast.error(error.response?.data?.message || 'Failed to download invoice');
-    } finally {
-      setIsDownloading(false);
-    }
+  const handlePrint = () => {
+    window.print();
   };
 
-  if (!isOpen) return null;
+  const handleEmail = () => {
+    const subject = `Invoice ${invoiceNumber}`;
+    const body = `Please find attached invoice ${invoiceNumber} for ₹${total.toLocaleString('en-IN')}`;
+    window.location.href = `mailto:${buyer.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
-        onClick={onClose}
-      />
+    <div className="max-w-4xl mx-auto p-6">
+      {/* Action Buttons - Hidden in print */}
+      <div className="flex justify-end gap-3 mb-6 print:hidden">
+        <button
+          onClick={handleDownloadPDF}
+          className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+        >
+          <FiDownload className="w-4 h-4" />
+          Download PDF
+        </button>
+        <button
+          onClick={handlePrint}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          <FiPrinter className="w-4 h-4" />
+          Print
+        </button>
+        <button
+          onClick={handleEmail}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          <FiMail className="w-4 h-4" />
+          Email
+        </button>
+      </div>
 
-      {/* Modal */}
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center justify-between p-6 border-b">
-            <h2 className="text-2xl font-bold text-gray-900">Invoice</h2>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleDownload}
-                disabled={isDownloading || isLoading}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isDownloading ? (
-                  <FiLoader className="w-4 h-4 animate-spin" />
-                ) : (
-                  <FiDownload className="w-4 h-4" />
-                )}
-                Download PDF
-              </button>
-              <button
-                onClick={onClose}
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <FiX className="w-5 h-5 text-gray-600" />
-              </button>
+      {/* Invoice Document */}
+      <div
+        ref={invoiceRef}
+        className="bg-white rounded-xl shadow-lg border border-gray-200 p-8 md:p-12"
+      >
+        {/* Header */}
+        <div className="flex justify-between items-start mb-8 pb-6 border-b-2 border-gray-200">
+          <div>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-12 h-12 bg-primary-600 rounded-lg flex items-center justify-center">
+                <span className="text-white text-2xl font-bold">S</span>
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">{seller.name}</h1>
+                <p className="text-sm text-gray-600">Marketplace Platform</p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 max-w-xs">{seller.address}</p>
+            <p className="text-sm text-gray-600">{seller.email}</p>
+            {seller.phone && <p className="text-sm text-gray-600">{seller.phone}</p>}
+          </div>
+          <div className="text-right">
+            <h2 className="text-4xl font-bold text-gray-300 mb-2">INVOICE</h2>
+            <p className="text-xl font-bold text-primary-600 mb-1">{invoiceNumber}</p>
+            <p className="text-sm text-gray-600">Date: {dateIssued}</p>
+            <p className="text-sm text-gray-600">Due: {dueDate}</p>
+          </div>
+        </div>
+
+        {/* Bill To & Ship To */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              BILL TO
+            </h3>
+            <p className="font-bold text-gray-900 text-lg mb-1">{buyer.name}</p>
+            <p className="text-sm text-gray-600">{buyer.address}</p>
+            <p className="text-sm text-gray-600">{buyer.email}</p>
+            {buyer.phone && <p className="text-sm text-gray-600">{buyer.phone}</p>}
+          </div>
+          <div>
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+              PAYMENT TERMS
+            </h3>
+            <p className="text-sm text-gray-600">Due Date: {dueDate}</p>
+            <p className="text-sm text-gray-600">Payment Method: Bank Transfer</p>
+          </div>
+        </div>
+
+        {/* Items Table */}
+        <div className="mb-8">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b-2 border-gray-300">
+                <th className="text-left py-3 text-sm font-semibold text-gray-700 uppercase tracking-wider">
+                  Description
+                </th>
+                <th className="text-center py-3 text-sm font-semibold text-gray-700 uppercase tracking-wider w-20">
+                  Qty
+                </th>
+                <th className="text-right py-3 text-sm font-semibold text-gray-700 uppercase tracking-wider w-32">
+                  Price
+                </th>
+                <th className="text-right py-3 text-sm font-semibold text-gray-700 uppercase tracking-wider w-32">
+                  Total
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, index) => (
+                <tr key={index} className="border-b border-gray-200">
+                  <td className="py-4">
+                    <p className="font-semibold text-gray-900">{item.description}</p>
+                    {item.details && (
+                      <p className="text-sm text-gray-600 mt-1">{item.details}</p>
+                    )}
+                  </td>
+                  <td className="py-4 text-center text-gray-700">{item.quantity}</td>
+                  <td className="py-4 text-right text-gray-700">
+                    ₹{item.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </td>
+                  <td className="py-4 text-right font-semibold text-gray-900">
+                    ₹{item.total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Totals */}
+        <div className="flex justify-end mb-8">
+          <div className="w-full md:w-80">
+            <div className="flex justify-between py-2 text-gray-700">
+              <span>Subtotal:</span>
+              <span className="font-semibold">
+                ₹{subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="flex justify-between py-2 text-gray-700 border-b border-gray-200">
+              <span>Tax ({taxRate}%):</span>
+              <span className="font-semibold">
+                ₹{tax.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="flex justify-between py-3 border-b-2 border-primary-600">
+              <span className="text-lg font-bold text-gray-900">Grand Total:</span>
+              <span className="text-2xl font-bold text-primary-600">
+                ₹{total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </span>
             </div>
           </div>
+        </div>
 
-          {/* Content */}
-          <div className="p-8 overflow-y-auto max-h-[calc(90vh-120px)]">
-            {isLoading ? (
-              <div className="flex items-center justify-center py-20">
-                <div className="text-center">
-                  <FiLoader className="w-12 h-12 text-orange-500 animate-spin mx-auto mb-4" />
-                  <p className="text-gray-600">Loading invoice...</p>
-                </div>
+        {/* Payment Information */}
+        {paymentInfo && (
+          <div className="mb-8 p-6 bg-gray-50 rounded-lg">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+              PAYMENT INFORMATION
+            </h3>
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-gray-600">Bank:</p>
+                <p className="font-semibold text-gray-900">{paymentInfo.bank}</p>
               </div>
-            ) : invoiceData ? (
-              <div className="bg-white">
-                {/* Invoice Header */}
-                <div className="flex justify-between items-start mb-10">
-                  <div className="flex items-center">
-                    <Image
-                      src="/logo.png"
-                      alt="SellIt Logo"
-                      width={120}
-                      height={40}
-                      className="h-10 w-auto object-contain"
-                      priority
-                    />
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xs text-gray-500 mb-1">Invoice Number</div>
-                    <div className="text-lg font-bold text-gray-900">
-                      NO. {String(invoiceData.invoiceNumber).padStart(6, '0')}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Invoice Title */}
-                <div className="text-center mb-8 border-b border-gray-200 pb-6">
-                  <h1 className="text-6xl font-bold text-gray-900 mb-3 tracking-tight">INVOICE</h1>
-                  <p className="text-base text-gray-600 font-medium">Date: {invoiceData.date}</p>
-                </div>
-
-                {/* Billed To and From */}
-                <div className="grid grid-cols-2 gap-12 mb-10">
-                  <div className="bg-gray-50 rounded-lg p-5 border border-gray-200">
-                    <h3 className="font-bold text-gray-900 mb-4 text-sm uppercase tracking-wide">Billed to:</h3>
-                    <div className="space-y-2">
-                      <p className="text-gray-800 font-semibold text-lg">{invoiceData.billedTo.name}</p>
-                      {invoiceData.billedTo.address && (
-                        <p className="text-gray-600 text-sm">{invoiceData.billedTo.address}</p>
-                      )}
-                      {invoiceData.billedTo.email && (
-                        <p className="text-gray-600 text-sm">{invoiceData.billedTo.email}</p>
-                      )}
-                      {invoiceData.billedTo.phone && (
-                        <p className="text-gray-600 text-sm">{invoiceData.billedTo.phone}</p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="bg-orange-50 rounded-lg p-5 border border-orange-200">
-                    <h3 className="font-bold text-gray-900 mb-4 text-sm uppercase tracking-wide">From:</h3>
-                    <div className="space-y-2">
-                      <p className="text-gray-800 font-semibold text-lg">{invoiceData.from.name}</p>
-                      {invoiceData.from.address && (
-                        <p className="text-gray-600 text-sm">{invoiceData.from.address}</p>
-                      )}
-                      {invoiceData.from.email && (
-                        <p className="text-gray-600 text-sm">{invoiceData.from.email}</p>
-                      )}
-                      {invoiceData.from.phone && (
-                        <p className="text-gray-600 text-sm">{invoiceData.from.phone}</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Items Table */}
-                <div className="mb-8 overflow-hidden rounded-lg border border-gray-200 shadow-sm">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="bg-gradient-to-r from-gray-800 to-gray-700">
-                        <th className="text-left py-4 px-6 font-bold text-white text-sm uppercase tracking-wide">Item</th>
-                        <th className="text-center py-4 px-6 font-bold text-white text-sm uppercase tracking-wide">Quantity</th>
-                        <th className="text-right py-4 px-6 font-bold text-white text-sm uppercase tracking-wide">Price</th>
-                        <th className="text-right py-4 px-6 font-bold text-white text-sm uppercase tracking-wide">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {invoiceData.items.map((item, index) => (
-                        <tr 
-                          key={index} 
-                          className={`border-b border-gray-100 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-orange-50 transition-colors`}
-                        >
-                          <td className="py-4 px-6 text-gray-800 font-medium">{item.description}</td>
-                          <td className="py-4 px-6 text-gray-700 text-center">{item.quantity}</td>
-                          <td className="py-4 px-6 text-gray-700 text-right">
-                            ₹{item.price.toLocaleString('en-IN')}
-                          </td>
-                          <td className="py-4 px-6 text-gray-900 font-semibold text-right">
-                            ₹{item.amount.toLocaleString('en-IN')}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Total */}
-                <div className="flex justify-end mb-8">
-                  <div className="bg-gradient-to-r from-orange-500 to-orange-600 rounded-lg p-6 shadow-lg min-w-[300px]">
-                    <div className="text-right">
-                      <p className="text-lg font-semibold text-white mb-2 uppercase tracking-wide">Total</p>
-                      <p className="text-4xl font-bold text-white">
-                        ₹{invoiceData.total.toLocaleString('en-IN')}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Payment Method and Note */}
-                <div className="mb-8 bg-blue-50 rounded-lg p-6 border border-blue-200 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold text-gray-700 mb-1">Payment method:</p>
-                      <p className="text-base text-gray-800 font-medium">{invoiceData.paymentMethod}</p>
-                    </div>
-                  </div>
-                  <div className="border-t border-blue-200 pt-3">
-                    <p className="text-sm font-semibold text-gray-700 mb-1">Note:</p>
-                    <p className="text-base text-gray-800">{invoiceData.note}</p>
-                  </div>
-                </div>
-
-                {/* Decorative Footer */}
-                <div className="relative mt-12 h-24 overflow-hidden">
-                  <svg
-                    className="absolute bottom-0 left-0 w-full h-full"
-                    viewBox="0 0 1200 100"
-                    preserveAspectRatio="none"
-                  >
-                    {/* Light grey wave */}
-                    <path
-                      d="M 0 50 Q 300 30 600 50 T 1200 50 L 1200 100 L 0 100 Z"
-                      fill="#e5e7eb"
-                    />
-                    {/* Dark grey wave */}
-                    <path
-                      d="M 0 60 Q 300 80 600 60 T 1200 60 L 1200 100 L 0 100 Z"
-                      fill="#4b5563"
-                    />
-                  </svg>
-                </div>
+              <div>
+                <p className="text-gray-600">Account Name:</p>
+                <p className="font-semibold text-gray-900">{paymentInfo.accountName}</p>
               </div>
-            ) : (
-              <div className="text-center py-20">
-                <p className="text-gray-600">No invoice data available</p>
+              <div>
+                <p className="text-gray-600">Account Number:</p>
+                <p className="font-semibold text-gray-900">{paymentInfo.accountNumber}</p>
               </div>
+              {paymentInfo.ifsc && (
+                <div>
+                  <p className="text-gray-600">IFSC Code:</p>
+                  <p className="font-semibold text-gray-900">{paymentInfo.ifsc}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Notes & Footer */}
+        <div className="flex justify-between items-end pt-6 border-t border-gray-200">
+          <div className="max-w-md">
+            {notes && (
+              <>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  NOTES
+                </h3>
+                <p className="text-sm text-gray-600">{notes}</p>
+              </>
             )}
+          </div>
+          <div className="text-right">
+            <p className="text-sm font-semibold text-gray-700 mb-1">
+              Thank you for your business!
+            </p>
+            <p className="text-xs text-gray-500">
+              Payment is due within 14 days of invoice date.
+            </p>
           </div>
         </div>
       </div>
     </div>
   );
 }
-

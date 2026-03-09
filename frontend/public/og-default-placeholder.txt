@@ -1,0 +1,4 @@
+Add a 1200x630 pixel image as og-default.jpg for optimal social sharing.
+
+Rename your image to og-default.jpg and place it in this directory (public/).
+Recommended: Clean design with SellIt branding, tagline "Buy and Sell Anything".

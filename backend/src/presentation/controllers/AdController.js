@@ -3,6 +3,7 @@ const { getHomeFeedAds } = require('../../../services/locationWiseAdRankingServi
 const { PrismaClient } = require('@prisma/client');
 const { logger } = require('../../config/logger');
 const { getSafeErrorPayload } = require('../../../utils/safeErrorResponse');
+const { getBucketsForCategory } = require('../../../config/priceBucketProfiles');
 const prisma = new PrismaClient();
 
 function logError(req, err, msg, ctx = {}) {
@@ -28,15 +29,17 @@ class AdController {
 
   async getHomeFeed(req, res) {
     try {
-      const { page = 1, limit = 12, city, state, location, latitude, longitude, category, subcategory } = req.query;
+      const { page = 1, limit = 12, city, state, location, latitude, longitude, userLat, userLng, category, subcategory } = req.query;
+      const lat = latitude ?? userLat;
+      const lng = longitude ?? userLng;
       const result = await getHomeFeedAds({
         page: parseInt(page, 10),
         limit: parseInt(limit, 10),
         city: city || undefined,
         state: state || undefined,
         locationSlug: location || undefined,
-        latitude: latitude ? parseFloat(latitude) : undefined,
-        longitude: longitude ? parseFloat(longitude) : undefined,
+        latitude: lat != null && lat !== '' ? parseFloat(lat) : undefined,
+        longitude: lng != null && lng !== '' ? parseFloat(lng) : undefined,
         category: category || undefined,
         subcategory: subcategory || undefined,
         includeSponsored: true,
@@ -81,20 +84,125 @@ class AdController {
 
   /**
    * GET /ads/filter-options — aggregate from products (real data).
-   * Only specs that exist in currently available ads are returned.
+   * Returns filterOptions, brandModels, priceBucketCounts, filterOptionCounts (per-value counts), totalCount.
    */
   async getFilterOptions(req, res) {
     try {
       const categorySlug = req.query.category;
       const subcategorySlug = req.query.subcategory;
-      if (!categorySlug && !subcategorySlug) {
-        return res.json({ success: true, filterOptions: {}, brandModels: {} });
+      const locationSlug = req.query.location;
+      const brand = req.query.brand;
+
+      let filterOptions = {};
+      let brandModels = {};
+      let filterOptionCounts = {};
+      let totalCount = 0;
+      let priceBucketCounts = [];
+
+      if (categorySlug || subcategorySlug) {
+        const result = await AdService.getFilterOptionsFromAds(categorySlug, subcategorySlug, {
+          locationSlug: locationSlug || undefined,
+          brand: brand || undefined,
+        });
+        filterOptions = result.filterOptions || {};
+        brandModels = result.brandModels || {};
+        filterOptionCounts = result.filterOptionCounts || {};
+        totalCount = result.totalCount ?? 0;
       }
-      const { filterOptions, brandModels } = await AdService.getFilterOptionsFromAds(categorySlug, subcategorySlug);
-      res.json({ success: true, filterOptions: filterOptions || {}, brandModels: brandModels || {} });
+
+      // Price bucket counts for Budget filter (e.g. "₹2 – ₹3 Lakh (36)")
+      try {
+        const buckets = getBucketsForCategory(categorySlug, subcategorySlug);
+        const baseWhere = {
+          status: 'APPROVED',
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        };
+        if (categorySlug) {
+          const categoryObj = await prisma.category.findUnique({ where: { slug: categorySlug }, select: { id: true } });
+          if (categoryObj) baseWhere.categoryId = categoryObj.id;
+        }
+        if (subcategorySlug) {
+          const subcategoryObj = await prisma.subcategory.findFirst({ where: { slug: subcategorySlug }, select: { id: true } });
+          if (subcategoryObj) baseWhere.subcategoryId = subcategoryObj.id;
+        }
+        if (locationSlug) {
+          const locationObj = await prisma.location.findUnique({ where: { slug: locationSlug }, select: { id: true } });
+          if (locationObj) baseWhere.locationId = locationObj.id;
+        }
+        priceBucketCounts = await Promise.all(
+          buckets.map((b) => prisma.ad.count({ where: { ...baseWhere, price: { gte: b.min, lte: b.max } } }))
+        );
+      } catch (countErr) {
+        logError(req, countErr, 'Filter options: price bucket counts failed');
+      }
+
+      res.json({ success: true, filterOptions, brandModels, priceBucketCounts, filterOptionCounts, totalCount });
     } catch (error) {
       logError(req, error, 'Get filter options error');
       res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch filter options'));
+    }
+  }
+
+  /**
+   * GET /ads/price-bucket-counts — count of ads per price bucket for current category/filters.
+   * Used by frontend to show e.g. "₹2 – ₹3 Lakh (36)".
+   * Query: category, subcategory, location, brand (optional). Counts respect category and filters.
+   */
+  async getPriceBucketCounts(req, res) {
+    try {
+      const { category: categorySlug, subcategory: subcategorySlug, location: locationSlug, brand } = req.query;
+      const buckets = getBucketsForCategory(categorySlug, subcategorySlug);
+
+      const baseWhere = {
+        status: 'APPROVED',
+        OR: [
+          { expiresAt: null },
+          { expiresAt: { gt: new Date() } },
+        ],
+      };
+
+      if (categorySlug) {
+        const categoryObj = await prisma.category.findUnique({
+          where: { slug: categorySlug },
+          select: { id: true },
+        });
+        if (categoryObj) baseWhere.categoryId = categoryObj.id;
+      }
+
+      if (subcategorySlug) {
+        const subcategoryObj = await prisma.subcategory.findFirst({
+          where: { slug: subcategorySlug },
+          select: { id: true },
+        });
+        if (subcategoryObj) baseWhere.subcategoryId = subcategoryObj.id;
+      }
+
+      if (locationSlug) {
+        const locationObj = await prisma.location.findUnique({
+          where: { slug: locationSlug },
+          select: { id: true },
+        });
+        if (locationObj) baseWhere.locationId = locationObj.id;
+      }
+
+      // Brand filter: Prisma MongoDB Json filter by key is not trivial; counts are category/location-aware only for now
+      // TODO: add brand to aggregation via raw query if needed
+
+      const counts = await Promise.all(
+        buckets.map((b) =>
+          prisma.ad.count({
+            where: {
+              ...baseWhere,
+              price: { gte: b.min, lte: b.max },
+            },
+          })
+        )
+      );
+
+      res.json({ success: true, priceBucketCounts: counts });
+    } catch (error) {
+      logError(req, error, 'Get price bucket counts error');
+      res.status(500).json(getSafeErrorPayload(error, 'Failed to fetch price bucket counts'));
     }
   }
 

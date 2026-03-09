@@ -9,8 +9,10 @@ import AdminCategories from './AdminCategories';
 import AdminPremiumAds from './AdminPremiumAds';
 import AdminPremiumSettings from './AdminPremiumSettings';
 import AdminInterstitialAds from './AdminInterstitialAds';
+import AdminSponsoredAds from './AdminSponsoredAds';
 import AdminBusinessPackages from './AdminBusinessPackages';
 import AdminAuthPages from './AdminAuthPages';
+import AdminFreePostingPromos from './AdminFreePostingPromos';
 
 export default function AdminDashboard() {
   const searchParams = useSearchParams();
@@ -22,10 +24,12 @@ export default function AdminDashboard() {
       {activeTab === 'ads' && <AdminAds />}
       {activeTab === 'users' && <AdminUsers />}
       {activeTab === 'banners' && <AdminBanners />}
+      {activeTab === 'free-posting-promos' && <AdminFreePostingPromos />}
       {activeTab === 'categories' && <AdminCategories />}
       {activeTab === 'premium' && <AdminPremiumAds />}
       {activeTab === 'offers' && <AdminPremiumSettings />}
       {activeTab === 'interstitial' && <AdminInterstitialAds />}
+      {activeTab === 'sponsored-ads' && <AdminSponsoredAds />}
       {activeTab === 'business-packages' && <AdminBusinessPackages />}
       {activeTab === 'auth-pages' && <AdminAuthPages />}
     </div>

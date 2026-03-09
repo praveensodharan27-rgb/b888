@@ -1,38 +1,64 @@
 import type { Metadata } from 'next';
-import { Plus_Jakarta_Sans } from 'next/font/google';
+import { Poppins, Inter, Roboto } from 'next/font/google';
 import './globals.css';
-import { Providers } from './providers';
-import AppClientRoot from '@/components/AppClientRoot';
+import JsonLdSite from '@/components/seo/JsonLdSite';
+import { getBaseUrl } from '@/lib/seo';
+import AppWithShell from '@/components/AppWithShell';
 
-const plusJakartaSans = Plus_Jakarta_Sans({ 
+const poppins = Poppins({
   subsets: ['latin'],
-  variable: '--font-display',
-  weight: ['200', '300', '400', '500', '600', '700', '800'],
+  variable: '--font-poppins',
+  weight: ['400', '500', '600', '700'],
+  display: 'swap',
 });
 
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
+  display: 'swap',
+});
+
+const roboto = Roboto({
+  subsets: ['latin'],
+  variable: '--font-roboto',
+  weight: ['400', '500', '700'],
+});
+
+const isDev = process.env.NODE_ENV === 'development';
+const baseUrl = getBaseUrl();
+
 export const metadata: Metadata = {
-  title: 'SellIt - Buy and Sell Anything',
+  title: 'Sell Box - Buy and Sell Anything',
   description: 'Buy and sell anything in your local area. Post free classified ads.',
   keywords: 'classifieds, buy, sell, marketplace, local',
+  robots: isDev ? 'noindex, nofollow' : 'index, follow',
   openGraph: {
-    title: 'SellIt - Buy and Sell Anything',
+    title: 'Sell Box - Buy and Sell Anything',
     description: 'Buy and sell anything in your local area. Post free classified ads.',
     type: 'website',
+    url: baseUrl,
+    siteName: 'Sell Box',
+    images: [
+      { url: `${baseUrl}/og-default.jpg`, width: 1200, height: 630, alt: 'Sell Box - Buy and Sell Anything' },
+      { url: `${baseUrl}/logo.png`, width: 512, height: 512, alt: 'Sell Box' },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Sell Box - Buy and Sell Anything',
+    description: 'Buy and sell anything in your local area. Post free classified ads.',
+    images: [`${baseUrl}/og-default.jpg`],
   },
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   const splashImageUrl = process.env.NEXT_PUBLIC_SPLASH_IMAGE_URL || '';
   const splashLinkUrl = process.env.NEXT_PUBLIC_SPLASH_LINK_URL;
   const splashDuration = parseInt(process.env.NEXT_PUBLIC_SPLASH_DURATION || '0');
   const splashEnabled = process.env.NEXT_PUBLIC_SPLASH_ENABLED === 'true';
 
   return (
-    <html lang="en" className="light">
+    <html lang="en" className={`light ${poppins.variable} ${inter.variable} ${roboto.variable}`} data-scroll-behavior="smooth">
       <head>
         <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
         <link href="https://fonts.googleapis.com" rel="preconnect" />
@@ -44,15 +70,25 @@ export default function RootLayout({
               (function() {
                 if (typeof window === 'undefined') return;
                 
-                // Listen for chunk loading errors
+                // Listen for chunk loading errors and network errors
                 window.addEventListener('error', function(e) {
+                  const msg = (e.message || '').toLowerCase();
+                  const isNetworkError = e.message && (
+                    msg.includes('networkerror') ||
+                    msg.includes('failed to fetch') ||
+                    msg.includes('fetch resource')
+                  );
                   const isChunkError = e.message && (
                     e.message.includes('chunk') ||
                     e.message.includes('Loading chunk') ||
                     e.message.includes('Failed to fetch dynamically imported module') ||
                     e.message.includes('Importing a module script failed')
                   );
-                  
+                  if (isNetworkError && !isChunkError) {
+                    e.preventDefault();
+                    console.warn('Network error: check if the API server is running and your connection is stable.');
+                    return;
+                  }
                   if (isChunkError) {
                     console.warn('Chunk loading error detected, attempting recovery...');
                     e.preventDefault();
@@ -78,10 +114,18 @@ export default function RootLayout({
                 // Handle unhandled promise rejections (chunk loading failures and expected API errors)
                 window.addEventListener('unhandledrejection', function(e) {
                   const reason = e.reason?.message || e.reason?.toString() || '';
+                  const reasonLower = reason.toLowerCase();
+                  const isNetworkError = reasonLower.includes('networkerror') ||
+                                        reasonLower.includes('failed to fetch') ||
+                                        reasonLower.includes('fetch resource');
                   const isChunkError = reason.includes('chunk') ||
                                        reason.includes('Loading chunk') ||
                                        reason.includes('Failed to fetch dynamically imported module');
-                  
+                  if (isNetworkError && !isChunkError) {
+                    e.preventDefault();
+                    console.warn('Network error: check if the API server is running (e.g. backend on port 5000) and your connection is stable.');
+                    return;
+                  }
                   // Check if it's an expected Axios error (400, 404, etc.)
                   const isAxiosError = e.reason?.isAxiosError || e.reason?.response;
                   const status = e.reason?.response?.status;
@@ -144,17 +188,16 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className={`${plusJakartaSans.variable} font-display bg-background-light text-gray-900`} style={{ overflowX: 'hidden', margin: 0, padding: 0, color: '#111827' }}>
-        <Providers>
-          <AppClientRoot
-            splashImageUrl={splashImageUrl}
-            splashLinkUrl={splashLinkUrl}
-            splashDuration={Number.isFinite(splashDuration) ? splashDuration : 0}
-            splashEnabled={splashEnabled}
-          >
-            {children}
-          </AppClientRoot>
-        </Providers>
+      <body className={`${inter.variable} font-sans bg-background-light text-gray-900 overflow-x-visible`} style={{ margin: 0, padding: 0, color: '#111827' }}>
+        <JsonLdSite />
+        <AppWithShell
+          splashImageUrl={splashImageUrl}
+          splashLinkUrl={splashLinkUrl}
+          splashDuration={Number.isFinite(splashDuration) ? splashDuration : 0}
+          splashEnabled={splashEnabled}
+        >
+          {children}
+        </AppWithShell>
       </body>
     </html>
   );

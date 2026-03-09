@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
 const { authenticate, authorize } = require('../middleware/auth');
 const { moderateAd } = require('../services/contentModeration');
+const { addNotificationToQueue } = require('../queues/notificationQueue');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -233,6 +234,21 @@ router.post('/ads/:id/remoderate', async (req, res) => {
         link: `/ads/${ad.id}`
       }
     });
+
+    // Queue email/SMS notification when ad is approved
+    if (newStatus === 'APPROVED') {
+      try {
+        await addNotificationToQueue({
+          type: 'ad_approved',
+          data: {
+            user: updatedAd.user,
+            ad: updatedAd,
+          },
+        });
+      } catch (notificationError) {
+        console.error('⚠️ Failed to queue ad_approved notification (moderation):', notificationError.message);
+      }
+    }
 
     res.json({
       success: true,

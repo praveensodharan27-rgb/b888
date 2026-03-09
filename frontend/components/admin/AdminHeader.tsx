@@ -27,6 +27,8 @@ export default function AdminHeader() {
       'premium': 'Premium Ads',
       'offers': 'Special Offers',
       'interstitial': 'Interstitial Ads',
+      'sponsored-ads': 'Sponsored Ads',
+      'auth-pages': 'Login/Signup Pages',
       'business-packages': 'Business Packages',
     };
     return titles[currentTab] || 'Dashboard';
@@ -181,15 +183,17 @@ export default function AdminHeader() {
               className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 rounded-lg transition-colors"
             >
               {user?.avatar ? (
-                <ImageWithFallback
-                  src={user.avatar}
-                  alt={user.name}
-                  width={32}
-                  height={32}
-                  className="w-8 h-8 rounded-full object-cover"
-                />
+                <div className="w-8 h-8 rounded-full overflow-hidden shrink-0">
+                  <ImageWithFallback
+                    src={user.avatar}
+                    alt={user.name}
+                    width={32}
+                    height={32}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
               ) : (
-                <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-semibold text-sm">
+                <div className="w-8 h-8 rounded-full overflow-hidden bg-blue-600 flex items-center justify-center text-white font-semibold text-sm shrink-0">
                   {user?.name?.charAt(0).toUpperCase()}
                 </div>
               )}
@@ -205,15 +209,17 @@ export default function AdminHeader() {
                 <div className="px-4 py-3 bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
                   <div className="flex items-center gap-3 mb-2">
                     {user?.avatar ? (
-                      <ImageWithFallback
-                        src={user.avatar}
-                        alt={user.name}
-                        width={48}
-                        height={48}
-                        className="w-12 h-12 rounded-full object-cover"
-                      />
+                      <div className="w-12 h-12 rounded-full overflow-hidden shrink-0">
+                        <ImageWithFallback
+                          src={user.avatar}
+                          alt={user.name}
+                          width={48}
+                          height={48}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
                     ) : (
-                      <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-lg">
+                      <div className="w-12 h-12 rounded-full overflow-hidden bg-blue-600 flex items-center justify-center text-white font-bold text-lg shrink-0">
                         {user?.name?.charAt(0).toUpperCase()}
                       </div>
                     )}

@@ -49,8 +49,8 @@ async function clearCacheAndReindex() {
     const approvedAds = await prisma.ad.findMany({
       where: { status: 'APPROVED' },
       include: {
-        category: { select: { id: true, name: true } },
-        subcategory: { select: { id: true, name: true } },
+        category: { select: { id: true, name: true, slug: true } },
+        subcategory: { select: { id: true, name: true, slug: true } },
         location: { select: { id: true, name: true } },
       },
     });

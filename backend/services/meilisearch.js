@@ -252,7 +252,9 @@ async function indexAd(ad) {
       locationId: ad.locationId,
       category: ad.category?.name || '',
       categoryName: ad.category?.name || '',
+      categorySlug: ad.category?.slug || '',
       subcategory: ad.subcategory?.name || '',
+      subcategorySlug: ad.subcategory?.slug || '',
       location: ad.location?.name || '',
       city: ad.city || '',
       state: ad.state || '',
@@ -294,6 +296,8 @@ async function indexAd(ad) {
       featuredAt: ad.featuredAt?.toISOString() || null,
       bumpedAt: ad.bumpedAt?.toISOString() || null,
       expiresAt: ad.expiresAt?.toISOString() || null,
+      // For home feed card specs (categorySlug + attributes)
+      attributes: ad.attributes && typeof ad.attributes === 'object' ? ad.attributes : {},
     };
 
     await index.addDocuments([document]);
@@ -346,7 +350,9 @@ async function indexAds(ads) {
         locationId: ad.locationId,
         category: ad.category?.name || '',
         categoryName: ad.category?.name || '',
+        categorySlug: ad.category?.slug || '',
         subcategory: ad.subcategory?.name || '',
+        subcategorySlug: ad.subcategory?.slug || '',
         location: ad.location?.name || '',
         city: ad.city || '',
         state: ad.state || '',
@@ -388,6 +394,7 @@ async function indexAds(ads) {
         featuredAt: ad.featuredAt?.toISOString() || null,
         bumpedAt: ad.bumpedAt?.toISOString() || null,
         expiresAt: ad.expiresAt?.toISOString() || null,
+        attributes: ad.attributes && typeof ad.attributes === 'object' ? ad.attributes : {},
       };
     });
 

@@ -1,20 +1,9 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import api from '@/lib/api';
 import Link from 'next/link';
-import { useState, useEffect, useMemo } from 'react';
-import { dummyCategories } from '@/lib/dummyData';
+import { useState, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-
-interface Category {
-  id: string;
-  name: string;
-  slug: string;
-  icon?: string;
-  _count: { ads: number };
-  createdAt?: string;
-}
+import { useCategories, type Category } from '@/hooks/useCategories';
 
 // Map category names to colors and icons (Sell Box style)
 const getCategoryStyle = (categoryName: string) => {
@@ -62,26 +51,14 @@ const trackCategoryView = (categorySlug: string) => {
 
 export default function CategoriesOLX() {
   const { isAuthenticated } = useAuth();
+  const { categories: data, isLoading } = useCategories();
   const [recentCategorySlugs] = useState<string[]>(() => {
     if (typeof window === 'undefined') return [];
     const recent = localStorage.getItem('recentCategories');
     return recent ? JSON.parse(recent) : [];
   });
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['categories'],
-    queryFn: async () => {
-      try {
-        const response = await api.get('/categories');
-        return response.data.categories;
-      } catch (error) {
-        return null;
-      }
-    },
-    staleTime: 10 * 60 * 1000,
-  });
-
-  const allCategories = (data as Category[]) || dummyCategories;
+  const allCategories = (data?.length ? data : []) as (Category & { _count?: { ads: number }; createdAt?: string })[];
 
   // Sort and categorize - MUST BE BEFORE EARLY RETURN
   const categorized = useMemo(() => {
@@ -91,7 +68,7 @@ export default function CategoriesOLX() {
 
     // Most Used: Categories with highest ad count (top 6)
     const mostUsed = [...allCategories]
-      .filter(cat => cat._count?.ads > 0)
+      .filter(cat => (cat._count?.ads ?? 0) > 0)
       .sort((a, b) => (b._count?.ads || 0) - (a._count?.ads || 0))
       .slice(0, 6);
 
@@ -102,7 +79,7 @@ export default function CategoriesOLX() {
 
     // Popular: Categories with ads, sorted by ad count (different from most used)
     const popular = [...allCategories]
-      .filter(cat => cat._count?.ads > 0 && !mostUsed.some(m => m.id === cat.id))
+      .filter(cat => (cat._count?.ads ?? 0) > 0 && !mostUsed.some(m => m.id === cat.id))
       .sort((a, b) => (b._count?.ads || 0) - (a._count?.ads || 0))
       .slice(0, 6);
 
@@ -160,9 +137,9 @@ export default function CategoriesOLX() {
         <span className="text-xs md:text-sm font-medium text-gray-700 group-hover:text-blue-600 transition-colors text-center">
           {category.name}
         </span>
-        {category._count?.ads > 0 && (
+        {(category._count?.ads ?? 0) > 0 && (
           <span className="text-xs text-gray-500 mt-1">
-            {category._count.ads} ads
+            {category._count?.ads ?? 0} ads
           </span>
         )}
       </Link>

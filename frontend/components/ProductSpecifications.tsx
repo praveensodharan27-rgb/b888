@@ -7,7 +7,7 @@ import Select, { ActionMeta, SingleValue } from 'react-select';
 import CreatableSelect from 'react-select/creatable';
 import api from '@/lib/api';
 import { FiPlus, FiEdit, FiTrash2, FiChevronDown, FiChevronRight, FiX, FiCopy } from 'react-icons/fi';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 
 interface Specification {
   id: string;
@@ -31,6 +31,8 @@ interface ProductSpecificationsProps {
   adId?: string; // For editing existing ad
   categorySlug?: string;
   subcategorySlug?: string;
+  /** When editing, pass ad's current attributes so spec fields show current values */
+  initialAttributes?: Record<string, unknown>;
   register: UseFormRegister<any>;
   watch: UseFormWatch<any>;
   setValue: UseFormSetValue<any>;
@@ -41,6 +43,7 @@ export default function ProductSpecifications({
   adId,
   categorySlug,
   subcategorySlug,
+  initialAttributes,
   register,
   watch,
   setValue,
@@ -52,18 +55,22 @@ export default function ProductSpecifications({
   const [expandedSpecs, setExpandedSpecs] = useState<Set<string>>(new Set());
   const [editingOption, setEditingOption] = useState<{ specId: string; option?: SpecificationOption } | null>(null);
 
-  // Fetch product-specific specifications (if editing existing ad)
+  // Fetch product-specific specifications (edit mode): use /categories/specifications?adId= (backend supports adId)
   const { data: productSpecs, isLoading: loadingProductSpecs } = useQuery({
     queryKey: ['specifications', 'product', adId],
     queryFn: async () => {
-      if (!adId) return { specifications: [], categoryDefaults: [] };
-      const response = await api.get(`/ads/${adId}/specifications`);
-      return response.data;
+      if (!adId) return { specifications: [] };
+      try {
+        const response = await api.get(`/categories/specifications?adId=${encodeURIComponent(adId)}`);
+        return { specifications: response.data?.specifications || [] };
+      } catch {
+        return { specifications: [] };
+      }
     },
     enabled: !!adId
   });
 
-  // Fetch category defaults as suggestions
+  // Fetch category defaults (spec definitions for this category/subcategory)
   const { data: categoryDefaults, isLoading: loadingDefaults } = useQuery({
     queryKey: ['specifications', 'category', categorySlug, subcategorySlug],
     queryFn: async () => {
@@ -78,29 +85,33 @@ export default function ProductSpecifications({
         return [];
       }
     },
-    enabled: !!(categorySlug || subcategorySlug)
+    enabled: !!categorySlug
   });
 
-  // Use product specs if available, otherwise get from form state (for new ads)
   const formSpecs = watch('_specifications') || [];
-  const specifications = adId 
-    ? ((productSpecs?.specifications || []) as Specification[])
-    : (formSpecs as Specification[]);
   const defaults = (categoryDefaults || []) as Specification[];
+  const specifications = adId
+    ? ((productSpecs?.specifications?.length ? productSpecs.specifications : defaults) as Specification[])
+    : (formSpecs as Specification[]);
 
-  // Load existing values into form when editing
+  // When editing: load current values from productSpecs (API) or initialAttributes (ad.attributes from edit page)
   useEffect(() => {
-    if (adId && productSpecs?.specifications) {
-      productSpecs.specifications.forEach((spec: any) => {
-        const fieldName = `attributes.${spec.name}`;
-        if (spec.type === 'multiselect' && spec.currentValues) {
-          setValue(fieldName, spec.currentValues);
-        } else if (spec.currentValue !== null && spec.currentValue !== undefined) {
-          setValue(fieldName, spec.currentValue);
-        }
-      });
-    }
-  }, [adId, productSpecs, setValue]);
+    if (!adId || !specifications.length) return;
+    const attrs = initialAttributes || {};
+    specifications.forEach((spec: any) => {
+      const fieldName = `attributes.${spec.name}`;
+      const fromApi = spec.type === 'multiselect' ? spec.currentValues : spec.currentValue;
+      const fromAd = attrs[spec.name];
+      if (spec.type === 'multiselect') {
+        const val = Array.isArray(fromApi) && fromApi.length ? fromApi : (Array.isArray(fromAd) ? fromAd : []);
+        if (val.length) setValue(fieldName, val);
+      } else if (fromApi !== null && fromApi !== undefined && fromApi !== '') {
+        setValue(fieldName, fromApi);
+      } else if (fromAd !== null && fromAd !== undefined && fromAd !== '') {
+        setValue(fieldName, fromAd);
+      }
+    });
+  }, [adId, specifications.length, setValue]);
 
   // Create specification mutation
   const createSpec = useMutation({
@@ -406,7 +417,7 @@ export default function ProductSpecifications({
     }
   };
 
-  if (!categorySlug || !subcategorySlug) {
+  if (!categorySlug) {
     return null;
   }
 
@@ -540,17 +551,38 @@ export default function ProductSpecifications({
             {isLoading ? (
               <div className="text-center py-4">Loading specifications...</div>
             ) : specifications.length === 0 ? (
-              <div className="text-center py-8 text-gray-500 bg-white rounded-lg border border-gray-200">
-                <p>No specifications yet.</p>
-                <p className="text-sm mt-2">
-                  {defaults.length > 0 
-                    ? 'Click "Copy Category Defaults" to add suggested specifications, or add your own.'
-                    : 'Add your first specification to get started.'}
-                </p>
-              </div>
+              (() => {
+                const formAttributes = watch('attributes') as Record<string, any> | undefined;
+                const attrs = formAttributes && typeof formAttributes === 'object' ? formAttributes : {};
+                const attrEntries = Object.entries(attrs).filter(([k, v]) => k !== 'price' && v != null && v !== '');
+                if (attrEntries.length > 0) {
+                  return (
+                    <div className="space-y-2">
+                      {attrEntries.map(([key, value]) => (
+                        <div key={key} className="bg-white rounded-lg shadow border border-gray-200 p-4">
+                          <h4 className="font-semibold text-gray-900 capitalize">{key.replace(/_/g, ' ')}</h4>
+                          <p className="text-gray-700 mt-1">{Array.isArray(value) ? value.join(', ') : String(value)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                }
+                return (
+                  <div className="text-center py-8 text-gray-500 bg-white rounded-lg border border-gray-200">
+                    <p>No specifications yet.</p>
+                    <p className="text-sm mt-2">
+                      {defaults.length > 0 
+                        ? 'Click "Copy Category Defaults" to add suggested specifications, or add your own.'
+                        : 'Add your first specification to get started.'}
+                    </p>
+                  </div>
+                );
+              })()
             ) : (
               <div className="space-y-2">
-                {specifications.map((spec) => {
+                {[...specifications]
+                  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                  .map((spec) => {
             const fieldName = `attributes.${spec.name}`;
             const error = (errors.attributes as any)?.[spec.name];
             const currentValue = watch(fieldName);
@@ -624,7 +656,7 @@ export default function ProductSpecifications({
                           }))
                         ]}
                         value={(Array.isArray(currentValue) ? currentValue : ((spec as any).currentValues || []))
-                          .map(val => ({ value: val, label: val }))}
+                          .map((val: string) => ({ value: val, label: val }))}
                         onChange={() => {}} // Disabled - read-only
                         placeholder={spec.placeholder || `Select or type ${spec.label.toLowerCase()}`}
                         isClearable={false}

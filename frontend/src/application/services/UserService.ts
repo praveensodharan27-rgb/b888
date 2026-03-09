@@ -1,5 +1,5 @@
 import api from '@/lib/api';
-import { User, UserProfile } from '@/domain/entities/User';
+import { User, UserProfile } from '@/src/domain/entities/User';
 
 /**
  * User Service
@@ -24,12 +24,7 @@ export class UserService {
   async updateAvatar(avatarFile: File): Promise<UserProfile> {
     const formData = new FormData();
     formData.append('avatar', avatarFile);
-    
-    const response = await api.put('/user/avatar', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
-    });
+    const response = await api.put('/user/avatar', formData);
     return response.data.user;
   }
 

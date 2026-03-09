@@ -1,7 +1,34 @@
 import { NextResponse } from 'next/server';
+import { getBaseUrl, getApiUrl } from '@/lib/seo';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
-const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+const API_URL = getApiUrl();
+const BASE_URL = getBaseUrl();
+
+/** Fetch recent approved ads for sitemap (id + updatedAt). Cap total to avoid huge sitemaps. */
+async function getRecentAds(maxUrls: number = 2000): Promise<{ id: string; updatedAt?: string }[]> {
+  const limit = 100;
+  const pages = Math.ceil(maxUrls / limit);
+  const all: { id: string; updatedAt?: string }[] = [];
+  try {
+    for (let page = 1; page <= pages; page++) {
+      const res = await fetch(
+        `${API_URL}/ads?page=${page}&limit=${limit}&sort=newest`,
+        { next: { revalidate: 3600 } }
+      );
+      if (!res.ok) break;
+      const data = await res.json();
+      const list = data?.ads ?? data?.data ?? [];
+      if (!Array.isArray(list) || list.length === 0) break;
+      for (const ad of list) {
+        if (ad?.id) all.push({ id: ad.id, updatedAt: ad.updatedAt ?? ad.createdAt });
+      }
+      if (list.length < limit) break;
+    }
+  } catch (e) {
+    console.error('getRecentAds error:', e);
+  }
+  return all.slice(0, maxUrls);
+}
 
 async function getCategories() {
   try {
@@ -62,7 +89,16 @@ export async function GET() {
     let sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <!-- Homepage -->
-  ${generateSitemapEntry(`${BASE_URL}`, now, 'daily', '1.0')}`;
+  ${generateSitemapEntry(`${BASE_URL}`, now, 'daily', '1.0')}
+  <!-- All ads listing -->
+  ${generateSitemapEntry(`${BASE_URL}/ads`, now, 'daily', '0.9')}`;
+
+    // Recent ad detail pages (for discovery; cap size)
+    const recentAds = await getRecentAds(2000);
+    for (const ad of recentAds) {
+      const lastmod = ad.updatedAt ? new Date(ad.updatedAt).toISOString().split('T')[0] : now;
+      sitemap += `\n${generateSitemapEntry(`${BASE_URL}/ads/${ad.id}`, lastmod, 'weekly', '0.7')}`;
+    }
 
     // Add category pages
     for (const category of categories) {
@@ -97,6 +133,27 @@ export async function GET() {
           }
         }
       }
+    }
+
+    // Business directory India: /in, /in/[state], /in/[state]/[city], category, business, blog
+    try {
+      const dirRes = await fetch(`${API_URL}/directory/sitemap-urls`, {
+        next: { revalidate: 3600 },
+        headers: { 'X-Forwarded-Proto': BASE_URL.startsWith('https') ? 'https' : 'http', 'X-Forwarded-Host': new URL(BASE_URL).host },
+      });
+      if (dirRes.ok) {
+        const dirData = await dirRes.json();
+        if (dirData.urls && Array.isArray(dirData.urls)) {
+          sitemap += `\n  <!-- Business Directory (root-level: /state, /state/city, etc.) -->`;
+          for (const u of dirData.urls) {
+            const lastmod = u.lastmod ? new Date(u.lastmod).toISOString().split('T')[0] : now;
+            sitemap += `\n${generateSitemapEntry(u.url, lastmod, u.changefreq || 'weekly', u.priority || '0.7')}`;
+          }
+        }
+      }
+    } catch (dirErr) {
+      console.error('Directory sitemap error:', dirErr);
+      sitemap += `\n${generateSitemapEntry(`${BASE_URL}/in`, now, 'daily', '0.9')}`;
     }
 
     sitemap += `\n</urlset>`;

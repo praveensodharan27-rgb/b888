@@ -3,7 +3,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter, useParams } from 'next/navigation';
 import { useEffect, useState, useCallback } from 'react';
-import { FiMapPin, FiCheckCircle, FiPackage, FiUsers, FiArrowLeft, FiAlertCircle, FiUserPlus, FiMail, FiEdit3, FiMoreVertical, FiStar, FiHeart, FiCalendar, FiPhone, FiMessageCircle, FiTag, FiX, FiLock, FiEye, FiEyeOff } from 'react-icons/fi';
+import { FiMapPin, FiCheckCircle, FiPackage, FiUsers, FiArrowLeft, FiAlertCircle, FiUserPlus, FiMail, FiEdit3, FiMoreVertical, FiStar, FiHeart, FiCalendar, FiPhone, FiMessageCircle, FiTag, FiX, FiLock, FiEye, FiEyeOff, FiBriefcase } from 'react-icons/fi';
 import Link from 'next/link';
 import FollowButton from '@/components/FollowButton';
 import ProfileLoading from '@/components/ProfileLoading';
@@ -11,11 +11,12 @@ import FollowersModal from '@/components/FollowersModal';
 import BlockButton from '@/components/BlockButton';
 import { useProfileCache } from '@/contexts/ProfileCacheContext';
 import api from '@/lib/api';
-import toast from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { useQuery } from '@tanstack/react-query';
 import ImageWithFallback from '@/components/ImageWithFallback';
 import { format } from 'date-fns';
 import { useToggleFavorite, useIsFavorite } from '@/hooks/useAds';
+import { getAdUrl } from '@/lib/directory';
 
 interface PublicUser {
   id: string;
@@ -38,6 +39,13 @@ interface PublicUser {
   _count?: {
     ads: number;
   };
+  business?: {
+    slug: string;
+    businessName: string;
+    category: string;
+    city?: string | null;
+    logo?: string | null;
+  } | null;
 }
 
 type TabType = 'listings' | 'reviews' | 'followers' | 'about';
@@ -158,8 +166,7 @@ export default function ProfileViewScreen() {
     } else {
       fetchUserProfile(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, fetchUserProfile]);
+  }, [userId, fetchUserProfile, getProfile]);
 
   // Check contact request status
   useEffect(() => {
@@ -460,6 +467,21 @@ export default function ProfileViewScreen() {
                           </div>
                         </div>
                       </div>
+
+                      {/* Business page link – show when user has a business */}
+                      {user.business?.slug && (
+                        <Link
+                          href={`/business/${user.business.slug}`}
+                          className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-800 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/50 hover:text-blue-700"
+                        >
+                          <FiBriefcase className="w-5 h-5 text-blue-600" />
+                          <span>
+                            {user.business.businessName}
+                            {user.business.category && ` · ${user.business.category}`}
+                          </span>
+                          <span className="text-blue-600">View business page →</span>
+                        </Link>
+                      )}
                     </div>
 
                     {/* Action Buttons */}
@@ -535,7 +557,7 @@ export default function ProfileViewScreen() {
                                       <BlockButton
                                         userId={userId}
                                         userName={user.name}
-                                        variant="menu"
+                                        variant="icon"
                                         className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                                         onBlockChange={(blocked) => {
                                           if (blocked) {
@@ -993,7 +1015,7 @@ function ListingCard({ ad, isOwnProfile }: { ad: any; isOwnProfile: boolean }) {
     : null;
 
   return (
-    <Link href={`/ads/${ad.id}`} className="block group">
+    <Link href={getAdUrl(ad)} className="block group">
       <div className="bg-white rounded-xl shadow-sm hover:shadow-md transition-all overflow-hidden h-full flex flex-col">
         {/* Product Image */}
         <div className="relative h-48 bg-gray-200 overflow-hidden">

@@ -4,10 +4,11 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
-import { toast } from 'react-hot-toast';
+import toast from '@/lib/toast';
 import { FiShield, FiAlertTriangle, FiCheck, FiX, FiRefreshCw, FiEye, FiBarChart2 } from 'react-icons/fi';
 import Image from 'next/image';
 import Link from 'next/link';
+import { getAdUrl } from '@/lib/adUrl';
 
 interface ModerationStats {
   totalAds: number;
@@ -49,8 +50,9 @@ export default function ContentModerationAdmin() {
   const [flaggedAds, setFlaggedAds] = useState<FlaggedAd[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'statistics' | 'flagged'>('statistics');
+  const [activeTab, setActiveTab] = useState<'statistics' | 'pending' | 'flagged'>('statistics');
   const [filterType, setFilterType] = useState<'all' | 'auto-rejected' | 'flagged'>('all');
+  const [pendingAds, setPendingAds] = useState<FlaggedAd[]>([]);
 
   useEffect(() => {
     if (!isLoading && !isAdmin) {
@@ -64,6 +66,12 @@ export default function ContentModerationAdmin() {
       fetchFlaggedAds();
     }
   }, [isAdmin, filterType]);
+
+  useEffect(() => {
+    if (isAdmin && activeTab === 'pending') {
+      fetchPendingAds();
+    }
+  }, [isAdmin, activeTab]);
 
   const fetchStatistics = async () => {
     try {
@@ -89,6 +97,17 @@ export default function ContentModerationAdmin() {
     }
   };
 
+  const fetchPendingAds = async () => {
+    try {
+      const response = await api.get('/admin/ads', { params: { status: 'PENDING', limit: 50 } });
+      if (response.data.success) {
+        setPendingAds(response.data.ads || []);
+      }
+    } catch (error: any) {
+      console.error('Error fetching pending ads:', error);
+    }
+  };
+
   const handleRemoderate = async (adId: string) => {
     setProcessing(adId);
     try {
@@ -111,13 +130,20 @@ export default function ContentModerationAdmin() {
       const response = await api.put(`/admin/ads/${adId}/status`, {
         status: 'APPROVED'
       });
-      if (response.data.success) {
+      if (response.data?.success !== false) {
         toast.success('Ad approved successfully');
         fetchStatistics();
         fetchFlaggedAds();
+        fetchPendingAds();
+      } else {
+        toast.error((response.data as any)?.message || 'Failed to approve ad');
       }
     } catch (error: any) {
-      toast.error(error.response?.data?.message || 'Failed to approve ad');
+      const msg = error.response?.data?.message
+        || (error.response?.data?.errors?.[0]?.msg)
+        || error.message
+        || 'Failed to approve ad';
+      toast.error(msg);
     } finally {
       setProcessing(null);
     }
@@ -134,6 +160,7 @@ export default function ContentModerationAdmin() {
         toast.success('Ad rejected successfully');
         fetchStatistics();
         fetchFlaggedAds();
+        fetchPendingAds();
       }
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Failed to reject ad');
@@ -179,6 +206,17 @@ export default function ContentModerationAdmin() {
         >
           <FiBarChart2 className="w-5 h-5" />
           Statistics
+        </button>
+        <button
+          onClick={() => setActiveTab('pending')}
+          className={`pb-4 px-4 font-medium transition-colors flex items-center gap-2 ${
+            activeTab === 'pending'
+              ? 'text-primary-600 border-b-2 border-primary-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <FiRefreshCw className="w-5 h-5" />
+          Pending {pendingAds.length > 0 && `(${pendingAds.length})`}
         </button>
         <button
           onClick={() => setActiveTab('flagged')}
@@ -273,7 +311,7 @@ export default function ContentModerationAdmin() {
                         </p>
                       </div>
                       <Link
-                        href={`/ads/${ad.id}`}
+                        href={getAdUrl(ad as any)}
                         target="_blank"
                         className="text-primary-600 hover:text-primary-700 flex items-center gap-1"
                       >
@@ -284,6 +322,72 @@ export default function ContentModerationAdmin() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pending Ads Tab - manual approve/reject */}
+      {activeTab === 'pending' && (
+        <div className="space-y-6">
+          <p className="text-gray-600">Ads waiting for review. They will auto-approve after ~3 minutes if moderation passed; you can approve or reject now.</p>
+          {pendingAds.length === 0 ? (
+            <div className="bg-white p-12 rounded-lg shadow-sm border border-gray-200 text-center">
+              <FiCheck className="w-16 h-16 text-green-500 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold text-gray-900 mb-2">No Pending Ads</h3>
+              <p className="text-gray-600">All ads have been processed.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {pendingAds.map((ad) => (
+                <div key={ad.id} className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                  <div className="flex gap-4">
+                    {ad.images && ad.images.length > 0 && (
+                      <div className="flex-shrink-0 w-32 h-32 relative rounded-lg overflow-hidden bg-gray-100">
+                        <Image
+                          src={ad.images[0]}
+                          alt={ad.title}
+                          fill
+                          className="object-cover"
+                        />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-semibold text-gray-900">{ad.title}</h3>
+                      <p className="text-sm text-gray-600 mt-1">By: {ad.user?.name} · {ad.category?.name}</p>
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        <button
+                          onClick={() => handleApprove(ad.id)}
+                          disabled={processing === ad.id}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50"
+                        >
+                          <FiCheck className="w-4 h-4" />
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => {
+                            const reason = window.prompt('Rejection reason (optional):');
+                            if (reason !== null) handleReject(ad.id, reason);
+                          }}
+                          disabled={processing === ad.id}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50"
+                        >
+                          <FiX className="w-4 h-4" />
+                          Reject
+                        </button>
+                        <Link
+                          href={getAdUrl(ad as any)}
+                          target="_blank"
+                          className="inline-flex items-center gap-1 px-3 py-1.5 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50"
+                        >
+                          <FiEye className="w-4 h-4" />
+                          View
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -373,7 +477,7 @@ export default function ContentModerationAdmin() {
                       {/* Actions */}
                       <div className="flex gap-2 flex-wrap">
                         <Link
-                          href={`/ads/${ad.id}`}
+                          href={getAdUrl(ad as any)}
                           target="_blank"
                           className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg flex items-center gap-2 hover:bg-gray-200 transition-colors text-sm"
                         >

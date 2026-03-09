@@ -3,6 +3,8 @@ const { body, validationResult } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
 const Razorpay = require('razorpay');
 const { authenticate } = require('../middleware/auth');
+const { sendAdPackagePurchasedNotification, sendPaymentSuccessNotification } = require('../services/notificationService');
+const { addNotificationToQueue } = require('../queues/notificationQueue');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -412,6 +414,63 @@ router.post('/verify',
         isRead: false,
         createdAt: notification.createdAt
       });
+
+      // Send email and SMS notifications
+      try {
+        const user = await prisma.user.findUnique({
+          where: { id: req.user.id },
+          select: { id: true, name: true, email: true, phone: true }
+        });
+
+        if (user) {
+          // Common order payload used by multiple notification types
+          const orderPayload = {
+            id: premiumOrder.id,
+            amount: premiumOrder.amount,
+            paymentMethod: 'Razorpay',
+            invoiceId: premiumOrder.id, // Use premium order ID as invoice reference
+          };
+
+          // 1) Package purchase notification (email + SMS)
+          await addNotificationToQueue({
+            type: 'package_purchased',
+            data: {
+              user,
+              ad: premiumOrder.ad,
+              packageType: premiumOrder.type,
+              order: orderPayload,
+            },
+          });
+
+          // 2) Payment success notification (email + SMS)
+          await addNotificationToQueue({
+            type: 'payment_success',
+            data: {
+              user,
+              order: orderPayload,
+            },
+          });
+
+          // 3) Invoice generated notification (email + SMS)
+          await addNotificationToQueue({
+            type: 'invoice_generated',
+            data: {
+              user,
+              invoice: {
+                id: premiumOrder.id,
+                invoiceNumber: String(premiumOrder.id).padStart(6, '0'),
+                totalAmount: premiumOrder.amount,
+                createdAt: premiumOrder.createdAt || new Date(),
+              },
+            },
+          });
+
+          console.log(`📧 Premium notifications queued for user ${user.id}`);
+        }
+      } catch (notificationError) {
+        console.error('⚠️  Failed to queue notification:', notificationError);
+        // Don't fail the payment verification if notification fails
+      }
 
       // ✅ Return comprehensive response with activation confirmation
       const activationConfirmed = result.activation?.serviceActivated || false;

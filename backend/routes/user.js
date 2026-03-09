@@ -1196,6 +1196,23 @@ router.get('/orders', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Get user orders error:', error);
+
+    // In development, avoid breaking the Orders page completely.
+    // Return an empty orders list but surface the error message for debugging.
+    if (process.env.NODE_ENV === 'development') {
+      return res.status(200).json({
+        success: true,
+        orders: [],
+        pagination: {
+          page: parseInt(req.query.page || 1, 10),
+          limit: parseInt(req.query.limit || 20, 10),
+          total: 0,
+          pages: 0,
+        },
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     res.status(500).json({ success: false, message: 'Failed to fetch orders' });
   }
 });

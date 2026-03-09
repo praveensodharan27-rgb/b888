@@ -311,15 +311,15 @@ export const sanitizeInput = (input: string): string => {
 
 // Validate and sanitize form data
 export const sanitizeFormData = <T extends Record<string, any>>(data: T): T => {
-  const sanitized = { ...data };
+  const sanitized = { ...data } as Record<string, unknown>;
   
   Object.keys(sanitized).forEach(key => {
     if (typeof sanitized[key] === 'string') {
-      sanitized[key] = sanitizeInput(sanitized[key]);
+      sanitized[key] = sanitizeInput(sanitized[key] as string);
     }
   });
   
-  return sanitized;
+  return sanitized as T;
 };
 
 export default {

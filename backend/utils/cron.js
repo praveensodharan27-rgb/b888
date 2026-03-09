@@ -4,6 +4,7 @@ const { processSearchAlerts } = require('../services/searchAlerts');
 const { autoApprovePendingAds } = require('../services/autoApproval');
 const { resetMonthlyFreeAds } = require('../services/monthlyQuotaReset');
 const { expireAds } = require('../scripts/expire-ads');
+const { runAdExpiryChecks } = require('../cron/adExpiryCron');
 const { cleanupExpiredAds, refreshAllClusters, mergeLowVolumeClusters } = require('../services/clusterAutoUpdate');
 const { runRotationCycle } = require('../services/adRotationService');
 const { expireFeaturedAds, expireBumpAds, expireTopAds } = require('../services/promotionService');
@@ -62,6 +63,14 @@ function setupCronJobs() {
     logger.info({ job: 'reset_monthly_quota' }, 'Cron: running');
     await resetMonthlyFreeAds();
     logger.info({ job: 'reset_monthly_quota' }, 'Cron: done');
+  }));
+
+  // Daily 9:00 AM IST - ad expiry reminders + expiry emails (2 days before, 1 day before, and on expiry)
+  cron.schedule('30 3 * * *', withJobLock('ad_expiry_checks', async () => {
+    // 30 3 UTC ≈ 9:00 IST (UTC+5:30)
+    logger.info({ job: 'ad_expiry_checks' }, 'Cron: running');
+    await runAdExpiryChecks();
+    logger.info({ job: 'ad_expiry_checks' }, 'Cron: done');
   }));
 
   // Hourly at :25 - auto-expire ads (was :00)
@@ -140,6 +149,7 @@ function setupCronJobs() {
       'moderation(2,7..57 * * * *)',
       'reset_monthly_quota(0 0 1 * *)',
       'expire_ads(25 * * * *)',
+      'ad_expiry_checks(30 3 * * *)',
       'cluster_cleanup(45 3 * * *)',
       'cluster_refresh(15 4 * * *)',
       'cluster_merge(30 5 * * 0)',
