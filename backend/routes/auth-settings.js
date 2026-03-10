@@ -179,7 +179,11 @@ router.post('/upload-image',
       }
 
       // Get the API base URL
-      const apiBaseUrl = process.env.API_BASE_URL || `http://localhost:5000`;
+      const apiBaseUrl =
+        process.env.API_BASE_URL ||
+        process.env.BACKEND_URL ||
+        process.env.BASE_URL ||
+        'http://148.230.67.118:5000';
       const imageUrl = `${apiBaseUrl}/uploads/auth-images/${req.file.filename}`;
 
       res.json({
