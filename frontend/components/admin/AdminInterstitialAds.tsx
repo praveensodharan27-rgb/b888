@@ -139,7 +139,7 @@ function InterstitialAdForm({ ad, onClose }: { ad?: any; onClose: () => void }) 
   });
   const [image, setImage] = useState<File | null>(null);
   const imagePreviewUrl = ad?.image
-    ? (ad.image.startsWith('http') ? ad.image : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000'}${ad.image.startsWith('/') ? '' : '/'}${ad.image}`)
+    ? (ad.image.startsWith('http') ? ad.image : `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://148.230.67.118:5000'}${ad.image.startsWith('/') ? '' : '/'}${ad.image}`)
     : null;
 
   const createMutation = useMutation({

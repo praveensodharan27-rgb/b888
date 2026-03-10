@@ -4,15 +4,12 @@ import { getQueryClient } from './queryClient';
 
 // Normalize API base URL - ensure /api path for correct routing
 function normalizeApiBaseUrl(url: string | undefined): string {
-  const base = url || 'http://localhost:5000/api';
+  const base = url || 'http://148.230.67.118:5000/api';
   const trimmed = String(base).trim().replace(/\/+$/, '');
   if (trimmed.endsWith('/api')) return trimmed;
   return trimmed + '/api';
 }
-const API_BASE_URL =
-  typeof window !== 'undefined'
-    ? normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL)
-    : normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL);
+const API_BASE_URL = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL);
 
 // Public endpoints that don't require authentication
 const publicEndpoints = [

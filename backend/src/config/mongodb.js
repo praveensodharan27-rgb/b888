@@ -7,11 +7,9 @@ require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
 
 // MongoDB Connection String
-// In production, this MUST be provided via environment variables.
-const MONGO_URI =
-  process.env.MONGO_URI ||
-  process.env.DATABASE_URL ||
-  '';
+const MONGO_URI = process.env.MONGO_URI || 
+                  process.env.DATABASE_URL || 
+                  'mongodb+srv://b888:NQEbkx2JWyBNJz7Z@cluster0.cj9oi8t.mongodb.net/olx_app?retryWrites=true&w=majority&appName=Cluster0';
 
 // Prisma Client instance (singleton pattern)
 let prismaClient = null;

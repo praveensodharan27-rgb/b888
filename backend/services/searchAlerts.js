@@ -148,7 +148,7 @@ async function sendAlertEmail(email, query, products, settings) {
   }
 
   try {
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
     
     // Format products HTML
     const productsHTML = formatProductsHTML(products, frontendUrl);

@@ -1,7 +1,7 @@
 /**
  * Fetch ad by JustDial-style path (server-side). For /:city/services/:category/:slug
  */
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://148.230.67.118:5000';
 const API_BASE = API_URL.replace(/\/+$/, '').endsWith('/api') ? API_URL.replace(/\/+$/, '') : `${API_URL.replace(/\/+$/, '')}/api`;
 
 export async function fetchAdByServicePath(

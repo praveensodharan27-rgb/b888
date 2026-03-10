@@ -127,7 +127,7 @@ export function ProductDetailPage(props: ProductDetailPageProps) {
     .map((img: any) => {
       const s = String(img).trim();
       if (s.startsWith('/uploads/')) {
-        const base = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000';
+        const base = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://148.230.67.118:5000';
         return `${base}${s}`;
       }
       return s;

@@ -460,7 +460,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup, onLoginS
                 {/* Social Login Buttons */}
                 <div className="grid grid-cols-2 gap-3">
                   <a
-                    href={`${(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '')}/api/auth/google`}
+                    href={`${(process.env.NEXT_PUBLIC_API_URL || 'http://148.230.67.118:5000/api').replace(/\/api$/, '')}/api/auth/google`}
                     className="w-full flex items-center justify-center gap-2.5 px-4 py-3 bg-white border-2 border-gray-200 rounded-xl hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm hover:shadow-md"
                   >
                     <svg className="w-5 h-5" viewBox="0 0 24 24">
@@ -472,7 +472,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup, onLoginS
                     <span className="font-medium text-gray-700 text-sm">Google</span>
                   </a>
                   <a
-                    href={`${(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '')}/api/auth/facebook`}
+                    href={`${(process.env.NEXT_PUBLIC_API_URL || 'http://148.230.67.118:5000/api').replace(/\/api$/, '')}/api/auth/facebook`}
                     className="w-full flex items-center justify-center gap-2.5 px-4 py-3 bg-white border-2 border-gray-200 rounded-xl hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm hover:shadow-md"
                   >
                     <svg className="w-5 h-5" fill="#1877F2" viewBox="0 0 24 24">

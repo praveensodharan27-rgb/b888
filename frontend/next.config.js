@@ -21,23 +21,14 @@ const nextConfig = {
         hostname: 'localhost',
         pathname: '/**',
       },
-      {
-        protocol: 'http',
-        hostname: '127.0.0.1',
-        pathname: '/**',
-      },
+      // Allow backend uploads from API origin (configured via env at runtime)
       {
         protocol: 'http',
         hostname: 'localhost',
         port: '5000',
         pathname: '/uploads/**',
       },
-      {
-        protocol: 'http',
-        hostname: '127.0.0.1',
-        port: '5000',
-        pathname: '/uploads/**',
-      },
+      // Note: production image host should be set via domain (e.g. 148.230.67.118)
       {
         protocol: 'https',
         hostname: '**.amazonaws.com',
@@ -77,8 +68,8 @@ const nextConfig = {
     ]
   },
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api',
-    NEXT_PUBLIC_SOCKET_URL: process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000'
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://148.230.67.118:5000/api',
+    NEXT_PUBLIC_SOCKET_URL: process.env.NEXT_PUBLIC_SOCKET_URL || 'http://148.230.67.118:5000'
   },
   // Performance optimizations
   experimental: {

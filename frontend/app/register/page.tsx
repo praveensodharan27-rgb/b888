@@ -89,7 +89,7 @@ function RegisterPageContent() {
     });
   };
 
-  const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://148.230.67.118:5000/api').replace(/\/api$/, '');
 
   return (
     <div className="h-[calc(100vh-var(--navbar-height))] overflow-hidden flex items-center justify-center p-4 w-full bg-gray-50">

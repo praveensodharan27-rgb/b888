@@ -66,7 +66,9 @@ interface InjectedAdSlotProps {
   className?: string;
 }
 
-const API_BASE = typeof window !== 'undefined' ? (process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000') : '';
+const API_BASE = typeof window !== 'undefined'
+  ? (process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://148.230.67.118:5000')
+  : '';
 
 function getAdUrl(ad: SponsoredAdData | null): string {
   if (!ad?.redirectUrl) return '/business-package';

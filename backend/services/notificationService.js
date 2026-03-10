@@ -8,7 +8,7 @@ const { logger } = require('../src/config/logger');
  * Handles all notification events with email, SMS, and database tracking
  */
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
 const APP_NAME = process.env.APP_NAME || 'SellIt';
 
 /** Capitalize first letter of a string; safe for null/undefined/empty */

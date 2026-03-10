@@ -162,7 +162,7 @@ export default function LoginPage() {
     }
   };
 
-  const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://148.230.67.118:5000/api').replace(/\/api$/, '');
 
   // Show loading during initial mount to prevent hydration mismatch
   if (!mounted || authLoading || (user && !authLoading)) {

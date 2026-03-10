@@ -130,7 +130,7 @@ export async function getAdByPath(
 ): Promise<{ id: string; [key: string]: unknown } | null> {
   const base = typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL
     ? String(process.env.NEXT_PUBLIC_API_URL).replace(/\/+$/, '')
-    : 'http://localhost:5000';
+    : 'http://148.230.67.118:5000';
   const apiBase = base.endsWith('/api') ? base : `${base}/api`;
   const url = `${apiBase}/ads/by-path/${encodeURIComponent(stateSlug)}/${encodeURIComponent(citySlug)}/${encodeURIComponent(categorySlug)}/${encodeURIComponent(slug)}`;
   try {

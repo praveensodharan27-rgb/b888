@@ -1,5 +1,6 @@
 // MongoDB Prisma Schema
-// Unified main schema for MongoDB Atlas (database: olx_app)
+// This schema is compatible with MongoDB
+// All models maintain the same field structure as PostgreSQL version
 
 generator client {
   provider = "prisma-client-js"
@@ -1152,4 +1153,3 @@ model SubcategoryBrands {
   @@index([subcategorySlug])
   @@map("subcategory_brands")
 }
-

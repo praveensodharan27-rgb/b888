@@ -138,7 +138,7 @@ const passport = require('passport');
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Serve uploaded files statically
+// Serve uploaded files statically (for local development)
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Request ID and structured HTTP logging (for debugging: trace all requests by id)

@@ -422,7 +422,7 @@ router.get('/sitemap-urls', async (req, res) => {
     if (!base && req.get('x-forwarded-proto') && (req.get('x-forwarded-host') || req.get('host'))) {
       base = `${req.get('x-forwarded-proto')}://${req.get('x-forwarded-host') || req.get('host')}`;
     }
-    base = base || 'http://localhost:3000';
+    base = base || process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
     const prefix = base; // Root-level: /state, /state/city, etc. (no /in)
     const states = await prisma.directoryState.findMany({
       where: { isActive: true },

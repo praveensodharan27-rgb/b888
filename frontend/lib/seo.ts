@@ -8,12 +8,12 @@ function trimTrailingSlash(url: string): string {
 }
 
 export function getBaseUrl(): string {
-  const url = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+  const url = process.env.NEXT_PUBLIC_BASE_URL || 'http://148.230.67.118:3000';
   return trimTrailingSlash(String(url).trim());
 }
 
 export function getApiUrl(): string {
-  const url = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+  const url = process.env.NEXT_PUBLIC_API_URL || 'http://148.230.67.118:5000/api';
   const trimmed = String(url).trim().replace(/\/+$/, '');
   return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
 }

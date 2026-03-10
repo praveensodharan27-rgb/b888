@@ -46,7 +46,7 @@ export const getSocket = (): Socket | null => {
     connectionAttempts = 0;
 
     try {
-      socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000', {
+      socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://148.230.67.118:5000', {
         auth: token ? { token } : undefined,
         transports: ['websocket', 'polling'],
         reconnection: true,

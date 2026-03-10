@@ -13,7 +13,7 @@ import { formatAdTitle } from '@/lib/formatText';
 
 const API_ORIGIN = typeof window !== 'undefined' && process.env.NEXT_PUBLIC_API_URL
   ? String(process.env.NEXT_PUBLIC_API_URL).replace(/\/api\/?$/, '')
-  : 'http://localhost:5000';
+  : 'http://148.230.67.118:5000';
 
 type Ad = {
   id: string;

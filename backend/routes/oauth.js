@@ -14,7 +14,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/google/callback`
+    callbackURL: `${process.env.BACKEND_URL || process.env.BASE_URL || 'http://148.230.67.118:5000'}/api/auth/google/callback`
   },
   async (accessToken, refreshToken, profile, done) => {
     try {
@@ -80,7 +80,7 @@ if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
   passport.use(new FacebookStrategy({
     clientID: process.env.FACEBOOK_APP_ID,
     clientSecret: process.env.FACEBOOK_APP_SECRET,
-    callbackURL: `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/auth/facebook/callback`,
+    callbackURL: `${process.env.BACKEND_URL || process.env.BASE_URL || 'http://148.230.67.118:5000'}/api/auth/facebook/callback`,
     profileFields: ['id', 'displayName', 'email', 'picture.type(large)']
   },
   async (accessToken, refreshToken, profile, done) => {
@@ -165,7 +165,7 @@ const isGoogleStrategyConfigured = () => {
 router.get('/google', (req, res, next) => {
   if (!isGoogleStrategyConfigured()) {
     console.error('❌ Google OAuth not configured: Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
     return res.redirect(`${frontendUrl}/login?error=google_oauth_not_configured`);
   }
   next();
@@ -174,27 +174,27 @@ router.get('/google', (req, res, next) => {
 router.get('/google/callback', (req, res, next) => {
   if (!isGoogleStrategyConfigured()) {
     console.error('❌ Google OAuth not configured: Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET');
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
     return res.redirect(`${frontendUrl}/login?error=google_oauth_not_configured`);
   }
   next();
-}, passport.authenticate('google', { session: false, failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed` }), async (req, res) => {
+}, passport.authenticate('google', { session: false, failureRedirect: `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000'}/login?error=oauth_failed` }), async (req, res) => {
     try {
       const user = req.user;
       if (!user || !user.id) {
         console.error('Google OAuth: User not found in request');
-        return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed`);
+        return res.redirect(`${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000'}/login?error=oauth_failed`);
       }
       
       const token = generateToken(user.id);
       console.log('✅ Google OAuth success:', { userId: user.id, email: user.email, provider: user.provider });
       
       // Redirect to frontend with token
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const frontendUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
       res.redirect(`${frontendUrl}/auth/callback?token=${token}&provider=google`);
     } catch (error) {
       console.error('Google OAuth callback error:', error);
-      res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed`);
+      res.redirect(`${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000'}/login?error=oauth_failed`);
     }
   }
 );
@@ -208,7 +208,7 @@ const isFacebookStrategyConfigured = () => {
 router.get('/facebook', (req, res, next) => {
   if (!isFacebookStrategyConfigured()) {
     console.error('❌ Facebook OAuth not configured: Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET');
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
     return res.redirect(`${frontendUrl}/login?error=facebook_oauth_not_configured`);
   }
   next();
@@ -217,23 +217,23 @@ router.get('/facebook', (req, res, next) => {
 router.get('/facebook/callback', (req, res, next) => {
   if (!isFacebookStrategyConfigured()) {
     console.error('❌ Facebook OAuth not configured: Missing FACEBOOK_APP_ID or FACEBOOK_APP_SECRET');
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
     return res.redirect(`${frontendUrl}/login?error=facebook_oauth_not_configured`);
   }
   next();
-}, passport.authenticate('facebook', { session: false, failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed` }), async (req, res) => {
+}, passport.authenticate('facebook', { session: false, failureRedirect: `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000'}/login?error=oauth_failed` }), async (req, res) => {
     try {
       const user = req.user;
       if (!user || !user.id) {
         console.error('Facebook OAuth: User not found in request');
-        return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=oauth_failed`);
+        return res.redirect(`${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000'}/login?error=oauth_failed`);
       }
       
       const token = generateToken(user.id);
       console.log('✅ Facebook OAuth success:', { userId: user.id, email: user.email, provider: user.provider });
       
       // Redirect to frontend with token
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const frontendUrl = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://148.230.67.118:3000';
       res.redirect(`${frontendUrl}/auth/callback?token=${token}&provider=facebook`);
     } catch (error) {
       console.error('Facebook OAuth callback error:', error);

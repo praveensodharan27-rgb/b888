@@ -269,10 +269,7 @@ const uploadImages = (req, res, next) => {
       if (err) return res.status(400).json({ success: false, message: err.message });
       if (req.files && req.files.length > 0) {
         try {
-          const baseUrl =
-            process.env.BACKEND_URL ||
-            process.env.BASE_URL ||
-            `http://148.230.67.118:${process.env.PORT || 5000}`;
+          const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
           
           // Get category information for filename and alt text generation
           const categoryId = req.body?.categoryId;
@@ -590,10 +587,7 @@ const uploadAvatar = (req, res, next) => {
     return localUpload.single('avatar')(req, res, async (err) => {
       if (err) return res.status(400).json({ success: false, message: err.message });
       if (req.file) {
-        const baseUrl =
-          process.env.BACKEND_URL ||
-          process.env.BASE_URL ||
-          `http://148.230.67.118:${process.env.PORT || 5000}`;
+        const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
         req.uploadedAvatar = `${baseUrl}/uploads/avatars/${req.file.filename}`;
         (req.log || logger).info({ requestId: req.id }, 'Uploaded avatar (local storage)');
       }
@@ -669,10 +663,7 @@ const uploadBusinessImage = (req, res, next) => {
       return res.status(400).json({ success: false, message: err.message || 'Invalid image' });
     }
     if (req.file) {
-      const baseUrl =
-        process.env.BACKEND_URL ||
-        process.env.BASE_URL ||
-        `http://148.230.67.118:${process.env.PORT || 5000}`;
+      const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
       req.uploadedBusinessImage = `${baseUrl}/uploads/business/${req.file.filename}`;
     }
     next();

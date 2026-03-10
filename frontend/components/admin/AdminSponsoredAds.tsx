@@ -116,7 +116,7 @@ export default function AdminSponsoredAds() {
             <div className="relative mb-4">
               {ad.bannerImage ? (
                 <ImageWithFallback
-                  src={ad.bannerImage.startsWith('/') ? `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000'}${ad.bannerImage}` : ad.bannerImage}
+                  src={ad.bannerImage.startsWith('/') ? `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://148.230.67.118:5000'}${ad.bannerImage}` : ad.bannerImage}
                   alt={ad.title}
                   width={400}
                   height={200}
@@ -200,7 +200,7 @@ function SponsoredAdForm({ ad, onClose }: { ad?: any; onClose: () => void }) {
   });
   const [image, setImage] = useState<File | null>(null);
   const imagePreviewUrl = ad?.bannerImage
-    ? (ad.bannerImage.startsWith('/') ? `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000'}${ad.bannerImage}` : ad.bannerImage)
+    ? (ad.bannerImage.startsWith('/') ? `${process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://148.230.67.118:5000'}${ad.bannerImage}` : ad.bannerImage)
     : null;
 
   const createMutation = useMutation({
