@@ -285,9 +285,11 @@ function AdsPageContent() {
 
   // Paginated ads (single page)
   const adsQuery = useAdsPaginated(filters);
-  const adsData = adsQuery.data
-    ? { ads: adsQuery.data.ads || [], pagination: adsQuery.data.pagination || { page: 1, limit: 20, total: 0, pages: 1 } }
-    : { ads: [], pagination: { page: 1, limit: 20, total: 0, pages: 1 } };
+  const adsRaw = adsQuery.data as any || {};
+  const adsData = {
+    ads: Array.isArray(adsRaw.ads) ? adsRaw.ads : [],
+    pagination: adsRaw.pagination || { page: 1, limit: 20, total: 0, pages: 1 },
+  };
   
   const isLoading = adsQuery.isLoading;
   const isError = adsQuery.isError;
